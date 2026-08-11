@@ -1,0 +1,159 @@
+{
+  "meta": {
+    "device": "MSN USB小屏幕",
+    "protocol_version": "MSN",
+    "baud_rate": 115200,
+    "document_version": "2.1.1",
+    "generated": "2026-08-11"
+  },
+  "commands": {
+    "0": {
+      "description": "SFR寄存器操作 & 设备握手",
+      "sub": {
+        "SFR": {
+          "opcode": 48,
+          "description": "SFR指令",
+          "operations": {
+            "Read_M_u8": { "code": 0, "param": "16bit地址", "response": "1字节值" },
+            "Read_M_u16": { "code": 1, "param": "8bit地址", "response": "2字节值" },
+            "Write_M_u8": { "code": 4, "param": "16bit地址 + 8bit值", "response": "确认" },
+            "Write_M_u16": { "code": 1, "param": "8bit地址 + 16bit值", "response": "确认" }
+          }
+        },
+        "MSNCN": { "description": "查询版本/设备握手", "payload": "\\x00MSNCN", "response": "\\x00MSNCN" }
+      }
+    },
+    "2": {
+      "description": "LCD设置与控制",
+      "sub": {
+        "0": { "name": "LCD_Set_XY", "description": "设置起始位置", "response": "无响应" },
+        "1": { "name": "LCD_Set_Size", "description": "设置大小", "response": "无响应" },
+        "2": { "name": "LCD_Set_Color", "description": "设置颜色(FC,BC)", "response": "无响应" },
+        "3": {
+          "name": "LCD指令",
+          "description": "发送显示指令",
+          "operations": {
+            "0": "LCD_Photo - 显示彩色图片(Flash地址)",
+            "1": "LCD_Photo_wb - 显示单色照片",
+            "2": "LCD_ASCII_32X64 - 显示ASCII大字",
+            "3": "LCD_GB2312_16X16 - 显示汉字",
+            "4": "LCD_Photo_wb_MIX - 显示单色图片(混合)",
+            "5": "LCD_ASCII_32X64_MIX - 显示ASCII(混合)",
+            "6": "LCD_GB2312_16X16_MIX - 显示汉字(混合)",
+            "7": "LCD_ADD - 设置显示区域",
+            "8": "LCD_DATA - 写入LCD数据(与指令4配合)",
+            "9": "等待传输完成(与指令4配合)",
+            "10": "LCD_State - 设置显示方向",
+            "11": "LCD_Color_set - 纯色填充区域"
+          }
+        },
+        "4": { "name": "串流", "description": "屏幕串流(与指令4配合)", "response": "无响应" }
+      }
+    },
+    "3": {
+      "description": "Flash操作",
+      "sub": {
+        "0": { "name": "Read_Flash_byte", "description": "读Flash字节", "param": "24bit地址", "response": "1字节" },
+        "1": { "name": "Write_Flash_Page", "description": "写Flash页(需要先擦除)", "param": "24bit地址 + 页数" },
+        "2": { "name": "Erase_Flash_page", "description": "擦除Flash区域", "param": "16bit地址 + 16bit大小" },
+        "3": { "name": "Write_Flash_Page_fast", "description": "擦除后写Flash页", "param": "24bit地址 + 页数" }
+      }
+    },
+    "4": {
+      "description": "多次写入Flash(缓冲区)",
+      "sub": {
+        "i": { "name": "缓冲区写入", "description": "配合指令2/3使用, 64条4字节指令=256B" }
+      }
+    },
+    "8": {
+      "description": "ADC按键读取",
+      "sub": {
+        "9": { "name": "Read_ADC_CH(9)", "description": "读取通道9按键状态" }
+      }
+    }
+  },
+  "flash_layout": {
+    "chip": "P25D80",
+    "capacity": "1024KB",
+    "page_size": "256B",
+    "total_pages": 4096,
+    "allocations": {
+      "gif_frames": { "start_page": 0, "pages": 3600, "count": 36, "description": "36张动图, 每张100页" },
+      "demo_image": { "start_page": 3600, "pages": 29, "description": "240x240单色Demo1" },
+      "digit_font_48x66": { "start_page": 3629, "pages": 22, "description": "48x66数码管字体N48X66P" },
+      "clock_font_asc64": { "start_page": 3651, "pages": 128, "description": "32x64 ASCII字体ASC64" },
+      "logo": { "start_page": 3779, "pages": 12, "description": "240x102单色LOGO" },
+      "j1_image": { "start_page": 3791, "pages": 29, "description": "240x240单色J1" },
+      "mlogo": { "start_page": 3820, "pages": 6, "description": "160x68单色MLOGO" },
+      "clock_background": { "start_page": 3826, "pages": 100, "description": "160x80彩色时钟背景CLK_BG" },
+      "photo_album": { "start_page": 3926, "pages": 100, "description": "160x80彩色相册图像PH1" },
+      "state_font_24x33": { "start_page": 4026, "pages": 12, "description": "24x33状态页数码管字体N24X33P" },
+      "state_background": { "start_page": 4038, "pages": 7, "description": "160x80状态页背景MP1" }
+    }
+  },
+  "screen": {
+    "default_resolution": { "width": 160, "height": 80 },
+    "color_format": "RGB565",
+    "rgb565_conversion": {
+      "r_shift": 3, "r_bits": 5, "r_mask": "0xF8",
+      "g_shift": 2, "g_bits": 6, "g_mask": "0xFC",
+      "b_shift": 3, "b_bits": 5, "b_mask": "0xF8",
+      "formula": "((R>>3)<<11) | ((G>>2)<<5) | (B>>3)"
+    }
+  },
+  "display_modes": {
+    "GIF_PAGE_ID": 0,
+    "PCTIME_PAGE_ID": 1,
+    "PHOTO_PAGE_ID": 2,
+    "SCREEN_PAGE_ID": 3,
+    "CAMERA_VIDEO_ID": 4,
+    "STATE_PAGE_ID": 5,
+    "NETSPEED_PAGE_ID": 6,
+    "CUSTOM1_PAGE_ID": 7,
+    "CUSTOM2_PAGE_ID": 8,
+    "ABOUT_PAGE_ID": 9
+  },
+  "lcd_direction": [
+    { "index": 0, "label": "正向 (0°)" },
+    { "index": 1, "label": "反向 (180°)" },
+    { "index": 2, "label": "水平镜像" },
+    { "index": 3, "label": "垂直镜像" },
+    { "index": 4, "label": "顺时针90°" },
+    { "index": 5, "label": "逆时针90°" },
+    { "index": 6, "label": "水平镜像+90°" },
+    { "index": 7, "label": "垂直镜像+90°" }
+  ],
+  "colors": {
+    "RED": "0xF800",
+    "GREEN": "0x07E0",
+    "BLUE": "0x001F",
+    "WHITE": "0xFFFF",
+    "BLACK": "0x0000",
+    "YELLOW": "0xFFE0",
+    "GRAY0": "0xEF7D",
+    "GRAY1": "0x8410",
+    "GRAY2": "0x4208"
+  },
+  "touch_key": {
+    "adc_channel": 9,
+    "actions": {
+      "single_click": "Page_UP - 上翻页",
+      "double_click": "Page_Down - 下翻页",
+      "long_press": "LCD_Change - 切换显示方向",
+      "threshold": "ADC_det - 250 (动态校准)"
+    }
+  },
+  "data_protocol": {
+    "packet_size": 6,
+    "format": {
+      "header": { "size": 1, "description": "命令组 (0/2/3/4/8)" },
+      "sub_cmd": { "size": 1, "description": "子命令" },
+      "data": { "size": 4, "description": "4字节参数" }
+    },
+    "screenshare_optimization": {
+      "description": "相同颜色区域压缩传输",
+      "block_size": "128个uint16 = 256字节",
+      "method": "找最频繁颜色作背景色, 只发送差异像素"
+    }
+  }
+}

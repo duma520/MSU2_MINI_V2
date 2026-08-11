@@ -1,0 +1,114 @@
+用grok写了一份接口文档 你可以看看主要功能
+1. 设备连接与管理
+    •    功能: 自动检测并连接串口设备 (MSN设备)，读取设备信息，管理连接状态。
+    •    实现方式:
+    ◦    使用serial库枚举所有串口，发送特定协议数据包(MSNCN)验证设备。
+    ◦    通过Get_MSN_Device()函数进行设备枚举和握手。
+    ◦    使用SER_Write()/SER_Read()进行底层串口通信。
+    ◦    心跳机制保持连接状态监测。
+2. 图像处理与烧录
+    •    功能: 将JPG/PNG/BMP图像转换为设备专用格式并烧录到Flash。
+    •    实现方式:
+    ◦    Get_Photo_Path1-4: 通过文件对话框选择图片。
+    ◦    Writet_Photo_Path1-4:
+    ▪    使用PIL库进行图像缩放和裁剪 (固定160x80分辨率)。
+    ▪    RGB565颜色空间转换 (2字节/像素)。
+    ▪    通过Write_Flash_hex_fast()将二进制数据写入Flash指定地址。
+    ◦    支持单帧图片和36帧动画烧录。
+3. 屏幕显示控制
+    •    功能: 控制屏幕显示内容，包括图片/文字/系统信息/实时截屏。
+    •    实现方式:
+    ◦    基础控制:
+    ▪    LCD_Set_XY(): 设置显示起始坐标。
+    ▪    LCD_Set_Size(): 设置显示区域大小。
+    ▪    LCD_Set_Color(): 设置前景/背景色。
+    ◦    显示模式:
+    ▪    GIF动画播放 (show_gif())。
+    ▪    系统监控仪表盘 (show_PC_state())。
+    ▪    实时屏幕镜像 (show_PC_Screen())。
+    ▪    数字时钟 (show_PC_time())。
+    ◦    使用LCD_Photo()/LCD_Color_set()等高级API组合实现复杂显示。
+4. 系统信息监控
+    •    功能: 实时获取并显示CPU/RAM/磁盘/电池状态。
+    •    实现方式:
+    ◦    使用psutil库获取系统指标。
+    ◦    数字用预烧录的数码管字体图片组合显示。
+    ◦    数据每500ms更新一次。
+5. 用户界面交互
+    •    功能: 提供图形化控制界面。
+    •    实现方式:
+    ◦    使用tkinter构建GUI。
+    ◦    主要组件: 串口状态指示灯、RGB颜色选择滑块、文件路径选择与烧录按钮、翻页控制按钮、日志显示文本框。
+核心API详解
+设备通信API
+函数
+参数
+说明
+SER_Write(data)
+data: 字节数据
+发送原始数据到串口
+SER_Read()
+-
+读取串口缓冲区数据
+Read_M_u8(add)
+add: 16位地址
+读取1字节寄存器值
+Write_M_u8(add, data)
+add: 地址, data: 值
+写入1字节寄存器
+Flash操作API
+函数
+参数
+说明
+Write_Flash_Page(page, data, num)
+page: 页地址, data: 256字节数据, num: 页数
+写入整页数据
+Erase_Flash_page(add, size)
+add: 起始地址, size: 页数
+擦除指定区域
+Write_Flash_hex_fast(add, data)
+add: 起始地址, data: 字节数据
+快速写入任意长度数据
+屏幕控制API
+函数
+参数
+说明
+LCD_Photo(x,y,w,h,addr)
+x,y: 坐标, w,h: 尺寸, addr: Flash地址
+显示存储在Flash的图片
+LCD_Color_set(x,y,w,h,color)
+color: RGB565颜色值
+填充纯色区域
+LCD_ASCII_32X64(x,y,char,fc,bc)
+char: ASCII字符, fc/bc: 前景/背景色
+显示32x64大字字符
+LCD_GB2312_16X16(x,y,text,fc,bc)
+text: 汉字字符串
+显示16x16汉字
+高级功能API
+函数
+说明
+show_gif()
+循环播放预存36帧动画
+show_PC_state()
+显示系统监控仪表盘
+show_PC_Screen()
+实时镜像电脑屏幕 (通过pyautogui截图)
+show_PC_time()
+显示数字时钟
+关键实现细节
+    1    颜色编码: 使用RGB565格式 (2字节/像素)。转换公式示例: r = (pixel[0] >> 3) << 11
+    2    g = (pixel[1] >> 2) << 5
+    3    b = pixel[2] >> 3
+    4    color = r | g | b
+    5    
+    6    数据传输优化: 使用批量传输协议 (64条4字节指令打包发送)，相同颜色区域压缩传输。
+    7    线程管理: Screen_Date_get独立线程处理屏幕截图和预处理，TIM1定时器线程处理状态轮询。
+使用建议
+    1    硬件准备: 连接支持MSN协议的串口屏幕，确保波特率设置为19200bps。
+    2    开发流程: # 典型使用示例
+    3    LCD_Set_Color(RED, BLACK)  # 设置红底黑字
+    4    LCD_Photo(0, 0, 160, 80, 1024)  # 显示Flash 1024地址的图片
+    5    Write_Flash_hex_fast(0, image_data)  # 烧录开机画面
+    6    
+    7    调试技巧: 使用Text1文本框查看操作日志，通过Read_MSN_Data()读取设备寄存器验证状态。

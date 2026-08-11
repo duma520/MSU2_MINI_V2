@@ -1,0 +1,39 @@
+0		发送给主机
+	30	SFR指令	ok
+	48	SFR指令
+		0	Read_M_u8
+		1	Read_M_u16 Write_M_u16
+		4	Write_M_u8
+
+	MSNCN	查询版本	Get_MSN_Device
+
+2		设置
+	0	设置起始位置		LCD_Set_XY	无响应？
+	1	设置大小		LCD_Set_Size	无响应？
+	2	设置颜色		LCD_Set_Color	无响应？
+	3		发送指令
+		0	显示彩色图片	LCD_Photo	ok
+		1	显示单色照片	LCD_Photo_wb
+		2	显示ASCII	LCD_ASCII_32X64
+		3	显示彩色图片	LCD_GB2312_16X16
+		4	显示单色图片	LCD_Photo_wb_MIX
+		5	显示ASCII	LCD_ASCII_32X64_MIX
+		6	显示彩色图片	LCD_GB2312_16X16_MIX
+		7	设置显示区域	LCD_ADD		ok
+		8			LCD_DATA Write_LCD_Screen_fast Write_LCD_Photo_fast1 Write_LCD_Screen_fast1
+		9			Write_LCD_Photo_fast1 Write_LCD_Screen_fast1
+		10	设置显示方向	LCD_State	ok
+		11	显示彩色图片	LCD_Color_set
+	4	串流			无响应
+
+3		对Flash操作
+	0	读flash		Read_Flash_byte		ok
+	1	写flash		Write_Flash_Page	ok
+	2	擦除flash	Erase_Flash_page	ok
+	3	擦除后写flash	Write_Flash_Page_fast	ok
+
+4		多次写入flash	与其他功能联合使用
+	i	写入地址	Write_Flash_Page	无响应？
+
+8		读取按键
+	9	通道9（目前只有一个按键）	Read_ADC_CH（ok）

@@ -25,9 +25,13 @@ https://github.com/dchg43/msu2_mini 能连接，有显示，就是感觉缺点�
 # 《USB副屏工具 v2.1.6 完全使用手册》
 
 **作者：** 杜玛
+
 **版权声明：** © 永久 杜玛 保留所有权利
+
 **开源许可证：** MIT
+
 **项目官网 & GitHub：** [https://github.com/duma520](https://github.com/duma520)
+
 **项目地址：** [https://github.com/duma520/MSU2_MINI_V2](https://github.com/duma520/MSU2_MINI_V2)
 
 ---

@@ -5,7 +5,7 @@
 
 https://github.com/dimangopie/just-fun-for-MSU2_MINI 花屏，但是修改一下，也能正常显示，但是退出的时候就一直调频率，退不出来。
 
-https://github.com/dchg43/msu2_mini 能连接，但是没有显示桌面过去。
+https://github.com/dchg43/msu2_mini 能连接，有显示，就是感觉缺点啥。
 
 所以也懒得搞为什么，直接AI整合一起，再优化，增加一些功能。
 

@@ -80,7 +80,7 @@ GRAY2 = 0x4208
 # ==================== 程序元数据 ====================
 PROGRAM_TITLE = "USB副屏工具"
 PROGRAM_SUBTITLE = ""
-PROGRAM_VERSION = "3.0.5"
+PROGRAM_VERSION = "2.1.6"
 PROGRAM_AUTHOR = "杜玛"
 PROGRAM_GITHUB = "https://github.com/duma520/MSU2_MINI_V2"
 PROGRAM_LICENSE = "MIT"
@@ -512,152 +512,6 @@ IMAGE_FILE_TYPES = [
     # ("Image file", "*.wdp") # 不支持
 ]
 
-# ==================== 多设备支持基础设施 ====================
-# 当前活跃设备上下文（线程本地存储），串口/LCD函数自动使用当前线程绑定的设备
-_device_context = threading.local()
-# 所有已连接设备的字典 {device_id: ScreenDevice}
-all_devices = {}
-# 主设备（单屏模式下的默认设备，向后兼容）
-_primary_device = None
-
-
-def get_current_device():
-    """获取当前线程活跃的ScreenDevice，无则返回主设备"""
-    dev = getattr(_device_context, 'device', None)
-    if dev is not None:
-        return dev
-    return _primary_device
-
-
-def set_current_device(device):
-    """设置当前线程活跃的ScreenDevice"""
-    _device_context.device = device
-
-
-class ScreenDevice:
-    """单个USB副屏设备的完整上下文（状态、串口、线程、配置）"""
-    def __init__(self, index, com_port):
-        self.index = index              # 设备序号 0, 1, 2...
-        self.com_port = com_port        # COM端口号，如 "COM15"
-        self.device_name = f"屏幕{index + 1}" if index > 0 else "屏幕1"
-        
-        # --- 串口 ---
-        self.ser = None
-        self.SER_lock = threading.Lock()
-        
-        # --- 设备状态 ---
-        self.device_state = 0           # 0=未连接, 1=已连接
-        self.state_change = 1           # 状态变化标志
-        self.lcd_change_now = 0         # 当前LCD方向
-        self.force_lcd_reset = False    # 强制LCD方向重置
-        self.last_lcd_watchdog_time = 0 # LCD看门狗计时
-        
-        # --- 状态机 ---
-        self.state_machine = SCREEN_PAGE_ID  # 当前页面
-        
-        # --- 截图流水线 ---
-        self.screen_shot_queue = queue.Queue(2)
-        self.screen_process_queue = queue.Queue(2)
-        self.screen_shot_thread = None
-        self.screen_process_thread = None
-        self.mg_screen_thread_running = True
-        self.screen_frame_generation = 0
-        self.default_capture = None     # ContinuousCapture实例
-        self.screenshot_last_limit_time = 0
-        self.wait_time = 0.0
-        self.row_np_zero = None
-        self.column_np_zero = None
-        
-        # --- 渲染状态 ---
-        self.color_use = RED
-        self.gif_num = 0
-        self.second_pass = 0
-        self.gif_wait_time = 0.0
-        self.last_refresh_time = 0
-        self.sleep_event = threading.Event()
-        
-        # --- 防烧屏 ---
-        self.burn_offset_x = 0
-        self.burn_offset_y = 0
-        self.burn_offset_time = 0
-        
-        # --- 网络/自定义图表数据 ---
-        self.netspeed_last_refresh_snetio = None
-        self.netspeed_plot_data = None
-        self.custom_plot_data = None
-        self.last_data_half = (0, 0)
-        
-        # --- MSN设备信息 ---
-        self.msn_device = None
-        self.msn_data = None
-        self.ADC_det = 0
-        
-        # --- 自定义渲染锁 ---
-        self.custom_render_lock = threading.Lock()
-        
-        # --- LCD分辨率 ---
-        self.LCD_MAX_X = SHOW_WIDTH
-        self.LCD_MAX_Y = SHOW_HEIGHT
-    
-    def init_arrays(self):
-        """初始化numpy零数组（依赖LCD尺寸）"""
-        if self.row_np_zero is None:
-            self.row_np_zero = np.zeros([1, self.LCD_MAX_X, 3], dtype=np.uint8)
-            self.column_np_zero = np.zeros([self.LCD_MAX_Y, 1, 3], dtype=np.uint8)
-        if self.netspeed_plot_data is None:
-            self.netspeed_plot_data = {"sent": [0] * (self.LCD_MAX_X // 2),
-                                       "recv": [0] * (self.LCD_MAX_X // 2)}
-            self.custom_plot_data = {"sent": [0] * (self.LCD_MAX_X // 2),
-                                     "recv": [0] * (self.LCD_MAX_X // 2)}
-
-    def set_device_state(self, state):
-        """设置设备连接状态"""
-        if self.device_state != state:
-            self.device_state = state
-            if state == 0 and self.ser is not None and self.ser.is_open:
-                try:
-                    self.ser.close()
-                except:
-                    pass
-    
-    def start_threads(self):
-        """启动截图和daemon线程"""
-        self.mg_screen_thread_running = True
-        self.screen_shot_thread = threading.Thread(
-            target=screen_shot_task, args=(self,), daemon=True)
-        self.screen_process_thread = threading.Thread(
-            target=screen_process_task, args=(self,), daemon=True)
-        self.screen_shot_thread.start()
-        self.screen_process_thread.start()
-    
-    def stop_threads(self):
-        """停止所有线程"""
-        self.mg_screen_thread_running = False
-        self.sleep_event.set()
-
-    def cleanup(self):
-        """清理LCD并关闭串口"""
-        try:
-            if self.device_state == 1:
-                print(f'{self.device_name}: 正在清除LCD屏幕...')
-                set_current_device(self)
-                LCD_Color_set(0, 0, self.LCD_MAX_X, self.LCD_MAX_Y, BLACK)
-                time.sleep(0.1)
-        except:
-            pass
-        finally:
-            if self.ser is not None and self.ser.is_open:
-                print(f'{self.device_name}: {self.ser.name} close')
-                self.ser.close()
-
-
-def _init_single_device():
-    """初始化主设备（单屏兼容模式）"""
-    global _primary_device
-    if _primary_device is None:
-        _primary_device = ScreenDevice(0, "")
-        all_devices[0] = _primary_device
-
 
 def get_all_cameras():
     all_camera_devices = {"": None}  # 考虑隐私，默认不打开相机，所以这里放一个空的作为默认值
@@ -753,7 +607,7 @@ class Win32_Image:
 
 
 default_capture = None
-mss_sct = None  # 旧全局（向后兼容），实际使用device.mss_sct
+mss_sct = None  # 复用的mss截图上下文，避免每次回退时创建/销毁
 printwindow_fail_count = 0  # PrintWindow连续失败计数
 printwindow_fail_hwnd = 0   # 当前失败对应的窗口句柄
 MSS_FALLBACK_THRESHOLD = 3  # 连续失败N次后切换到mss区域截图
@@ -761,35 +615,40 @@ MIN_WINDOW_SIZE = 10        # 窗口最小尺寸（像素），小于此值不�
 
 
 def _mss_fallback_screenshot(hWnd=None):
-    """使用mss截取桌面（或指定窗口区域）作为回退方案"""
-    # mss GDI句柄是线程本地的，每次调用创建新实例(轻量)
-    sct = mss()
+    """使用mss截取桌面（或指定窗口区域）作为回退方案，复用mss上下文"""
+    global mss_sct
+    if mss_sct is None:
+        mss_sct = mss()
     if hWnd and hWnd != desktop_hwnd:
         try:
             rect = win32gui.GetWindowRect(hWnd)
             left, top, right, bottom = rect
             w, h = right - left, bottom - top
+            # 窗口区域必须足够大才做区域截图，否则直接全桌面
             if w >= MIN_WINDOW_SIZE and h >= MIN_WINDOW_SIZE:
                 monitor = {"left": left, "top": top, "width": w, "height": h, "mon": 0}
-                sct_img = sct.grab(monitor)
+                sct_img = mss_sct.grab(monitor)
                 return Win32_Image(rgb=sct_img.rgb, size=(sct_img.width, sct_img.height))
         except Exception:
             pass
-    monitor = sct.monitors[0]
-    sct_img = sct.grab(monitor)
+    # 回退到全桌面截图
+    monitor = mss_sct.monitors[0]
+    sct_img = mss_sct.grab(monitor)
     return Win32_Image(rgb=sct_img.rgb, size=(sct_img.width, sct_img.height))
 
 
 def get_window_image(hWnd=None):
-    global desktop_hwnd, default_capture
+    global desktop_hwnd, default_capture, mss_sct
     global printwindow_fail_count, printwindow_fail_hwnd
 
+    # 显示器截图（hWnd 为负数表示显示器编号，-1=屏幕1, -2=屏幕2...）
     if hWnd is not None and hWnd < 0:
         monitor_index = -hWnd
-        sct = mss()  # mss GDI句柄是线程本地的
-        if monitor_index < len(sct.monitors):
-            monitor = sct.monitors[monitor_index]
-            sct_img = sct.grab(monitor)
+        if mss_sct is None:
+            mss_sct = mss()
+        if monitor_index < len(mss_sct.monitors):
+            monitor = mss_sct.monitors[monitor_index]
+            sct_img = mss_sct.grab(monitor)
             return Win32_Image(rgb=sct_img.rgb, size=(sct_img.width, sct_img.height))
         hWnd = desktop_hwnd
         set_select_hwnd(hWnd)
@@ -1154,15 +1013,13 @@ def Write_Photo_Path4():  # 写入文件
 
 
 def state_change_set(message=None, save=True):
-    device = get_current_device()
-    if device is None:
-        return
-    device.state_change = 1
-    device.force_lcd_reset = True  # 切页时强制重置LCD方向
-    device.sleep_event.set()
-    device.burn_offset_x = 0
-    device.burn_offset_y = 0
-    device.burn_offset_time = 0
+    global State_change, sleep_event, burn_offset_x, burn_offset_y, burn_offset_time
+    State_change = 1
+    sleep_event.set()  # 取消sleep, 使sleep_event.wait无效
+    # 切换页面时重置防烧屏偏移
+    burn_offset_x = 0
+    burn_offset_y = 0
+    burn_offset_time = 0
     if save:
         save_config()
     if message is not None:
@@ -1170,16 +1027,13 @@ def state_change_set(message=None, save=True):
 
 
 def state_change_clear():
-    device = get_current_device()
-    if device is None:
-        return
-    device.state_change = 0
-    device.sleep_event.clear()
+    global State_change, sleep_event
+    State_change = 0
+    sleep_event.clear()  # 使sleep_event.wait生效
 
 
 def Page_UP():  # 上一页
-    global config_obj
-    dev = get_current_device()
+    global config_obj, State_change, sleep_event
     try:
         index = list(PAGE_ID.keys()).index(config_obj.state_machine)
         if index >= len(PAGE_ID) - 1:
@@ -1189,16 +1043,15 @@ def Page_UP():  # 上一页
     except:
         index = 0
     config_obj.state_machine = list(PAGE_ID.keys())[index]
-    if config_obj.state_machine == CAMERA_VIDEO_ID and dev:
-        clear_queue(dev.screen_shot_queue)
-        clear_queue(dev.screen_process_queue)
+    if config_obj.state_machine == CAMERA_VIDEO_ID:
+        clear_queue(screen_shot_queue)  # 清空缓存
+        clear_queue(screen_process_queue)  # 清空缓存
     state_change_set(PAGE_ID[config_obj.state_machine])
     sync_page_combobox()
 
 
 def Page_Down():  # 下一页
-    global config_obj
-    dev = get_current_device()
+    global config_obj, State_change, sleep_event
     try:
         index = list(PAGE_ID.keys()).index(config_obj.state_machine)
         if index == 0:
@@ -1208,9 +1061,9 @@ def Page_Down():  # 下一页
     except:
         index = 0
     config_obj.state_machine = list(PAGE_ID.keys())[index]
-    if config_obj.state_machine == SCREEN_PAGE_ID and dev:
-        clear_queue(dev.screen_shot_queue)
-        clear_queue(dev.screen_process_queue)
+    if config_obj.state_machine == SCREEN_PAGE_ID:
+        clear_queue(screen_shot_queue)  # 清空缓存
+        clear_queue(screen_process_queue)  # 清空缓存
     state_change_set(PAGE_ID[config_obj.state_machine])
     sync_page_combobox()
 
@@ -1229,25 +1082,23 @@ def sync_page_combobox():
 
 def on_page_combobox_select(event):
     """用户通过下拉列表选择页面"""
-    global config_obj, page_combobox
-    dev = get_current_device()
+    global config_obj, page_combobox, screen_shot_queue, screen_process_queue
     event.widget.selection_clear()
     selected_name = page_combobox.get()
     for pid, pname in PAGE_ID.items():
         if pname == selected_name:
             if config_obj.state_machine != pid:
                 config_obj.state_machine = pid
-                if dev and (pid == CAMERA_VIDEO_ID or pid == SCREEN_PAGE_ID):
-                    clear_queue(dev.screen_shot_queue)
-                    clear_queue(dev.screen_process_queue)
+                if pid == CAMERA_VIDEO_ID or pid == SCREEN_PAGE_ID:
+                    clear_queue(screen_shot_queue)
+                    clear_queue(screen_process_queue)
                 state_change_set(pname)
             break
 
 
 def LCD_Change():  # 切换显示方向（循环）
-    global config_obj
-    dev = get_current_device()
-    if dev is None or dev.device_state == 0:
+    global config_obj, Device_State, sleep_event
+    if Device_State == 0:
         insert_text_message("设备未连接，切换失败")
         return
     config_obj.lcd_change = (config_obj.lcd_change + 1) % len(LCD_STATE_MESSAGE)
@@ -1257,9 +1108,8 @@ def LCD_Change():  # 切换显示方向（循环）
 
 def set_lcd_direction(index):
     """直接设置显示方向"""
-    global config_obj
-    dev = get_current_device()
-    if dev is None or dev.device_state == 0:
+    global config_obj, Device_State, sleep_event
+    if Device_State == 0:
         insert_text_message("设备未连接，切换失败")
         return
     if config_obj.lcd_change != index:
@@ -1291,13 +1141,10 @@ def on_lcd_direction_select(event):
 
 # 由于设备不支持多线程访问，请不要直接使用SER_Write，应使用SER_rw方法
 def SER_Write(Data_U0):
-    device = get_current_device()
-    ser = device.ser
+    global ser
     # 尝试发出指令,有两种无法正确发送命令的情况：1.设备被移除,发送出错；2.设备处于MSN连接状态，对于电脑发送的指令响应迟缓
     ser.reset_input_buffer()  # 清空输入缓存
-    # 注意：不要reset_output_buffer()！USB串口适配器内部还有缓冲，
-    # flush()返回后适配器可能仍在发送最后几个字节，reset_output_buffer()
-    # 会中途打断传输导致硬件收到截断的命令流，造成解析错位→画面倾斜。
+    ser.reset_output_buffer()  # 清空输出缓存，防止残留数据混入导致画面斜切
     written = ser.write(Data_U0)
     ser.flush()
     # 防御：校验写入字节数，防止部分写入导致硬件命令解析错位
@@ -1308,8 +1155,7 @@ def SER_Write(Data_U0):
 
 # 由于设备不支持多线程访问，请不要直接使用SER_Read，应使用SER_rw方法
 def SER_Read():
-    device = get_current_device()
-    ser = device.ser
+    global ser
     trytimes = 500000  # 尝试次数计数，防止一直获取不到数据
     recv = ser.read(ser.in_waiting)
     while len(recv) == 0 and trytimes > 0:
@@ -1317,14 +1163,13 @@ def SER_Read():
         trytimes -= 1
     if trytimes == 0:
         print("SER_Read timeout")
+        # raise RuntimeError("SER_Read timeout")
         return 0
     return recv
 
 
 def SER_rw(data, read=True, size=0):
-    device = get_current_device()
-    ser = device.ser
-    SER_lock = device.SER_lock
+    global ser, SER_lock
 
     result = bytearray()
     SER_lock.acquire()
@@ -1349,7 +1194,7 @@ def SER_rw(data, read=True, size=0):
     finally:
         SER_lock.release()
     # 释放锁后再处理异常
-    device.set_device_state(0)
+    set_device_state(0)
     return result
 
 
@@ -1821,26 +1666,22 @@ BURN_INTERVAL = 30  # 每30秒移动一次
 
 def update_burn_offset():
     """更新防烧屏偏移量（每30秒循环移动1像素）"""
-    global config_obj
-    dev = get_current_device()
-    if dev is None: return
+    global burn_offset_x, burn_offset_y, burn_offset_time, config_obj
     if not config_obj or config_obj.anti_burn == 0:
-        dev.burn_offset_x = 0
-        dev.burn_offset_y = 0
+        burn_offset_x = 0
+        burn_offset_y = 0
         return
     now = time.monotonic()
-    if now - dev.burn_offset_time > BURN_INTERVAL:
-        dev.burn_offset_time = now
+    if now - burn_offset_time > BURN_INTERVAL:
+        burn_offset_time = now
         idx = int(now // BURN_INTERVAL) % len(BURN_OFFSETS)
-        dev.burn_offset_x, dev.burn_offset_y = BURN_OFFSETS[idx]
+        burn_offset_x, burn_offset_y = BURN_OFFSETS[idx]
 
 def LCD_ADD(LCD_X, LCD_Y, LCD_X_Size, LCD_Y_Size):
     # 防烧屏：微调显示位置
     update_burn_offset()
-    dev = get_current_device()
-    if dev is None: return 0
-    x = max(0, LCD_X + dev.burn_offset_x)
-    y = max(0, LCD_Y + dev.burn_offset_y)
+    x = max(0, LCD_X + burn_offset_x)
+    y = max(0, LCD_Y + burn_offset_y)
     hex_use = LCD_Set_XY(x, y)
     hex_use.extend(LCD_Set_Size(LCD_X_Size, LCD_Y_Size))
     hex_use.append(2)  # 对LCD多次写入
@@ -2236,49 +2077,49 @@ def LCD_Color_set(LCD_X, LCD_Y, LCD_X_Size, LCD_Y_Size, F_Color):
 
 
 def show_gif():  # 显示GIF动图
-    global config_obj
-    dev = get_current_device()
-    if dev is None: return
+    global config_obj, second_pass, sleep_event, last_refresh_time, gif_wait_time, State_change, gif_num
     current_monoto_time = time.monotonic()
-    if dev.state_change == 1:
+    if State_change == 1:
         state_change_clear()
-        dev.gif_wait_time = 0
-        dev.last_refresh_time = current_monoto_time
+        # gif_num = 0
+        gif_wait_time = 0
+        last_refresh_time = current_monoto_time
         LCD_ADD(0, 0, SHOW_WIDTH, SHOW_HEIGHT)
-    if dev.gif_num > 35:
-        dev.gif_num = 0
+    if gif_num > 35:
+        gif_num = 0
 
-    LCD_Photo(dev.gif_num * 100)
+    LCD_Photo(gif_num * 100)
 
+    # 因为设备超过5秒没有发送图片，就会认为断开了，所以这里每秒发送一次同一张图片
     if config_obj.second_times != 0:
-        if dev.second_pass < config_obj.second_times:
-            dev.second_pass += 1
-            dev.sleep_event.wait(1)
+        if second_pass < config_obj.second_times:
+            second_pass += 1
+            sleep_event.wait(1)
             return
         else:
-            dev.second_pass = 0
+            second_pass = 0
 
-    dev.gif_num = dev.gif_num + 1
-    elapse_time = current_monoto_time - dev.last_refresh_time
-    dev.last_refresh_time = current_monoto_time
+    gif_num = gif_num + 1
+    # 精确调整动图播放速度
+    elapse_time = current_monoto_time - last_refresh_time
+    last_refresh_time = current_monoto_time
     if elapse_time - config_obj.second_times > config_obj.photo_interval_var + 5:
-        dev.gif_wait_time = config_obj.photo_interval_var
+        gif_wait_time = config_obj.photo_interval_var
     else:
-        dev.gif_wait_time += config_obj.photo_interval_var - elapse_time + config_obj.second_times
-    if dev.gif_wait_time > 0:
-        dev.sleep_event.wait(dev.gif_wait_time)
+        gif_wait_time += config_obj.photo_interval_var - elapse_time + config_obj.second_times
+    if gif_wait_time > 0:
+        sleep_event.wait(gif_wait_time)
 
 
 def show_PC_state(FC, BC):  # 显示PC状态
-    dev = get_current_device()
-    if dev is None: return
+    global State_change, sleep_event, last_refresh_time, wait_time
     current_monoto_time = time.monotonic()
     photo_add = 4038
     num_add = 4026
-    if dev.state_change == 1:
+    if State_change == 1:
         state_change_clear()
-        dev.wait_time = 0
-        dev.last_refresh_time = current_monoto_time
+        wait_time = 0
+        last_refresh_time = current_monoto_time
         LCD_Set_Color(FC, BC)
         hex_use = LCD_Photo_wb(0, 0, SHOW_WIDTH, SHOW_HEIGHT, photo_add)  # 放置背景
         recv = SER_rw(hex_use)  # 发出指令
@@ -2373,29 +2214,28 @@ def show_PC_state(FC, BC):  # 显示PC状态
         set_device_state(0)  # 接收出错
 
     seconds_elapsed = current_monoto_time - last_refresh_time
-    dev.last_refresh_time = current_monoto_time
-    dev.wait_time += 1 - seconds_elapsed
-    if dev.wait_time > 0:
-        dev.sleep_event.wait(dev.wait_time)
+    last_refresh_time = current_monoto_time
+    # 1秒左右刷新一次
+    wait_time += 1 - seconds_elapsed
+    if wait_time > 0:
+        sleep_event.wait(wait_time)
 
 
 def show_Photo():  # 显示照片
-    dev = get_current_device()
-    if dev is None: return
-    if dev.state_change == 1:
+    global State_change, sleep_event
+    if State_change == 1:
         state_change_clear()
         LCD_ADD(0, 0, SHOW_WIDTH, SHOW_HEIGHT)
 
     LCD_Photo(3926)  # 放置背景
-    dev.sleep_event.wait(1)  # 1秒刷新一次
+    sleep_event.wait(1)  # 1秒刷新一次
 
 
 def show_PC_time(FC):
     """显示24小时制 HH:MM 大字时间（32x64字体，满屏）"""
-    dev = get_current_device()
-    if dev is None: return
+    global State_change, sleep_event
     num_add = 3651  # ASC64 大字库
-    if dev.state_change == 1:
+    if State_change == 1:
         state_change_clear()
         LCD_ADD(0, 0, SHOW_WIDTH, SHOW_HEIGHT)
         LCD_Set_Color(FC, BLACK)
@@ -2412,9 +2252,9 @@ def show_PC_time(FC):
     LCD_ASCII_32X64(120, 8, chr((time_m % 10) + 48), num_add)
 
     if time_m != 59:
-        dev.sleep_event.wait(1)
+        sleep_event.wait(1)
     else:
-        dev.sleep_event.wait(1 - current_time.microsecond / 1000000.0)
+        sleep_event.wait(1 - current_time.microsecond / 1000000.0)
 
 
 def digit_to_ints(di):
@@ -2600,52 +2440,62 @@ def clear_queue(queue):
         queue.get()
 
 
-def screen_shot_task(device=None):
-    global config_obj, all_cameras, desktop_hwnd
-    if device is None:
-        device = get_current_device()
-    set_current_device(device)
-    dev = device
-    # mss GDI句柄是线程本地的，每个线程必须独立创建mss实例
-    _thread_mss = mss()
+def screen_shot_task():  # 创建专门的函数来获取屏幕图像和处理转换数据
+    global config_obj, all_cameras, MG_screen_thread_running, Device_State, screen_shot_queue, desktop_hwnd
+    global screenshot_last_limit_time, wait_time, mss_sct
     if not isWindows:
-        monitor = _thread_mss.monitors[0]
+        if mss_sct is None:
+            mss_sct = mss()
+        # 序号为0的monitor是总体屏幕
+        monitor = mss_sct.monitors[0]
+        # cropped_monitor = {
+        #     "left": screenshot_region[0] + monitor["left"],
+        #     "top": screenshot_region[1] + monitor["top"],
+        #     "width": screenshot_region[2] or monitor["width"],
+        #     "height": screenshot_region[3] or monitor["height"],
+        #     "mon": screenshot_monitor_id,
+        # }
         cropped_monitor = monitor
         cropped_monitor["mon"] = 0
 
-    dev.wait_time = 0
-    dev.screenshot_last_limit_time = time.monotonic()
+    wait_time = 0
+    screenshot_last_limit_time = time.monotonic()
     print("Start screenshot")
-    while dev.mg_screen_thread_running:
-        if dev.device_state != 1 or (config_obj.state_machine != SCREEN_PAGE_ID
+    while MG_screen_thread_running:
+        if Device_State != 1 or (config_obj.state_machine != SCREEN_PAGE_ID
                                  and config_obj.state_machine != CAMERA_VIDEO_ID):
-            if not dev.screen_shot_queue.empty():
-                time.sleep(0.5)
-                clear_queue(dev.screen_shot_queue)
-            time.sleep(0.5)
+            if not screen_shot_queue.empty():
+                time.sleep(0.5)  # 等一下再清空，防止页面切换缓慢
+                clear_queue(screen_shot_queue)  # 清空缓存，防止显示旧的窗口
+            time.sleep(0.5)  # 不需要截图时
             continue
-        if dev.screen_shot_queue.full():
+        if screen_shot_queue.full():
             time.sleep(1.0 / config_obj.fps_var)
+            # if screen_shot_queue.full():  # 这儿用于防止队列堆积，但是因为队列长度只有2，所以也不怕，所以注释掉
+            #     screen_shot_queue.get()
 
         try:
             if config_obj.state_machine == CAMERA_VIDEO_ID:
                 camera_id = all_cameras.get(config_obj.camera_var)
                 if camera_id is None:
+                    # 没有图像时显示黑色背景
                     rgb888 = get_draw_text("请选择相机…")
-                    image = Win32_Image(rgb=rgb888, size=(dev.LCD_MAX_X, dev.LCD_MAX_Y))
-                    dev.screen_shot_queue.put((image, {"width": dev.LCD_MAX_X, "height": dev.LCD_MAX_Y}), timeout=1)
+                    image = Win32_Image(rgb=rgb888, size=(LCD_MAX_X, LCD_MAX_Y))
+                    screen_shot_queue.put((image, {"width": LCD_MAX_X, "height": LCD_MAX_Y}), timeout=1)
                     time.sleep(0.5)
                     continue
 
+                # 打开相机
                 rgb888 = get_draw_text("打开中…")
-                image = Win32_Image(rgb=rgb888, size=(dev.LCD_MAX_X, dev.LCD_MAX_Y))
-                dev.screen_shot_queue.put((image, {"width": dev.LCD_MAX_X, "height": dev.LCD_MAX_Y}), timeout=1)
+                image = Win32_Image(rgb=rgb888, size=(LCD_MAX_X, LCD_MAX_Y))
+                screen_shot_queue.put((image, {"width": LCD_MAX_X, "height": LCD_MAX_Y}), timeout=1)
                 camera_name = config_obj.camera_var
-                cap = cv2.VideoCapture(camera_id, cv2.CAP_DSHOW)
+                # 偶尔会出现打开很慢的情况，暂无法解决
+                cap = cv2.VideoCapture(camera_id, cv2.CAP_DSHOW)  # 默认媒体类型是CAP_MSMF，可能会导致设置分辨率失败，所以改为CAP_DSHOW
                 try:
                     if cap.isOpened():
-                        cap.set(cv2.CAP_PROP_FRAME_WIDTH, dev.LCD_MAX_X)
-                        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, dev.LCD_MAX_Y)
+                        cap.set(cv2.CAP_PROP_FRAME_WIDTH, LCD_MAX_X)  # 这个设置不一定生效，cv2会使用摄像头支持的最近的分辨率
+                        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, LCD_MAX_Y)
                         # cap.set(cv2.CAP_PROP_FPS, config_obj.fps_var)  # 这个程序中相机fps无效
                         # cap.set(cv2.CAP_PROP_EXPOSURE, 4)  # 曝光度调节
                         # cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # 缓冲帧数量大小
@@ -2654,97 +2504,115 @@ def screen_shot_task(device=None):
                         width = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
                         height = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
                         last_time = time.monotonic()
-                        while (dev.mg_screen_thread_running and dev.device_state == 1
+                        while (MG_screen_thread_running and Device_State == 1
                                and config_obj.state_machine == CAMERA_VIDEO_ID
                                and camera_name == config_obj.camera_var):
+                            # 色调应该在0-360之间，摄像头断开时先返回13，然后返回-1。但是有些摄像头不支持该参数始终返回-1
                             cap_hue = cap.get(cv2.CAP_PROP_HUE)
                             if cap_hue == 13:
                                 time.sleep(1)
                                 raise Exception("get CAP_PROP_HUE failed")
-                            if dev.screen_shot_queue.full():
+                            if screen_shot_queue.full():
                                 time.sleep(1.0 / config_obj.fps_var)
+                                # if screen_shot_queue.full():
+                                #     screen_shot_queue.get()
                             suc, frame = cap.read()
                             if not suc:
                                 raise Exception("cap.read() failed")
                             current_time = time.monotonic()
-                            if current_time - last_time > 5.0:
+                            if current_time - last_time > 5.0:  # 解决待机恢复后图像异常问题
                                 raise Exception("cap.read() timeout")
                             last_time = current_time
                             image = Win32_Image(rgb=frame[:, :, [2, 1, 0]], size=(width, height))
                             try:
-                                dev.screen_shot_queue.put((image, {"width": width, "height": height}), timeout=1)
+                                screen_shot_queue.put((image, {"width": width, "height": height}), timeout=1)
                             except queue.Full:
                                 time.sleep(1.0 / config_obj.fps_var)
                                 continue
-                            fps_control(dev)
+
+                            # 精确控制FPS
+                            fps_control()
                     else:
                         raise Exception("capture open failed")
                 finally:
                     cap.release()
             elif isWindows:
                 sct_img = get_window_image(config_obj.select_window_hwnd)
-                dev.screen_shot_queue.put((sct_img, {"width": sct_img.size[0], "height": sct_img.size[1]}), timeout=1)
+                screen_shot_queue.put((sct_img, {"width": sct_img.size[0], "height": sct_img.size[1]}), timeout=1)
             else:
-                sct_img = _thread_mss.grab(cropped_monitor)
-                dev.screen_shot_queue.put((sct_img, cropped_monitor), timeout=1)
+                sct_img = mss_sct.grab(cropped_monitor)  # geezmo: 截屏已优化
+                screen_shot_queue.put((sct_img, cropped_monitor), timeout=1)
         except queue.Full:
             time.sleep(1.0 / config_obj.fps_var)
             continue
         except Exception as e:
             print("获取图像失败 %s" % traceback.format_exc())
+            # 没有图像时显示黑色背景
             image = Win32_Image(rgb=bytes(6), size=(2, 1))
-            dev.screen_shot_queue.put((image, {"width": 2, "height": 1}), timeout=1)
+            screen_shot_queue.put((image, {"width": 2, "height": 1}), timeout=1)
             time.sleep(0.5)
             continue
 
-        fps_control(dev)
+        # 精确控制FPS
+        fps_control()
 
     # stop
     print("Stop screenshot")
 
 
-def fps_control(device=None):
-    if device is None:
-        device = get_current_device()
-    dev = device
+def fps_control():
+    global screenshot_last_limit_time, wait_time, sleep_event  # 用于控制TPS
+    global screen_shot_queue, screenshot_test_time, screenshot_test_frame  # 用于计算串流FPS
+    # 精确控制FPS
     current_monoto_time = time.monotonic()
-    elapse_time = current_monoto_time - dev.screenshot_last_limit_time
-    if elapse_time > 5:
-        dev.wait_time = 0
-        elapse_time = 1.0 / config_obj.fps_var
+    elapse_time = current_monoto_time - screenshot_last_limit_time
+    if elapse_time > 5:  # 有切换，重置参数
+        wait_time = 0
+        elapse_time = 1.0 / config_obj.fps_var  # 第一次不需要wait
 
-    dev.screenshot_last_limit_time = current_monoto_time
-    dev.wait_time += 1.0 / config_obj.fps_var - elapse_time
-    if dev.wait_time > 0:
-        dev.sleep_event.wait(dev.wait_time)
-    elif dev.wait_time < -5:
-        dev.wait_time = 0
+    #     # 这段用于计算串流FPS，不需要可以注释掉（缩进格式就是这样的，不需要改动）
+    #     screenshot_test_frame = 1
+    #     screenshot_test_time = current_monoto_time - 1
+    # elif (screenshot_test_frame % config_obj.fps_var) == 0:
+    #     # 测试用：显示帧率
+    #     real_fps = config_obj.fps_var / (current_monoto_time - screenshot_test_time)
+    #     print("串流FPS: %s" % real_fps)
+    #     screenshot_test_time = current_monoto_time
+    # screenshot_test_frame += 1
+
+    screenshot_last_limit_time = current_monoto_time
+    wait_time += 1.0 / config_obj.fps_var - elapse_time
+    if wait_time > 0:
+        sleep_event.wait(wait_time)  # 精确控制FPS
+    elif wait_time < -5:
+        wait_time = 0
 
 
 # geezmo: 流水线 第二步 处理图像
-def screen_process_task(device=None):
-    global config_obj
-    if device is None:
-        device = get_current_device()
-    dev = device
-    set_current_device(device)
+def screen_process_task():
+    global config_obj, MG_screen_thread_running, Device_State, screen_process_queue, screen_shot_queue
+    global screen_frame_generation
     print("Start screen process")
-    while dev.mg_screen_thread_running:
-        if dev.device_state != 1 or (config_obj.state_machine != SCREEN_PAGE_ID
+    while MG_screen_thread_running:
+        if Device_State != 1 or (config_obj.state_machine != SCREEN_PAGE_ID
                                  and config_obj.state_machine != CAMERA_VIDEO_ID):
-            if not dev.screen_process_queue.empty():
-                time.sleep(0.5)
-                clear_queue(dev.screen_process_queue)
-            time.sleep(0.5)
+            if not screen_process_queue.empty():
+                time.sleep(0.5)  # 等一下再清空，防止页面切换缓慢
+                clear_queue(screen_process_queue)  # 清空缓存，防止显示旧的窗口
+            time.sleep(0.5)  # 不需要截图时
             continue
 
         try:
-            if dev.screen_process_queue.full():
+            if screen_process_queue.full():
                 time.sleep(1.0 / config_obj.fps_var)
 
-            frame_gen = dev.screen_frame_generation
+            # 记录当前帧代际，处理完成后若代际已变(窗口切换)则丢弃
+            frame_gen = screen_frame_generation
+                # if screen_process_queue.full():  # 这儿用于防止队列堆积，但是因为队列长度只有2，所以也不怕，所以注释掉
+                #     screen_process_queue.get()
 
-            sct_img, monitor = dev.screen_shot_queue.get(timeout=2)
+            # 转换图像为rgb格式
+            sct_img, monitor = screen_shot_queue.get(timeout=2)
             if sct_img.rgb is None:
                 # win32gui截图 (PrintWindow API)
                 bgra = sct_img.bgra
@@ -2899,10 +2767,10 @@ def screen_process_task(device=None):
                 continue
 
             # 防御：帧代际校验——处理期间若窗口已切换，丢弃此帧
-            if frame_gen != dev.screen_frame_generation:
+            if frame_gen != screen_frame_generation:
                 continue
 
-            dev.screen_process_queue.put(hexstream, timeout=1)
+            screen_process_queue.put(hexstream, timeout=1)
         except (queue.Empty, queue.Full):
             continue
         except Exception as e:
@@ -2915,49 +2783,49 @@ def screen_process_task(device=None):
 
 # 重启截图线程
 def screenshot_panic(clean_queue=True):
-    dev = get_current_device()
-    if dev is None: return
-    dev.mg_screen_thread_running = False
-    old_shot = dev.screen_shot_thread
-    old_process = dev.screen_process_thread
-    dev.screen_shot_thread = threading.Thread(target=screen_shot_task, args=(dev,), daemon=True)
-    dev.screen_process_thread = threading.Thread(target=screen_process_task, args=(dev,), daemon=True)
+    global MG_screen_thread_running, screen_shot_thread, screen_process_thread, screen_shot_queue, screen_process_queue
+    MG_screen_thread_running = False
+    screen_shot_thread_old = screen_shot_thread
+    screen_process_thread_old = screen_process_thread
+    screen_shot_thread = threading.Thread(target=screen_shot_task, daemon=True)
+    screen_process_thread = threading.Thread(target=screen_process_task, daemon=True)
 
     if clean_queue:
-        clear_queue(dev.screen_shot_queue)
-        clear_queue(dev.screen_process_queue)
-    if old_shot and old_shot.is_alive():
-        old_shot.join()
-    if old_process and old_process.is_alive():
-        old_process.join()
+        clear_queue(screen_shot_queue)  # 清空缓存，防止显示旧的窗口
+        clear_queue(screen_process_queue)  # 清空缓存，防止显示旧的窗口
+    if screen_shot_thread_old.is_alive():
+        screen_shot_thread_old.join()
+    if screen_process_thread_old.is_alive():
+        screen_process_thread_old.join()
 
-    dev.mg_screen_thread_running = True
-    dev.screen_shot_thread.start()
-    dev.screen_process_thread.start()
+    MG_screen_thread_running = True
+    screen_shot_thread.start()
+    screen_process_thread.start()
 
 
 def show_PC_Screen():  # 显示屏幕镜像 / 相机视频
-    dev = get_current_device()
-    if dev is None: return
-    if dev.state_change == 1:
+    global State_change, screen_process_queue, LCD_MAX_X, LCD_MAX_Y, force_lcd_reset
+    if State_change == 1:
         state_change_clear()
-        if not LCD_ADD(0, 0, dev.LCD_MAX_X, dev.LCD_MAX_Y):
+        if not LCD_ADD(0, 0, LCD_MAX_X, LCD_MAX_Y):
+            # LCD_ADD失败(设备断开或响应异常)，跳过本帧并触发LCD重置
             print("show_PC_Screen: LCD_ADD失败, 触发LCD方向重置")
-            dev.force_lcd_reset = True
+            force_lcd_reset = True
             return
 
     try:
-        hexstream = dev.screen_process_queue.get(timeout=0.3)
+        hexstream = screen_process_queue.get(timeout=0.3)  # timeout设置较小，用于增加页面切换效率
     except queue.Empty:
         return
+    # 防御：空数据不发送，防止因上游校验失败传入空bytearray导致显示异常
     if len(hexstream) == 0:
         print("show_PC_Screen: 收到空数据，跳过发送")
         return
     try:
-        SER_rw(hexstream, read=False)
+        SER_rw(hexstream, read=False)  # 发出指令
     except Exception as e:
         print("show_PC_Screen: 发送失败 %s, 触发LCD方向重置" % e)
-        dev.force_lcd_reset = True
+        force_lcd_reset = True
 
 
 def sizeof_fmt(num, suffix="B", base=1024.0):
@@ -2980,67 +2848,71 @@ last_data_half = (0, 0)
 
 def _safe_send_rgb888(rgb888_array):
     """防御性安全发送：将RGB888数组编码为RGB565后发送到LCD，异常时自动恢复LCD方向"""
-    dev = get_current_device()
-    if dev is None: return
+    global force_lcd_reset
     try:
         rgb565 = rgb888_to_rgb565(rgb888_array)
         hex_use = Screen_Date_Process(rgb565.flatten())
         if len(hex_use) == 0:
             print("_safe_send_rgb888: Screen_Date_Process返回空数据, 触发LCD方向重置")
-            dev.force_lcd_reset = True
+            force_lcd_reset = True
             return
         SER_rw(hex_use, read=False)
     except ValueError as e:
         print("_safe_send_rgb888: 编码异常 %s, 触发LCD方向重置" % e)
-        dev.force_lcd_reset = True
+        force_lcd_reset = True
     except Exception as e:
         print("_safe_send_rgb888: 发送异常 %s, 触发LCD方向重置" % traceback.format_exc())
-        dev.force_lcd_reset = True
+        force_lcd_reset = True
 
 
 def show_netspeed(text_color=(255, 128, 0), bar1_color=(235, 139, 139),
                   bar2_color=(146, 211, 217), back_color=(0, 0, 0)):
-    global default_font
-    dev = get_current_device()
-    if dev is None: return
+    global last_refresh_time, netspeed_last_refresh_snetio, netspeed_plot_data
+    global default_font, State_change, wait_time, sleep_event, last_data_half
     current_monoto_time = time.monotonic()
 
     current_snetio = psutil.net_io_counters()
-    if dev.state_change == 1:
+    # geezmo: 预渲染图片，显示网速
+    if State_change == 1:
         state_change_clear()
-        dev.wait_time = 0
-        dev.last_refresh_time = current_monoto_time - 0.001
-        dev.netspeed_last_refresh_snetio = current_snetio
+        wait_time = 0
+        last_refresh_time = current_monoto_time - 0.001  # -0.001防止出现除0错误
+        netspeed_last_refresh_snetio = current_snetio
         LCD_ADD(0, 0, SHOW_WIDTH, SHOW_HEIGHT)
 
-    seconds_elapsed = current_monoto_time - dev.last_refresh_time
+    # 获取网速 bytes/second
+    seconds_elapsed = current_monoto_time - last_refresh_time
 
-    sent_per_second = (current_snetio.bytes_sent - dev.netspeed_last_refresh_snetio.bytes_sent) / seconds_elapsed
-    recv_per_second = (current_snetio.bytes_recv - dev.netspeed_last_refresh_snetio.bytes_recv) / seconds_elapsed
+    # 因为刷新间隔刚好是1秒，所以不需要除时间
+    sent_per_second = (current_snetio.bytes_sent - netspeed_last_refresh_snetio.bytes_sent) / seconds_elapsed
+    recv_per_second = (current_snetio.bytes_recv - netspeed_last_refresh_snetio.bytes_recv) / seconds_elapsed
     new_data_half = (sent_per_second // 2, recv_per_second // 2)
-    sent_per_second = dev.last_data_half[0] + new_data_half[0]
-    recv_per_second = dev.last_data_half[1] + new_data_half[1]
-    dev.last_data_half = new_data_half
-    dev.netspeed_plot_data["sent"].pop(0)
-    dev.netspeed_plot_data["recv"].pop(0)
-    dev.netspeed_plot_data["sent"].append(sent_per_second)
-    dev.netspeed_plot_data["recv"].append(recv_per_second)
+    sent_per_second = last_data_half[0] + new_data_half[0]
+    recv_per_second = last_data_half[1] + new_data_half[1]
+    last_data_half = new_data_half
+    netspeed_plot_data["sent"].pop(0)
+    netspeed_plot_data["recv"].pop(0)
+    netspeed_plot_data["sent"].append(sent_per_second)
+    netspeed_plot_data["recv"].append(recv_per_second)
 
-    dev.last_refresh_time = current_monoto_time
-    dev.netspeed_last_refresh_snetio = current_snetio
+    last_refresh_time = current_monoto_time
+    netspeed_last_refresh_snetio = current_snetio
 
+    # 绘制图片
     im1 = Image.new("RGB", (SHOW_WIDTH, SHOW_HEIGHT), back_color)
     draw = ImageDraw.Draw(im1)
 
+    # 绘制文字
     text = "上传 %9s/s" % sizeof_fmt(sent_per_second)
     draw.text((0, 0), text, fill=text_color, font=default_font)
     text = "下载 %9s/s" % sizeof_fmt(recv_per_second)
     draw.text((0, SHOW_HEIGHT // 2), text, fill=text_color, font=default_font)
 
-    min_draw = 1
+    # 绘图
+    min_draw = 1  # 最小范围
     for start_y, key, color in zip([SHOW_HEIGHT // 4 - 1, SHOW_HEIGHT - SHOW_HEIGHT // 4 - 1],
                                    ["sent", "recv"], [bar1_color, bar2_color]):
-        sent_values = dev.netspeed_plot_data[key]
+        sent_values = netspeed_plot_data[key]
         max_value = max(min_draw, max(sent_values))
 
         x0 = -BAR_WIDTH
@@ -3048,18 +2920,22 @@ def show_netspeed(text_color=(255, 128, 0), bar1_color=(235, 139, 139),
         y1 = IMAGE_HEIGHT + start_y
         percent = IMAGE_HEIGHT / max_value
         for i, sent in enumerate(sent_values[-(SHOW_WIDTH // BAR_WIDTH):]):
+            # Scale the sent value to the image height
             bar_height = percent * sent
             x0 += BAR_WIDTH
             x1 += BAR_WIDTH
             y0 = y1 - bar_height
+
+            # Draw the bar
             draw.rectangle([x0, y0, x1, y1], fill=color)
 
     rgb888 = np.asarray(im1, dtype=np.uint32)
     _safe_send_rgb888(rgb888)
 
-    dev.wait_time += 1 - seconds_elapsed
-    if dev.wait_time > 0:
-        dev.sleep_event.wait(dev.wait_time)
+    # 大约每1秒刷新一次
+    wait_time += 1 - seconds_elapsed
+    if wait_time > 0:
+        sleep_event.wait(wait_time)
 
 
 # 独立线程加载，忽略错误，以免错误影响到程序的其他功能
@@ -3200,19 +3076,19 @@ def draw_text(text, font_size=20, front_color=None, back_color=(0, 0, 0)):
 
 def show_custom_two_rows(text_color=(255, 128, 0), bar1_color=(235, 139, 139),
                          bar2_color=(146, 211, 217), back_color=(0, 0, 0)):
-    global config_obj, hardware_monitor_manager, netspeed_font, custom_plot_data_ref
-    dev = get_current_device()
-    if dev is None: return
+    # geezmo: 预渲染图片，显示两个 hardwaremonitor 里的项目
+    global config_obj, last_refresh_time, State_change, wait_time
+    global custom_plot_data, hardware_monitor_manager, netspeed_font, sleep_event
     current_monoto_time = time.monotonic()
     if hardware_monitor_manager is None or hardware_monitor_manager == 1:
         draw_text("加载中…")
-        dev.sleep_event.wait(0.5)
+        sleep_event.wait(0.5)
         return
 
-    if dev.state_change == 1:
+    if State_change == 1:
         state_change_clear()
-        dev.wait_time = 0
-        dev.last_refresh_time = current_monoto_time
+        wait_time = 0
+        last_refresh_time = current_monoto_time
         LCD_ADD(0, 0, SHOW_WIDTH, SHOW_HEIGHT)
 
     # 获取 libre hardware monitor 数值
@@ -3233,30 +3109,35 @@ def show_custom_two_rows(text_color=(255, 128, 0), bar1_color=(235, 139, 139),
     if recv is None:
         recv = 0
 
-    dev.custom_plot_data["sent"].pop(0)
-    dev.custom_plot_data["sent"].append(sent)
-    dev.custom_plot_data["recv"].pop(0)
-    dev.custom_plot_data["recv"].append(recv)
+    custom_plot_data["sent"].pop(0)
+    custom_plot_data["sent"].append(sent)
+    custom_plot_data["recv"].pop(0)
+    custom_plot_data["recv"].append(recv)
 
-    seconds_elapsed = current_monoto_time - dev.last_refresh_time
-    dev.last_refresh_time = current_monoto_time
+    seconds_elapsed = current_monoto_time - last_refresh_time
+    last_refresh_time = current_monoto_time
 
     # 绘制图片
 
     im1 = Image.new("RGB", (SHOW_WIDTH, SHOW_HEIGHT), back_color)
+
     draw = ImageDraw.Draw(im1)
+
+    # 绘制文字
 
     text = "%-6s %-s" % (config_obj.custom_selected_displayname[0][:8], sent_text)
     draw.text((0, 0), text, fill=text_color, font=netspeed_font)
     text = "%-6s %-s" % (config_obj.custom_selected_displayname[1][:8], recv_text)
     draw.text((0, SHOW_HEIGHT // 2), text, fill=text_color, font=netspeed_font)
 
+    # 绘图
+    # 决定最小范围, 需大于0
     min_max = [0.001, 0.001]
     for start_y, key, color, minmax_it in zip([SHOW_HEIGHT // 4 - 1, SHOW_HEIGHT - SHOW_HEIGHT // 4 - 1],
                                               ["sent", "recv"], [bar1_color, bar2_color], min_max):
-        sent_values = dev.custom_plot_data[key]
+        sent_values = custom_plot_data[key]
 
-        min_value = min(sent_values)
+        min_value = min(sent_values)  # 防止显示太满
         max_value = max(minmax_it, min_value * 2, max(sent_values))
 
         x0 = -BAR_WIDTH
@@ -3264,18 +3145,22 @@ def show_custom_two_rows(text_color=(255, 128, 0), bar1_color=(235, 139, 139),
         y1 = IMAGE_HEIGHT + start_y
         percent = IMAGE_HEIGHT / max_value
         for i, sent in enumerate(sent_values[-(SHOW_WIDTH // BAR_WIDTH):]):
+            # Scale the sent value to the image height
             bar_height = percent * sent
             x0 += BAR_WIDTH
             x1 += BAR_WIDTH
             y0 = y1 - bar_height
+
+            # Draw the bar
             draw.rectangle([x0, y0, x1, y1], fill=color)
 
     rgb888 = np.asarray(im1, dtype=np.uint32)
     _safe_send_rgb888(rgb888)
 
-    dev.wait_time += 1 - seconds_elapsed
-    if dev.wait_time > 0:
-        dev.sleep_event.wait(dev.wait_time)
+    # 大约每1秒刷新一次
+    wait_time += 1 - seconds_elapsed
+    if wait_time > 0:
+        sleep_event.wait(wait_time)
 
 
 def get_full_custom_im(update_sensors=True):
@@ -3285,9 +3170,7 @@ def get_full_custom_im(update_sensors=True):
         update_sensors: True=更新硬件传感器(daemon线程LCD显示用),
                         False=跳过传感器更新(UI线程预览用,避免并发问题)
     """
-    global config_obj, full_custom_error, mini_mark_parser, hardware_monitor_manager
-    dev = get_current_device()
-    custom_render_lock = dev.custom_render_lock if dev else threading.Lock()
+    global config_obj, full_custom_error, mini_mark_parser, hardware_monitor_manager, custom_render_lock
 
     # 防御：锁保护，防止UI线程(预览)与daemon线程(LCD渲染)并发执行
     # UI线程使用非阻塞获取，获取不到直接返回占位图
@@ -3358,31 +3241,33 @@ def get_full_custom_im(update_sensors=True):
 
 
 def show_full_custom():
-    global hardware_monitor_manager
-    dev = get_current_device()
-    if dev is None: return
+    # geezmo: 预渲染图片，显示两个 hardwaremonitor 里的项目
+    global last_refresh_time, State_change, wait_time, hardware_monitor_manager, sleep_event
     current_monoto_time = time.monotonic()
     if hardware_monitor_manager is None or hardware_monitor_manager == 1:
         draw_text("加载中…")
-        dev.sleep_event.wait(0.5)
+        sleep_event.wait(0.5)
         return
 
-    if dev.state_change == 1:
+    if State_change == 1:
         state_change_clear()
-        dev.wait_time = 0
-        dev.last_refresh_time = current_monoto_time
+        wait_time = 0
+        last_refresh_time = current_monoto_time
         LCD_ADD(0, 0, SHOW_WIDTH, SHOW_HEIGHT)
 
-    seconds_elapsed = current_monoto_time - dev.last_refresh_time
-    dev.last_refresh_time = current_monoto_time
+    seconds_elapsed = current_monoto_time - last_refresh_time
+
+    last_refresh_time = current_monoto_time
 
     im1 = get_full_custom_im()
+
     rgb888 = np.asarray(im1, dtype=np.uint32)
     _safe_send_rgb888(rgb888)
 
-    dev.wait_time += 1 - seconds_elapsed
-    if dev.wait_time > 0:
-        dev.sleep_event.wait(dev.wait_time)
+    # 大约每1秒刷新一次
+    wait_time += 1 - seconds_elapsed
+    if wait_time > 0:
+        sleep_event.wait(wait_time)
 
 
 # now 是否立即保存
@@ -3482,9 +3367,6 @@ class sys_config(object):
 def Detect_LCD_Size():
     """自动检测小屏幕尺寸（尝试从设备SFR读取LCD分辨率）"""
     global LCD_MAX_X, LCD_MAX_Y
-    dev = get_current_device()
-    if dev is None:
-        return False
 
     lcd_w_names = [b'Lcd_X', b'LCD_X', b'LCD_W', b'MSN_LCD_W', b'LCD_Width',
                    b'LCD_X_Max', b'LCD_Max_X', b'LCD_Size_X', b'LCD_Pixel_X', b'LCD_Col']
@@ -3496,13 +3378,13 @@ def Detect_LCD_Size():
 
     print('--- 开始自动检测LCD屏幕分辨率 ---')
 
+    # 先打印所有可用的MSN数据名称，并建立名称→条目映射
     name_map = {}
     try:
-        if dev.msn_data is not None:
-            data_names = [d.name.decode('utf-8', errors='replace') for d in dev.msn_data]
-            print('设备SFR数据名称列表: ' + str(data_names))
-            for d in dev.msn_data:
-                name_map[bytes(d.name)] = d
+        data_names = [d.name.decode('utf-8', errors='replace') for d in My_MSN_Data]
+        print('设备SFR数据名称列表: ' + str(data_names))
+        for d in My_MSN_Data:
+            name_map[bytes(d.name)] = d  # bytearray不可哈希，转为bytes
     except (NameError, TypeError, AttributeError):
         print('设备SFR数据名称列表: 设备未连接，无法获取')
 
@@ -3558,7 +3440,10 @@ def Detect_LCD_Size():
     # 根据版本号推断
     if detected_w == 0 or detected_h == 0:
         print('  SFR命名检测未找到LCD尺寸,尝试版本推断...')
-        my_device = dev.msn_device
+        try:
+            my_device = My_MSN_Device
+        except NameError:
+            my_device = None
         if my_device is not None:
             dev_ver = my_device.version
             print('  设备版本号: MSN' + str(dev_ver).zfill(2))
@@ -3581,11 +3466,6 @@ def Detect_LCD_Size():
     if detected_w > 0 and detected_h > 0:
         LCD_MAX_X = detected_w
         LCD_MAX_Y = detected_h
-        # 同步到当前设备
-        dev = get_current_device()
-        if dev is not None:
-            dev.LCD_MAX_X = detected_w
-            dev.LCD_MAX_Y = detected_h
         msg = '屏幕分辨率: ' + str(LCD_MAX_X) + 'x' + str(LCD_MAX_Y) + ' (自动检测)'
         print(msg)
         insert_text_message(msg)
@@ -3601,15 +3481,13 @@ def ReDetect_LCD_Size():
     """重新检测LCD分辨率"""
     insert_text_message('正在重新检测屏幕分辨率...')
     Detect_LCD_Size()
-    dev = get_current_device()
-    if dev is not None:
-        dev.state_change = 1
+    global State_change
+    State_change = 1
 
 
 def Set_LCD_Size_Manual(*args):
     """手动设置LCD分辨率"""
-    global LCD_MAX_X, LCD_MAX_Y, lcd_size_var
-    dev = get_current_device()
+    global LCD_MAX_X, LCD_MAX_Y, State_change, lcd_size_var
     size_str = lcd_size_var.get()
     size_map = {
         '160x80 (默认)': (160, 80),
@@ -3620,26 +3498,30 @@ def Set_LCD_Size_Manual(*args):
     }
     if size_str in size_map:
         LCD_MAX_X, LCD_MAX_Y = size_map[size_str]
-        if dev is not None:
-            dev.LCD_MAX_X = LCD_MAX_X
-            dev.LCD_MAX_Y = LCD_MAX_Y
-            dev.state_change = 1
+        State_change = 1
         msg = '手动设置屏幕分辨率: ' + str(LCD_MAX_X) + 'x' + str(LCD_MAX_Y)
         print(msg)
         insert_text_message(msg)
 
 
 def Cleanup_LCD_On_Exit():
-    """程序退出前清理所有LCD屏幕"""
-    for dev in list(all_devices.values()):
-        dev.cleanup()
+    """程序退出前清理LCD屏幕，避免残留花屏"""
+    global Device_State, LCD_MAX_X, LCD_MAX_Y
+    try:
+        if Device_State == 1:
+            print('正在清除LCD屏幕...')
+            LCD_Color_set(0, 0, LCD_MAX_X, LCD_MAX_Y, BLACK)
+            time.sleep(0.1)
+            print('LCD屏幕已清除')
+    except:
+        pass
 
 
 # ==================== UI 界面 ====================
 
 def UI_Page():  # 进行图像界面显示
     global config_obj, Text1, interval_var, all_windows, all_cameras, windows_combobox
-    global Label1, Label3, Label4, Label5, Label6, PAGE_ID
+    global State_change, Label1, Label3, Label4, Label5, Label6, PAGE_ID
 
     config_obj = load_config()
     pad_scale_xy = scale_factor / 100.0
@@ -3657,54 +3539,6 @@ def UI_Page():  # 进行图像界面显示
         iconimage = MiniMark.load_image("resource/icon.ico")
     defaulticon = ImageTk.PhotoImage(iconimage)
     window.wm_iconphoto(True, defaulticon)
-
-    # ==================== 多设备选择栏 ====================
-    device_bar = ttk.Frame(window)
-    device_bar.pack(side=tk.TOP, fill=tk.X, padx=pad_scale_xy5 * 2, pady=(pad_scale_xy5, 0))
-    
-    ttk.Label(device_bar, text="已连接设备:").pack(side=tk.LEFT, padx=(0, pad_scale_xy5))
-    
-    device_selector_var = tk.StringVar(window, "屏幕1")
-    device_selector = ttk.Combobox(device_bar, textvariable=device_selector_var, 
-                                   values=["屏幕1"], state="readonly", width=10)
-    device_selector.pack(side=tk.LEFT, padx=(0, pad_scale_xy5))
-    
-    device_count_label = ttk.Label(device_bar, text="(0个设备)", foreground="gray")
-    device_count_label.pack(side=tk.LEFT)
-    
-    def refresh_device_list():
-        """刷新设备列表下拉框"""
-        connected = [d for d in all_devices.values() if d.device_state == 1]
-        names = [d.device_name for d in connected] if connected else ["屏幕1"]
-        device_selector["values"] = names
-        device_count_label.config(text="(%d个设备)" % len(connected))
-        if device_selector_var.get() not in names:
-            device_selector_var.set(names[0])
-    
-    def on_device_select(event=None):
-        """切换当前活跃设备"""
-        global config_obj
-        name = device_selector_var.get()
-        for dev in all_devices.values():
-            if dev.device_name == name and dev.device_state == 1:
-                set_current_device(dev)
-                # 同步该设备的配置到UI
-                _primary_device = dev
-                sync_page_combobox()
-                sync_lcd_combobox()
-                # 更新镜像窗口下拉框
-                desc = get_hwnd_desc(config_obj.select_window_hwnd)
-                if desc:
-                    windows_combobox.set(desc)
-                break
-    
-    device_selector.bind("<<ComboboxSelected>>", on_device_select)
-    
-    refresh_btn = ttk.Button(device_bar, text="刷新", width=6, command=refresh_device_list)
-    refresh_btn.pack(side=tk.LEFT, padx=(pad_scale_xy5, 0))
-    
-    # 初始刷新
-    refresh_device_list()
 
     # 创建标签页容器（Notebook）
     notebook = ttk.Notebook(window)
@@ -3724,11 +3558,11 @@ def UI_Page():  # 进行图像界面显示
 
     def change_anti_burn(*args):
         global config_obj
-        dev = get_current_device()
         config_obj.anti_burn = anti_burn_var.get()
-        if config_obj.anti_burn == 0 and dev:
-            dev.burn_offset_x = 0
-            dev.burn_offset_y = 0
+        if config_obj.anti_burn == 0:
+            global burn_offset_x, burn_offset_y
+            burn_offset_x = 0
+            burn_offset_y = 0
         save_config()
 
     anti_burn_var = tk.IntVar(settings_frame, 0)
@@ -4254,17 +4088,15 @@ def UI_Page():  # 进行图像界面显示
     # 创建颜色滑块
 
     def update_label_color(r1, g1, b1):
-        global config_obj
-        dev = get_current_device()
+        global config_obj, color_use, State_change
         if Label2:
             color_La = "#{:02x}{:02x}{:02x}".format(r1, g1, b1)
             Label2.config(bg=color_La)
-        dev_color = ((r1 & 0xF8) << 8) | ((g1 & 0xFC) << 3) | ((b1 & 0xF8) >> 3)
-        if dev is not None:
-            dev.color_use = dev_color
+        # color_use = rgb888_to_rgb565(np.asarray((((r1, g1, b1),),), dtype=np.uint32))[0][0]
+        color_use = ((r1 & 0xF8) << 8) | ((g1 & 0xFC) << 3) | ((b1 & 0xF8) >> 3)
         save_config()
-        if dev is not None and config_obj.state_machine in [PCTIME_PAGE_ID, STATE_PAGE_ID]:
-            dev.state_change = 1
+        if config_obj.state_machine in [PCTIME_PAGE_ID, STATE_PAGE_ID]:
+            State_change = 1
 
     def update_label_color_red():
         global config_obj
@@ -4561,15 +4393,15 @@ def UI_Page():  # 进行图像界面显示
         combo_configure(event)
 
     def update_select_camera(event):
-        global config_obj, all_cameras
-        dev = get_current_device()
+        global config_obj, all_cameras, State_change, sleep_event, screen_shot_queue, screen_process_queue
         event.widget.selection_clear()
         camera_id = event.widget.get()
         if camera_id != config_obj.camera_var:
             config_obj.camera_var = camera_id
-            if config_obj.state_machine == CAMERA_VIDEO_ID and dev:
-                clear_queue(dev.screen_shot_queue)
-                clear_queue(dev.screen_process_queue)
+            if config_obj.state_machine == CAMERA_VIDEO_ID:
+                # screenshot_panic()  # 重启截图线程。这是标准流程，但是多耗资源，改为如下只清空队列
+                clear_queue(screen_shot_queue)  # 清空缓存，防止显示旧的窗口
+                clear_queue(screen_process_queue)  # 清空缓存，防止显示旧的窗口
                 state_change_set()
             else:
                 save_config()
@@ -4606,20 +4438,20 @@ def UI_Page():  # 进行图像界面显示
         combo_configure(event)
 
     def update_select_hwnd(event):
-        global config_obj, all_windows
-        dev = get_current_device()
+        global config_obj, all_windows, State_change, sleep_event, screen_shot_queue, screen_process_queue
+        global screen_frame_generation
         event.widget.selection_clear()
         select_str = event.widget.get()
         select_window_hwnd, _ = all_windows.get(select_str)
         if select_window_hwnd != config_obj.select_window_hwnd:
             config_obj.select_window_hwnd = select_window_hwnd
-            if config_obj.state_machine == SCREEN_PAGE_ID and dev:
-                dev.screen_frame_generation += 1
-                clear_queue(dev.screen_shot_queue)
-                clear_queue(dev.screen_process_queue)
-                time.sleep(0.05)
-                clear_queue(dev.screen_shot_queue)
-                clear_queue(dev.screen_process_queue)
+            if config_obj.state_machine == SCREEN_PAGE_ID:
+                # 递增帧代际，使正在处理中的旧窗口帧被丢弃
+                screen_frame_generation += 1
+                # 双重清空：先清一次，等0.05秒让正在编码的帧完成，再清一次
+                clear_queue(screen_shot_queue)
+                clear_queue(screen_process_queue)
+                time.sleep(0.05)  # 等待screen_process_task完成当前帧编码
                 clear_queue(screen_shot_queue)
                 clear_queue(screen_process_queue)
                 state_change_set()
@@ -4677,16 +4509,9 @@ def UI_Page():  # 进行图像界面显示
             hide_to_tray()  # 命令行启动时设置隐藏
 
     # 参数全部获取后再启动截图线程
-    if _primary_device:
-        _primary_device.screen_shot_thread.start()
-        _primary_device.screen_process_thread.start()
+    screen_shot_thread.start()
+    screen_process_thread.start()
     manager_thread.start()
-    
-    # 定期刷新设备列表
-    def _periodic_refresh():
-        refresh_device_list()
-        window.after(2000, _periodic_refresh)
-    window.after(2000, _periodic_refresh)
 
     # 进入消息循环
     window.mainloop()
@@ -4710,18 +4535,16 @@ class MSN_Data:
 
 # Device_State_Labelen: 0无修改，1窗口已隐藏，2窗口已恢复有修改，3窗口已隐藏有修改
 def set_device_state(state):
-    """全局设备状态更新（用于UI标签），实际操作当前设备"""
-    global Label1, Device_State_Labelen
-    device = get_current_device()
-    if device is None:
-        return
-    device.set_device_state(state)
-    
+    global ser, Label1, Device_State, Device_State_Labelen
+    if Device_State != state:
+        Device_State = state
+        if Device_State == 0:
+            ser.close()  # 先将异常的串口连接关闭，防止无法打开
     if Device_State_Labelen == 2:
         Device_State_Labelen = 0
     if Device_State_Labelen == 0:
         try:
-            if device.device_state == 1:
+            if Device_State == 1:
                 Label1.config(text="设备已连接", fg="white", bg="green")
             else:
                 Label1.config(text="设备未连接", fg="white", bg="red")
@@ -4732,13 +4555,9 @@ def set_device_state(state):
 
 
 def Get_MSN_Device(port_list):  # 尝试获取MSN设备
-    global config_file, config_obj
-    device = get_current_device()
-    if device is None:
-        return
-    
-    if device.ser is not None and device.ser.is_open:
-        device.ser.close()
+    global config_file, config_obj, ADC_det, ser, State_change, LCD_Change_now, My_MSN_Device, My_MSN_Data
+    if ser is not None and ser.is_open:
+        ser.close()  # 先将异常的串口连接关闭，防止无法打开
 
     # 对串口进行监听，确保其为MSN设备
     My_MSN_Device = None
@@ -4746,16 +4565,16 @@ def Get_MSN_Device(port_list):  # 尝试获取MSN设备
     for port in port_list:
         try:  # 尝试打开串口
             # 初始化串口连接,初始使用
-            device.ser = serial.Serial(port.device, 115200, timeout=5.0, write_timeout=5.0, inter_byte_timeout=0.1)
+            ser = serial.Serial(port.device, 115200, timeout=5.0, write_timeout=5.0, inter_byte_timeout=0.1)
             recv = SER_Read()
             if recv == 0:
                 print("未接收到设备响应，打开失败：%s" % port.device)
-                device.ser.close()
+                ser.close()  # 将串口关闭，防止下次无法打开
                 continue  # 尝试下一个端口
         except Exception as e:  # 出现异常
             print("%s 无法打开，请检查是否被其他程序占用: %s" % (port.device, e))
-            if device.ser is not None and device.ser.is_open:
-                device.ser.close()
+            if ser is not None and ser.is_open:
+                ser.close()  # 将串口关闭，防止下次无法打开
             time.sleep(0.2)  # 防止频繁重试
             continue  # 尝试下一个端口
         # 逐字解析编码，收到6个字符以上数据时才进行解析
@@ -4771,11 +4590,16 @@ def Get_MSN_Device(port_list):  # 尝试获取MSN设备
             # 确保为MSN设备
             if recv[-6:] == hex_use:
                 PAGE_ID_tmp = {
-                    GIF_PAGE_ID: "动图", PCTIME_PAGE_ID: "时间",
-                    PHOTO_PAGE_ID: "单个相册图片", SCREEN_PAGE_ID: "屏幕镜像",
-                    CAMERA_VIDEO_ID: "相机视频", STATE_PAGE_ID: "电脑CPU/内存/磁盘/电池使用率监控",
-                    NETSPEED_PAGE_ID: "网络流量监控", CUSTOM1_PAGE_ID: "自定义显示两项图表",
-                    CUSTOM2_PAGE_ID: "自定义显示多项数值", ABOUT_PAGE_ID: "关于",
+                    GIF_PAGE_ID: "动图",
+                    PCTIME_PAGE_ID: "时间",
+                    PHOTO_PAGE_ID: "单个相册图片",
+                    SCREEN_PAGE_ID: "屏幕镜像",
+                    CAMERA_VIDEO_ID: "相机视频",
+                    STATE_PAGE_ID: "电脑CPU/内存/磁盘/电池使用率监控",
+                    NETSPEED_PAGE_ID: "网络流量监控",
+                    CUSTOM1_PAGE_ID: "自定义显示两项图表",
+                    CUSTOM2_PAGE_ID: "自定义显示多项数值",
+                    ABOUT_PAGE_ID: "关于",
                 }
                 if config_obj.state_machine < len(PAGE_ID_tmp):
                     page_index = config_obj.state_machine
@@ -4784,7 +4608,6 @@ def Get_MSN_Device(port_list):  # 尝试获取MSN设备
 
                 # 对MSN设备进行登记
                 My_MSN_Device = MSN_Device(port.device, msn_version)
-                device.com_port = port.device
                 print(get_formatted_time_string(datetime.now()), end=' ')
                 if port.location is None:
                     insert_text_message("连接成功：%s\n当前页面：%s\n显示方向：%s\n配置文件：%s" % (
@@ -4799,37 +4622,32 @@ def Get_MSN_Device(port_list):  # 尝试获取MSN设备
 
         if My_MSN_Device is None:
             print("设备校验失败：%s" % port.device)
-            device.ser.close()
+            ser.close()  # 将串口关闭，防止下次无法打开
         else:
             break  # 连接成功即退出循环
 
     if My_MSN_Device is None:  # 没有找到可用的设备
         return
 
-    device.ser.reset_input_buffer()
-    device.ser.reset_output_buffer()
+    ser.reset_input_buffer()
+    ser.reset_output_buffer()
     My_MSN_Data = Read_M_SFR_Data(256)  # 读取u8在0x0100之后的128字节
     Print_MSN_Data(My_MSN_Data)  # 解析字节中的数据格式
-    device.msn_device = My_MSN_Device
-    device.msn_data = My_MSN_Data
-    device.lcd_change_now = config_obj.lcd_change
-    LCD_State(device.lcd_change_now)  # 配置显示方向
-    device.state_change = 1  # 状态发生变化
+    # Read_MSN_Data(My_MSN_Data)  # 从设备读取更详细的数据，如序列号等
+    LCD_Change_now = config_obj.lcd_change
+    LCD_State(LCD_Change_now)  # 配置显示方向
+    State_change = 1  # 状态发生变化
     set_device_state(1)  # 可以正常连接
     # 自动检测LCD屏幕分辨率
     Detect_LCD_Size()
-    # 初始化numpy数组（依赖LCD尺寸）
-    device.init_arrays()
     # 配置按键阈值
-    device.ADC_det = (Read_ADC_CH(9) + Read_ADC_CH(9) + Read_ADC_CH(9)) // 3
-    device.ADC_det = device.ADC_det - 250  # 根据125的阈值判断是否被按下
+    ADC_det = (Read_ADC_CH(9) + Read_ADC_CH(9) + Read_ADC_CH(9)) // 3
+    ADC_det = ADC_det - 250  # 根据125的阈值判断是否被按下
 
 
 def MSN_Device_1_State_machine():  # MSN设备1的循环状态机
-    global config_obj, Label3, write_path_index, Img_data_use
-    device = get_current_device()
-    if device is None:
-        return
+    global config_obj, State_change, LCD_Change_now, Label3, force_lcd_reset
+    global write_path_index, Img_data_use, color_use, last_lcd_watchdog_time
 
     if write_path_index != 0:
         if write_path_index == 1:
@@ -4844,28 +4662,28 @@ def MSN_Device_1_State_machine():  # MSN设备1的循环状态机
         write_path_index = 0
         state_change_set(save=False)
 
-    # 定期看门狗：每30秒强制重置LCD方向
+    # 定期看门狗：每30秒强制重置LCD方向，防止任何原因导致的硬件状态漂移
     now_watchdog = time.monotonic()
-    if now_watchdog - device.last_lcd_watchdog_time > 30:
-        device.force_lcd_reset = True
-        device.last_lcd_watchdog_time = now_watchdog
+    if now_watchdog - last_lcd_watchdog_time > 30:
+        force_lcd_reset = True
+        last_lcd_watchdog_time = now_watchdog
 
-    # 防御：切页/看门狗/方向不一致时，强制重置LCD方向
-    if device.force_lcd_reset or device.lcd_change_now != config_obj.lcd_change:
-        device.lcd_change_now = config_obj.lcd_change
-        if device.device_state == 1:
-            LCD_State(device.lcd_change_now)
-        device.force_lcd_reset = False
+    # 防御：切页/看门狗/检测到方向不一致时，强制重置LCD方向
+    if force_lcd_reset or LCD_Change_now != config_obj.lcd_change:
+        LCD_Change_now = config_obj.lcd_change
+        if Device_State == 1:
+            LCD_State(LCD_Change_now)  # 配置显示方向 + 清屏
+        force_lcd_reset = False
 
     try:
         if config_obj.state_machine == PCTIME_PAGE_ID:
-            show_PC_time(device.color_use)
+            show_PC_time(color_use)  # 展示时钟
         elif config_obj.state_machine == PHOTO_PAGE_ID:
-            show_Photo()
+            show_Photo()  # 展示单张相册图像
         elif config_obj.state_machine == SCREEN_PAGE_ID or config_obj.state_machine == CAMERA_VIDEO_ID:
-            show_PC_Screen()
+            show_PC_Screen()  # 屏幕串流 和 相机视频
         elif config_obj.state_machine == STATE_PAGE_ID:
-            show_PC_state(device.color_use, BLACK)
+            show_PC_state(color_use, BLACK)  # 展示CPU/内存/磁盘/电池 使用率
         elif config_obj.state_machine == NETSPEED_PAGE_ID:
             rgb_tuple = (config_obj.text_color_r, config_obj.text_color_g, config_obj.text_color_b)
             show_netspeed(text_color=rgb_tuple, bar1_color=bar_colors[0], bar2_color=bar_colors[1],
@@ -4877,21 +4695,20 @@ def MSN_Device_1_State_machine():  # MSN设备1的循环状态机
         elif config_obj.state_machine == CUSTOM2_PAGE_ID:
             show_full_custom()
         elif config_obj.state_machine == ABOUT_PAGE_ID:
-            show_about()
-        else:
-            show_gif()
+            show_about()  # 显示关于页面
+        else:  # default GIF_PAGE_ID
+            show_gif()  # 展示36张动图
     except Exception as e:
+        # 防御：任何页面渲染异常都不应导致程序崩溃，记录日志并尝试恢复
         print("MSN_Device_1_State_machine: 页面异常 %s" % traceback.format_exc())
-        device.force_lcd_reset = True
+        force_lcd_reset = True  # 下次循环强制重置LCD方向
         time.sleep(0.5)
 
 
 def show_about():
     """在LCD屏幕上显示关于信息"""
-    global config_obj
-    dev = get_current_device()
-    if dev is None: return
-    if dev.state_change == 1:
+    global config_obj, State_change, sleep_event
+    if State_change == 1:
         state_change_clear()
         LCD_ADD(0, 0, SHOW_WIDTH, SHOW_HEIGHT)
 
@@ -4923,7 +4740,7 @@ def show_about():
     rgb888 = np.asarray(im1, dtype=np.uint32)
     _safe_send_rgb888(rgb888)
 
-    dev.sleep_event.wait(3)  # 静态页面，3秒刷新一次即可
+    sleep_event.wait(3)  # 静态页面，3秒刷新一次即可
 
 
 def get_formatted_time_string(time):
@@ -4944,106 +4761,59 @@ def load_task():
 
 
 def daemon_task():
-    global Device_State_Labelen
-    known_com_ports = set()  # 已连接的COM端口集合
+    global Device_State, Device_State_Labelen, sleep_event
+
+    wch_port_list_old = None
     retry_times = 0
-    last_scan_time = 0
     print("Start daemon")
     while MG_daemon_running:
         try:
-            # 多设备模式：遍历所有已连接设备，各自运行状态机
-            for dev_id, device in list(all_devices.items()):
-                if device.device_state == 1:
-                    set_current_device(device)
-                    MSN_Device_1_State_machine()
-            
-            # 检查是否有已连接设备
-            has_connected = any(d.device_state == 1 for d in all_devices.values())
-            if has_connected:
-                if _primary_device:
-                    set_current_device(_primary_device)
-                # 定期重新扫描（可能有新设备插入）
-                now = time.monotonic()
-                if now - last_scan_time < 5:
-                    continue
-                last_scan_time = now
-            
-            # 无设备连接或定期扫描：检测新设备
             if Device_State_Labelen == 2:
-                if _primary_device:
-                    set_current_device(_primary_device)
-                set_device_state(_primary_device.device_state if _primary_device else 0)
+                set_device_state(Device_State)
 
-            if _primary_device is None:
-                _init_single_device()
-            
-            port_list = list(serial.tools.list_ports.comports())
-            wch_port_list = [x for x in port_list if x.vid == 0x1a86]
-
-            # 检测新设备：对每个未连接的WCH端口尝试连接
-            new_device_found = False
-            for port in wch_port_list:
-                port_key = port.device
-                if port_key in known_com_ports:
-                    continue  # 已连接过的端口，跳过
-                
-                # 尝试连接此端口
-                if _primary_device.device_state == 0 or _primary_device.com_port != port_key:
-                    # 创建临时设备用于检测
-                    if not has_connected:
-                        set_current_device(_primary_device)
-                        Get_MSN_Device([port])
-                        if _primary_device.device_state == 1:
-                            known_com_ports.add(port_key)
-                            _primary_device.com_port = port_key
-                            # 启动截图线程
-                            _primary_device.start_threads()
-                            new_device_found = True
-                    else:
-                        # 已有设备连接，为新设备创建新的ScreenDevice
-                        new_idx = len(all_devices)
-                        new_dev = ScreenDevice(new_idx, port_key)
-                        all_devices[new_idx] = new_dev
-                        set_current_device(new_dev)
-                        Get_MSN_Device([port])
-                        if new_dev.device_state == 1:
-                            known_com_ports.add(port_key)
-                            new_dev.init_arrays()
-                            new_dev.start_threads()
-                            new_device_found = True
-                            insert_text_message("新设备连接: %s → 屏幕%d" % (port_key, new_idx + 1))
-                        else:
-                            del all_devices[new_idx]
-
-            if new_device_found:
-                retry_times = 0
+            if Device_State == 1:  # 已检测到设备
+                MSN_Device_1_State_machine()
                 continue
 
-            # 没有新设备，也没有已连接设备
-            if not has_connected:
-                if wch_port_list:
-                    retry_times += 1
-                    if retry_times >= 5:
-                        if _primary_device.sleep_event.isSet():
-                            _primary_device.sleep_event.clear()
-                        _primary_device.sleep_event.wait(1)
-                        if (retry_times % 5) != 0:
-                            continue
-                else:
-                    if retry_times == 0:
-                        print(get_formatted_time_string(datetime.now()), end=' ')
-                        insert_text_message("没有找到可用的设备，请确认设备是否正确连接")
-                    retry_times += 1
-                    if _primary_device.sleep_event.isSet():
-                        _primary_device.sleep_event.clear()
-                    _primary_device.sleep_event.wait(0.5)
-        except Exception as e:
-            print("Exception in daemon_task, %s" % traceback.format_exc())
-            if _primary_device:
-                if _primary_device.sleep_event.isSet():
-                    _primary_device.sleep_event.clear()
-                _primary_device.sleep_event.wait(1)
+            # 尝试获取MSN设备
+            port_list = list(serial.tools.list_ports.comports())  # 查询所有串口
+            # geezmo: 如果有 VID = 0x1a86 （沁恒）的，优先考虑这些设备，防止访问其他串口出错
+            # 如果没有这些设备，或者 pyserial 没有提供信息，则不管
+            wch_port_list = [x for x in port_list if x.vid == 0x1a86]
 
+            if wch_port_list != wch_port_list_old:
+                wch_port_list_old = wch_port_list
+                retry_times = 0
+            else:
+                retry_times += 1
+                if retry_times >= 5:
+                    if sleep_event.isSet():
+                        sleep_event.clear()
+                    sleep_event.wait(1)  # 防止频繁重试
+                    if (retry_times % 5) != 0:  # 减缓重试频率，5秒重试一次
+                        continue
+
+            Get_MSN_Device(wch_port_list)
+            if Device_State != 0:
+                retry_times = 0
+                continue
+            # 这儿去掉对VID非0x1a86的检测，因为很多反馈对蓝牙有影响
+            # not_wch_port_list = [x for x in port_list if x.vid != 0x1a86]
+            # Get_MSN_Device(not_wch_port_list)
+            # if Device_State != 0:
+            #     continue
+            print(get_formatted_time_string(datetime.now()), end=' ')
+            insert_text_message("没有找到可用的设备，请确认设备是否正确连接")
+            if sleep_event.isSet():
+                sleep_event.clear()
+            sleep_event.wait(0.2)  # 防止频繁重试
+        except Exception as e:  # 出现非预期异常
+            print("Exception in daemon_task, %s" % traceback.format_exc())
+            if sleep_event.isSet():
+                sleep_event.clear()
+            sleep_event.wait(1)  # 防止频繁重试
+
+    # stop
     print("Stop daemon")
 
 
@@ -5052,22 +4822,17 @@ def daemon_task():
 # 双击：上一页
 # 长按：切换方向
 def manage_task():
-    dev = get_current_device()
-    if dev is None:
-        dev = _primary_device
-    if dev is None:
-        return
-    ADC_det = dev.ADC_det  # 本地引用，方便函数内使用
+    global ADC_det
     now = time.monotonic()
-    key_on = 0
-    check_limit = 2.0
-    key_on_limit = 0.5
-    double_key_limit = 0.7
+    key_on = 0  # 按键是否按下
+    check_limit = 2.0  # 持续检测阈值
+    key_on_limit = 0.5  # 长按阈值
+    double_key_limit = 0.7  # 双击间隔时长，同时影响单击反应时间
     last_check_time = now - check_limit
-    first_press_time = 0
+    first_press_time = 0  # 按下起始时间，未按下0，按下且已触发事件1
     print("Start manager")
     while MG_daemon_running:
-        if dev.device_state == 0:
+        if Device_State == 0:
             time.sleep(0.3)
             continue
 
@@ -5076,53 +4841,50 @@ def manage_task():
             ADC_ch = Read_ADC_CH(9)
             if ADC_ch == 0:
                 continue
-            if ADC_ch < ADC_det:
+            if ADC_ch < ADC_det:  # 按键按下
                 if Read_ADC_CH(9) > ADC_det or Read_ADC_CH(9) > ADC_det:
-                    continue
+                    continue  # 没有连续3次则忽略
 
-                if ADC_det - ADC_ch > 900:
+                if ADC_det - ADC_ch > 900:  # 阈值过大，校正检测阈值
                     ADC_det = ADC_ch - 250
-                    dev.ADC_det = ADC_det
                     print("校正按下检测阈值为：%d" % ADC_det)
                     continue
 
-                if key_on == 0:
-                    ADC_det += 150
+                if key_on == 0:  # 第一次检测到按下
+                    ADC_det += 150  # 增加后续检测的灵敏度
                     key_on = 1
                     if first_press_time != 0:
                         if now - first_press_time < double_key_limit:
-                            Page_Down()
-                            first_press_time = 1
-                    else:
+                            Page_Down()  # 双击上一页
+                            first_press_time = 1  # 已触发事件
+                    else:  # 第一次按下
                         first_press_time = now
                 else:
                     if first_press_time != 1:
                         if first_press_time != 0:
                             if now - first_press_time > key_on_limit:
-                                LCD_Change()
-                                first_press_time = 1
+                                LCD_Change()  # 长按切换方向
+                                first_press_time = 1  # 已触发事件
                         else:
                             first_press_time = now
-            else:
-                if key_on != 0:
+            else:  # 按键放开
+                if key_on != 0:  # 第一次检测到放开
                     if Read_ADC_CH(9) < ADC_det or Read_ADC_CH(9) < ADC_det:
-                        continue
-                    ADC_det -= 150
-                    dev.ADC_det = ADC_det
+                        continue  # 没有连续3次则忽略
+                    ADC_det -= 150  # 恢复检测的灵敏度
                     key_on = 0
-                    last_check_time = now
+                    last_check_time = now  # 从第一次检测到放开1秒后再减缓频率
                     if first_press_time == 1:
                         first_press_time = 0
                 elif now - last_check_time > check_limit:
-                    if ADC_ch - ADC_det > 40 + 250:
+                    if ADC_ch - ADC_det > 40 + 250:  # 阈值过小，校正检测阈值
                         ADC_det = (ADC_det + ADC_ch - 250) // 2
-                        dev.ADC_det = ADC_det
                         print("校正按键检测阈值为：%d" % ADC_det)
-                    time.sleep(0.1)
+                    time.sleep(0.1)  # 没有按键时减缓读取频率
                 else:
                     if first_press_time != 0:
-                        if now - first_press_time > double_key_limit:
-                            Page_UP()
+                        if now - first_press_time > double_key_limit:  # 没有双击，就是单击
+                            Page_UP()  # 单击下一页
                             first_press_time = 0
         except Exception as e:
             print("Exception in manage_task, %s" % traceback.format_exc())
@@ -5134,30 +4896,37 @@ Img_data_use = None
 
 cleanNextTime = False
 
-# 以下全局已迁移到 ScreenDevice，保留声明仅为向后兼容
-sleep_event = None
+sleep_event = None  # 用event代替time.sleep，加快切换速度
 SER_lock = None
-custom_render_lock = None
+custom_render_lock = None  # 自定义内容渲染锁，防止UI预览与daemon LCD渲染并发
+
 last_refresh_time = 0
 gif_wait_time = 0.0
 second_pass = 0
+
 screen_shot_queue = None
 screen_process_queue = None
-screen_frame_generation = 0
+screen_frame_generation = 0  # 帧代际计数器，窗口切换时递增以丢弃旧帧
 desktop_hwnd = 0
 all_windows = None
 all_cameras = None
+
 row_np_zero = None
 column_np_zero = None
-screenshot_test_time = 0
-screenshot_test_frame = 1
+
+screenshot_test_time = 0  # 用于计算串流FPS
+screenshot_test_frame = 1  # 用于计算串流FPS。初始值为1，这样开始就不会马上打印不准确的FPS值
 screenshot_last_limit_time = 0
 wait_time = 0.0
+
 netspeed_last_refresh_snetio = None
-netspeed_plot_data = None
-custom_plot_data = None
+netspeed_plot_data = None  # 用于 show_netspeed
+
+custom_plot_data = None  # 用于 show_custom_two_rows
+
 mini_mark_parser = None
 full_custom_error = "OK"
+
 netspeed_font_size = 20
 default_font = None
 netspeed_font = None
@@ -5168,31 +4937,37 @@ save_thread = None
 config_event = None
 config_obj = None
 
-State_change = 1  # 旧全局（向后兼容），实际值在 ScreenDevice.state_change 中
-force_lcd_reset = False  # 旧全局（向后兼容），实际值在 ScreenDevice.force_lcd_reset 中
-last_lcd_watchdog_time = 0  # 旧全局（向后兼容）
-gif_num = 0  # 旧全局（向后兼容）
-Device_State = 0  # 旧全局（向后兼容），实际值在 ScreenDevice.device_state 中
-Device_State_Labelen = 0  # UI标签状态
-LCD_Change_now = 0  # 旧全局（向后兼容），实际值在 ScreenDevice.lcd_change_now 中
-color_use = RED  # 旧全局（向后兼容），实际值在 ScreenDevice.color_use 中
+State_change = 1  # 状态发生变化
+force_lcd_reset = False  # 强制重置LCD方向标志
+last_lcd_watchdog_time = 0  # LCD定期看门狗计时
+gif_num = 0
+Device_State = 0  # 初始为未连接
+Device_State_Labelen = 0  # 0无修改，1窗口已隐藏，2窗口已恢复有修改，3窗口已隐藏有修改
+LCD_Change_now = 0  # 实际显示方向
+color_use = RED  # 彩色图片点阵算法 5R6G5B
 write_path_index = 0
 
+# 曲线图颜色和背景颜色
 back_color = (0, 0, 0)
 bar_colors = [(235, 139, 139), (146, 212, 217)]
+# bar_colors = [(128, 255, 128), (255, 128, 255)]
+# bar_colors = [(128, 128, 255), (0, 128, 192)]
 
-Label1 = None
-Label3 = None; Label4 = None; Label5 = None; Label6 = None
-Text1 = None
+Label1 = None  # 设备状态显示框
+Label3 = None  # 背景图像路径显示框
+Label4 = None  # 闪存固件路径显示框
+Label5 = None  # 相册图像路径显示框
+Label6 = None  # 动图文件路径显示框
+Text1 = None  # 信息显示文本框
 windows_combobox = None
 interval_var = None
 lcd_size_var = None
-ser = None  # 旧全局（向后兼容），实际值在 ScreenDevice.ser 中
-ADC_det = 0  # 旧全局（向后兼容），实际值在 ScreenDevice.ADC_det 中
-sub_window = None
+ser = None  # 设备连接句柄
+ADC_det = 0  # 按键阈值
+sub_window = None  # 子窗口，设置为全局变量用于重新打开时不需要重复创建
 hardware_monitor_manager = None
-My_MSN_Device = None  # 旧全局（向后兼容），实际值在 ScreenDevice.msn_device 中
-My_MSN_Data = None     # 旧全局（向后兼容），实际值在 ScreenDevice.msn_data 中
+My_MSN_Device = None  # 当前连接的MSN设备信息
+My_MSN_Data = None     # 当前设备的SFR数据描述表
 My_MSN_Device = None  # 当前连接的MSN设备信息
 My_MSN_Data = None     # 当前设备的SFR数据描述表
 page_combobox = None   # UI中页面选择下拉列表
@@ -5213,21 +4988,15 @@ lcd_direction_combobox = None  # UI中显示方向选择下拉列表
 if __name__ == "__main__":
     exit_code = 0
     try:
-        # 初始化主设备（单屏兼容模式）
-        _init_single_device()
-        primary = _primary_device
-        set_current_device(primary)
-        primary.init_arrays()
-        primary.last_refresh_time = time.monotonic()
-        primary.screenshot_last_limit_time = primary.last_refresh_time
-        
-        last_refresh_time = primary.last_refresh_time
+        last_refresh_time = time.monotonic()
         screenshot_test_time = last_refresh_time
         screenshot_last_limit_time = last_refresh_time
-        
-        config_event = threading.Event()
-        screen_shot_queue = primary.screen_shot_queue
-        screen_process_queue = primary.screen_process_queue
+        sleep_event = threading.Event()  # 用event代替time.sleep，加快切换速度
+        config_event = threading.Event()  # 用event代替time.sleep，用于退出时快速保存
+        SER_lock = threading.Lock()
+        custom_render_lock = threading.Lock()
+        screen_shot_queue = queue.Queue(2)
+        screen_process_queue = queue.Queue(2)
 
         config_file = os.path.normpath(os.path.join(os.path.dirname(os.path.realpath(sys.argv[0])), config_file))
         config_obj = sys_config()
@@ -5235,19 +5004,19 @@ if __name__ == "__main__":
         default_font = MiniMark.load_font("./simhei.ttf", netspeed_font_size)
         netspeed_font = MiniMark.load_font("resource/Orbitron-Bold.ttf", netspeed_font_size - 4)
 
-        row_np_zero = primary.row_np_zero
-        column_np_zero = primary.column_np_zero
-        netspeed_plot_data = primary.netspeed_plot_data
-        custom_plot_data = primary.custom_plot_data
+        row_np_zero = np.zeros([1, LCD_MAX_X, 3], dtype=np.uint8)
+        column_np_zero = np.zeros([LCD_MAX_Y, 1, 3], dtype=np.uint8)
+
+        netspeed_plot_data = {"sent": [0] * (LCD_MAX_X // 2), "recv": [0] * (LCD_MAX_X // 2)}
+        custom_plot_data = {"sent": [0] * (LCD_MAX_X // 2), "recv": [0] * (LCD_MAX_X // 2)}
 
         MG_daemon_running = True
-        primary.mg_screen_thread_running = True
         MG_screen_thread_running = True
         daemon_thread = threading.Thread(target=daemon_task, daemon=True)
         load_thread = threading.Thread(target=load_task, daemon=True)
         manager_thread = threading.Thread(target=manage_task, daemon=True)
-        primary.screen_shot_thread = threading.Thread(target=screen_shot_task, args=(primary,), daemon=True)
-        primary.screen_process_thread = threading.Thread(target=screen_process_task, args=(primary,), daemon=True)
+        screen_shot_thread = threading.Thread(target=screen_shot_task, daemon=True)
+        screen_process_thread = threading.Thread(target=screen_process_task, daemon=True)
 
         # 打开主页面
         UI_Page()
@@ -5259,24 +5028,22 @@ if __name__ == "__main__":
     finally:
         MG_screen_thread_running = False
         MG_daemon_running = False
-        if _primary_device:
-            _primary_device.mg_screen_thread_running = False
-            _primary_device.sleep_event.set()
+        sleep_event.set()  # 取消sleep, 使sleep_event.wait无效
         # 退出前清理LCD屏幕，避免残留花屏
         Cleanup_LCD_On_Exit()
-        if _primary_device and _primary_device.ser is not None and _primary_device.ser.is_open:
-            print("%s close" % _primary_device.ser.name)
-            _primary_device.ser.close()
+        if ser is not None and ser.is_open:
+            print("%s close" % ser.name)
+            ser.close()  # 正常关闭串口。串口先于线程关闭，可能会出现访问串口异常，不过能够加快整体关闭速度
         # 结束时保存配置
         save_config(True)
         if load_thread.is_alive():
             load_thread.join(timeout=5.0)
         if manager_thread.is_alive():
             manager_thread.join(timeout=5.0)
-        if _primary_device and _primary_device.screen_process_thread and _primary_device.screen_process_thread.is_alive():
-            _primary_device.screen_process_thread.join(timeout=5.0)
-        if _primary_device and _primary_device.screen_shot_thread and _primary_device.screen_shot_thread.is_alive():
-            _primary_device.screen_shot_thread.join(timeout=5.0)
+        if screen_process_thread.is_alive():
+            screen_process_thread.join(timeout=5.0)
+        if screen_shot_thread.is_alive():
+            screen_shot_thread.join(timeout=5.0)
         if daemon_thread.is_alive():
             daemon_thread.join(timeout=5.0)
 

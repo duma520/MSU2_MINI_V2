@@ -80,7 +80,7 @@ GRAY2 = 0x4208
 # ==================== 程序元数据 ====================
 PROGRAM_TITLE = "USB副屏工具"
 PROGRAM_SUBTITLE = ""
-PROGRAM_VERSION = "3.0.5"
+PROGRAM_VERSION = "2.1.12"
 PROGRAM_AUTHOR = "杜玛"
 PROGRAM_GITHUB = "https://github.com/duma520/MSU2_MINI_V2"
 PROGRAM_LICENSE = "MIT"
@@ -753,7 +753,7 @@ class Win32_Image:
 
 
 default_capture = None
-mss_sct = None  # 旧全局（向后兼容），实际使用device.mss_sct
+mss_sct = None  # 复用的mss截图上下文，避免每次回退时创建/销毁
 printwindow_fail_count = 0  # PrintWindow连续失败计数
 printwindow_fail_hwnd = 0   # 当前失败对应的窗口句柄
 MSS_FALLBACK_THRESHOLD = 3  # 连续失败N次后切换到mss区域截图
@@ -761,35 +761,40 @@ MIN_WINDOW_SIZE = 10        # 窗口最小尺寸（像素），小于此值不�
 
 
 def _mss_fallback_screenshot(hWnd=None):
-    """使用mss截取桌面（或指定窗口区域）作为回退方案"""
-    # mss GDI句柄是线程本地的，每次调用创建新实例(轻量)
-    sct = mss()
+    """使用mss截取桌面（或指定窗口区域）作为回退方案，复用mss上下文"""
+    global mss_sct
+    if mss_sct is None:
+        mss_sct = mss()
     if hWnd and hWnd != desktop_hwnd:
         try:
             rect = win32gui.GetWindowRect(hWnd)
             left, top, right, bottom = rect
             w, h = right - left, bottom - top
+            # 窗口区域必须足够大才做区域截图，否则直接全桌面
             if w >= MIN_WINDOW_SIZE and h >= MIN_WINDOW_SIZE:
                 monitor = {"left": left, "top": top, "width": w, "height": h, "mon": 0}
-                sct_img = sct.grab(monitor)
+                sct_img = mss_sct.grab(monitor)
                 return Win32_Image(rgb=sct_img.rgb, size=(sct_img.width, sct_img.height))
         except Exception:
             pass
-    monitor = sct.monitors[0]
-    sct_img = sct.grab(monitor)
+    # 回退到全桌面截图
+    monitor = mss_sct.monitors[0]
+    sct_img = mss_sct.grab(monitor)
     return Win32_Image(rgb=sct_img.rgb, size=(sct_img.width, sct_img.height))
 
 
 def get_window_image(hWnd=None):
-    global desktop_hwnd, default_capture
+    global desktop_hwnd, default_capture, mss_sct
     global printwindow_fail_count, printwindow_fail_hwnd
 
+    # 显示器截图（hWnd 为负数表示显示器编号，-1=屏幕1, -2=屏幕2...）
     if hWnd is not None and hWnd < 0:
         monitor_index = -hWnd
-        sct = mss()  # mss GDI句柄是线程本地的
-        if monitor_index < len(sct.monitors):
-            monitor = sct.monitors[monitor_index]
-            sct_img = sct.grab(monitor)
+        if mss_sct is None:
+            mss_sct = mss()
+        if monitor_index < len(mss_sct.monitors):
+            monitor = mss_sct.monitors[monitor_index]
+            sct_img = mss_sct.grab(monitor)
             return Win32_Image(rgb=sct_img.rgb, size=(sct_img.width, sct_img.height))
         hWnd = desktop_hwnd
         set_select_hwnd(hWnd)
@@ -2600,19 +2605,27 @@ def clear_queue(queue):
         queue.get()
 
 
-def screen_shot_task(device=None):
-    global config_obj, all_cameras, desktop_hwnd
+def screen_shot_task(device=None):  # 创建专门的函数来获取屏幕图像和处理转换数据
+    global config_obj, all_cameras, desktop_hwnd, mss_sct
     if device is None:
         device = get_current_device()
     set_current_device(device)
-    dev = device
-    # mss GDI句柄是线程本地的，每个线程必须独立创建mss实例
-    _thread_mss = mss()
     if not isWindows:
-        monitor = _thread_mss.monitors[0]
+        if mss_sct is None:
+            mss_sct = mss()
+        # 序号为0的monitor是总体屏幕
+        monitor = mss_sct.monitors[0]
+        # cropped_monitor = {
+        #     "left": screenshot_region[0] + monitor["left"],
+        #     "top": screenshot_region[1] + monitor["top"],
+        #     "width": screenshot_region[2] or monitor["width"],
+        #     "height": screenshot_region[3] or monitor["height"],
+        #     "mon": screenshot_monitor_id,
+        # }
         cropped_monitor = monitor
         cropped_monitor["mon"] = 0
 
+    dev = device
     dev.wait_time = 0
     dev.screenshot_last_limit_time = time.monotonic()
     print("Start screenshot")
@@ -2685,7 +2698,7 @@ def screen_shot_task(device=None):
                 sct_img = get_window_image(config_obj.select_window_hwnd)
                 dev.screen_shot_queue.put((sct_img, {"width": sct_img.size[0], "height": sct_img.size[1]}), timeout=1)
             else:
-                sct_img = _thread_mss.grab(cropped_monitor)
+                sct_img = mss_sct.grab(cropped_monitor)
                 dev.screen_shot_queue.put((sct_img, cropped_monitor), timeout=1)
         except queue.Full:
             time.sleep(1.0 / config_obj.fps_var)

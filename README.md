@@ -14,11 +14,22 @@ https://github.com/dchg43/msu2_mini 能连接，有显示，就是感觉缺点�
 2026-08-11
 
 ---
-**软件截图
+**软件截图 v3.0.5
 
-<img width="658" height="558" alt="image" src="https://github.com/user-attachments/assets/c779020a-bfc7-4a60-9f18-ffbd148be03f" />
+<img width="658" height="590" alt="image" src="https://github.com/user-attachments/assets/33ee9cc6-c768-4137-855f-c30adab9cf46" />
 
-<img width="658" height="558" alt="image" src="https://github.com/user-attachments/assets/74e53949-6bc4-4606-9aea-ef237fa2d9ad" />
+<img width="658" height="590" alt="image" src="https://github.com/user-attachments/assets/0390d276-e2e4-4775-90ab-e4203d73f7b0" />
+
+<img width="658" height="590" alt="image" src="https://github.com/user-attachments/assets/6441aee8-c1a1-44d8-9795-a96ea2dcd567" />
+
+<img width="658" height="590" alt="image" src="https://github.com/user-attachments/assets/4a743c4f-c6e7-410c-a126-995c08bed1f8" />
+
+<img width="658" height="590" alt="image" src="https://github.com/user-attachments/assets/889fb2d9-61a3-4534-89f9-bd69f0167e21" />
+
+<img width="658" height="590" alt="image" src="https://github.com/user-attachments/assets/3cab72e2-a535-4d47-8ab7-e5f3363351c4" />
+
+<img width="658" height="590" alt="image" src="https://github.com/user-attachments/assets/b482d3a7-85fc-40c9-968c-5326caa2c0cc" />
+
 
 ---
 

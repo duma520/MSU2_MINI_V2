@@ -83,11 +83,11 @@ GRAY2 = 0x4208
 # ==================== 程序元数据 ====================
 PROGRAM_TITLE = "USB副屏工具"
 PROGRAM_SUBTITLE = ""
-PROGRAM_VERSION = "4.5.4"
+PROGRAM_VERSION = "4.5.10"
 PROGRAM_AUTHOR = "杜玛"
 PROGRAM_GITHUB = "https://github.com/duma520/MSU2_MINI_V2"
 PROGRAM_LICENSE = "MIT"
-PROGRAM_BUILD_DATE = "2026-08-14"
+PROGRAM_BUILD_DATE = "2026-08-15"
 
 # 整合自以下开源项目（均为MIT协议）
 PROGRAM_SOURCE_PROJECTS = [
@@ -107,6 +107,34 @@ PROGRAM_SOURCE_PROJECTS = [
 
 # 版本更新说明
 PROGRAM_CHANGELOG = """
+v4.5.10 (2026-08-15)
+- 配色方案改为独立标签页（设置 → 配色方案），放在「监控显示」之前，入口更显眼
+- 配色方案交互升级：选择方案只提供候选色板，不再自动套用；每个颜色位置后新增「色块下拉」，可直接看到并挑选该方案的颜色
+- 支持混合配色：不同位置可分别从不同方案的色板选色，点「存为新方案」把当前组合一键保存为自定义方案
+
+v4.5.9 (2026-08-15)
+- 新增「配色方案」系统：内置 260+ 个色系（马卡龙/莫兰迪/美拉德/赛博朋克/侘寂/大地/孟菲斯/极简/复古/霓虹/传统国色/艺术流派/色彩理论等）
+- 配色方案管理：新增「监控显示 → 配色方案」子页，实时预览色块，可新增/编辑/删除自定义方案（按设备保存）
+- 一键套用：网络流量、磁盘读写（经典模式/网速样式）、仪表盘设置区新增「配色方案」下拉，选择后按顺序套用到各颜色
+
+v4.5.8 (2026-08-15)
+- 磁盘读写设置改成分页标签管理（经典模式/经典2样式/网速样式），避免界面过高，切换显示模式自动跳转对应标签
+- 经典2样式颜色改为跟随网络流量页面当前配色（经典=通用文字颜色+默认柱色；自定义=独立配色），无需单独配置
+
+v4.5.7 (2026-08-15)
+- 网络流量监控：上传/下载文字颜色、柱状图颜色全部可自定义
+- 网络流量监控：新增「经典/自定义」显示模式（经典=原样式，自定义=独立配色）
+- 磁盘读写：新增「经典2」样式，布局与字体大小和网络流量一致（读/写标签），颜色可自定义
+- 磁盘读写：网速样式新增独立的读/写数值颜色设置，所有文字与柱状图颜色均可自定义
+- 修复：启动/切换设备后，页面、显示方向下拉框自动恢复为该设备上次的选择
+- 设置「按页面」导航记住上次选择的页面，重启后恢复
+
+v4.5.6 (2026-08-14)
+- 新增「设备信息」标签页：USB连接信息 / 固件版本 / SFR寄存器 / Flash芯片与分区 / 本机系统信息
+- 修复中文字体显示：simhei.ttf 自动回退到 resource/，跑马灯/时钟等中文不再变方块
+- 跑马灯字体固定为黑体(移除字体选择，避免字体路径失效)，字号/颜色/速度/文本仍可调
+- 编译脚本加入 winsdk(播放音乐) 与 device_protocol.json
+
 v4.5.4 (2026-08-14)
 - 热搜独立设置：独立分页(每页条数/抓取总条数/字体/翻页间隔/自动刷新)
 - 热搜字体自动适配屏幕大小(按最长文本缩小字号，最小8)；长文本滚动字幕，滚动速度可调
@@ -758,10 +786,11 @@ class ScreenDevice:
         self.burn_offset_y = 0
         self.burn_offset_time = 0
         
-        # --- 网络/自定义图表数据 ---
+        # --- 网络/自定义/磁盘图表数据 ---
         self.netspeed_last_refresh_snetio = None
         self.netspeed_plot_data = None
         self.custom_plot_data = None
+        self.diskio_plot_data = None
         self.last_data_half = (0, 0)
         
         # --- MSN设备信息 ---
@@ -769,6 +798,10 @@ class ScreenDevice:
         self.msn_data = None
         self.ADC_det = 0
         self.adc_fail_count = 0  # ADC读取连续失败计数
+
+        # --- 设备硬件/固件信息（连接时采集缓存，供“设备信息”标签页展示） ---
+        self.usb_info = {}           # USB描述符信息（端口/VID/PID/SN/制造商/产品/位置等）
+        self.firmware_version = 0    # 固件版本（握手 \x00MSN+版本号 解析）
         
         # --- 自定义渲染锁 ---
         self.custom_render_lock = threading.Lock()
@@ -792,6 +825,9 @@ class ScreenDevice:
         if self.netspeed_plot_data is None:
             self.netspeed_plot_data = {"sent": [0] * (self.LCD_MAX_X // 2),
                                        "recv": [0] * (self.LCD_MAX_X // 2)}
+        if self.diskio_plot_data is None:
+            self.diskio_plot_data = {"read": [0] * (self.LCD_MAX_X // 2),
+                                     "write": [0] * (self.LCD_MAX_X // 2)}
         if self.netspeed_last_refresh_snetio is None:
             try:
                 self.netspeed_last_refresh_snetio = psutil.net_io_counters()
@@ -3531,8 +3567,42 @@ def _safe_send_rgb888(rgb888_array):
         dev.force_lcd_reset = True
 
 
-def show_netspeed(text_color=(255, 128, 0), bar1_color=(235, 139, 139),
-                  bar2_color=(146, 211, 217), back_color=(0, 0, 0)):
+def _render_two_line_bars(up_label, down_label, up_value, down_value,
+                          up_color, down_color, bar1_color, bar2_color,
+                          plot_data, key1, key2, back_color=(0, 0, 0)):
+    """通用两行速度显示（网络流量布局）：上行/下行文字 + 两条实时柱状图。
+    标签、数值、颜色、柱状图数据均外部传入，供网络流量与磁盘读写经典2样式共用。"""
+    global default_font
+    im1 = Image.new("RGB", (SHOW_WIDTH, SHOW_HEIGHT), back_color)
+    draw = ImageDraw.Draw(im1)
+
+    text = "%s %9s/s" % (up_label, sizeof_fmt(up_value))
+    draw.text((0, 0), text, fill=up_color, font=default_font)
+    text = "%s %9s/s" % (down_label, sizeof_fmt(down_value))
+    draw.text((0, SHOW_HEIGHT // 2), text, fill=down_color, font=default_font)
+
+    min_draw = 1
+    for start_y, key, color in zip([SHOW_HEIGHT // 4 - 1, SHOW_HEIGHT - SHOW_HEIGHT // 4 - 1],
+                                   [key1, key2], [bar1_color, bar2_color]):
+        values = plot_data[key]
+        max_value = max(min_draw, max(values))
+        x0 = -BAR_WIDTH
+        x1 = -1
+        y1 = IMAGE_HEIGHT + start_y
+        percent = IMAGE_HEIGHT / max_value
+        for sent in values[-(SHOW_WIDTH // BAR_WIDTH):]:
+            bar_height = percent * sent
+            x0 += BAR_WIDTH
+            x1 += BAR_WIDTH
+            y0 = y1 - bar_height
+            draw.rectangle([x0, y0, x1, y1], fill=color)
+
+    rgb888 = np.asarray(im1, dtype=np.uint32)
+    _safe_send_rgb888(rgb888)
+
+
+def show_netspeed(up_text_color=(255, 128, 0), down_text_color=(0, 255, 255),
+                  bar1_color=(235, 139, 139), bar2_color=(146, 211, 217), back_color=(0, 0, 0)):
     global default_font
     dev = get_current_device()
     if dev is None: return
@@ -3562,33 +3632,9 @@ def show_netspeed(text_color=(255, 128, 0), bar1_color=(235, 139, 139),
     dev.last_refresh_time = current_monoto_time
     dev.netspeed_last_refresh_snetio = current_snetio
 
-    im1 = Image.new("RGB", (SHOW_WIDTH, SHOW_HEIGHT), back_color)
-    draw = ImageDraw.Draw(im1)
-
-    text = "上传 %9s/s" % sizeof_fmt(sent_per_second)
-    draw.text((0, 0), text, fill=text_color, font=default_font)
-    text = "下载 %9s/s" % sizeof_fmt(recv_per_second)
-    draw.text((0, SHOW_HEIGHT // 2), text, fill=text_color, font=default_font)
-
-    min_draw = 1
-    for start_y, key, color in zip([SHOW_HEIGHT // 4 - 1, SHOW_HEIGHT - SHOW_HEIGHT // 4 - 1],
-                                   ["sent", "recv"], [bar1_color, bar2_color]):
-        sent_values = dev.netspeed_plot_data[key]
-        max_value = max(min_draw, max(sent_values))
-
-        x0 = -BAR_WIDTH
-        x1 = -1
-        y1 = IMAGE_HEIGHT + start_y
-        percent = IMAGE_HEIGHT / max_value
-        for i, sent in enumerate(sent_values[-(SHOW_WIDTH // BAR_WIDTH):]):
-            bar_height = percent * sent
-            x0 += BAR_WIDTH
-            x1 += BAR_WIDTH
-            y0 = y1 - bar_height
-            draw.rectangle([x0, y0, x1, y1], fill=color)
-
-    rgb888 = np.asarray(im1, dtype=np.uint32)
-    _safe_send_rgb888(rgb888)
+    _render_two_line_bars("上传", "下载", sent_per_second, recv_per_second,
+                          up_text_color, down_text_color, bar1_color, bar2_color,
+                          dev.netspeed_plot_data, "sent", "recv", back_color)
 
     dev.wait_time += 1 - seconds_elapsed
     if dev.wait_time > 0:
@@ -4235,6 +4281,309 @@ def get_hwnd_desc(hwnd):
     return None
 
 
+# ==================== 配色方案（色系库） ====================
+# 每个方案是一组颜色（#rrggbb）。"经典方案"取网络流量默认配色（3色），
+# 其余为常见色系配色，颜色数量按各色系常规色板给出。用户可新增自定义方案。
+BUILTIN_COLOR_SCHEMES = {
+    "经典方案": ["#ff8000", "#00ffff", "#eb8b8b"],
+    "马卡龙配色方案": ["#ffb3ba", "#baffc9", "#bae1ff", "#ddbaff", "#ffd6ba", "#ffffba", "#d2d2d2", "#d2b4a0", "#ff9696", "#b4f0f0"],
+    "莫兰迪配色方案": ["#b8a9a1", "#a3b18a", "#8da2b3", "#c0a9b0", "#d6c4b2", "#a7b0a1", "#b5a7c4", "#9db0a3"],
+    "美拉德配色方案": ["#8a5a44", "#a9744f", "#c68e5b", "#d9a86c", "#b57a4f", "#7c4a2d", "#e0b88a", "#6b3f24"],
+    "多巴胺配色方案": ["#ff4d4d", "#ff9900", "#ffdd00", "#33cc33", "#00ccff", "#9966ff", "#ff66cc", "#ff3366"],
+    "赛博朋克配色方案": ["#ff00e0", "#00e5ff", "#7a00ff", "#ff0055", "#00ff9d", "#ffd700", "#00bfff", "#ff7a00"],
+    "孟菲斯配色方案": ["#f14d4d", "#f4a142", "#ffd94a", "#4dc3d3", "#8a5fbf", "#2bb673", "#ff8fb3", "#f7f7f7"],
+    "侘寂配色方案": ["#8d8d8d", "#a8a29e", "#b5a89a", "#9c8f84", "#6f6a63", "#c2b6a8", "#d6cfc5", "#7a746d"],
+    "大地色系方案": ["#6b4f3a", "#8b5e3c", "#a0522d", "#b8860b", "#cd853f", "#d2b48c", "#8a6642", "#a67c52"],
+    "奶油色系方案": ["#fdf5e6", "#fff8dc", "#f5f0dc", "#f7e7ce", "#efe2cf", "#f6ead8", "#f8f0e3", "#ead9c6"],
+    "燕麦色系方案": ["#e6ddc6", "#d8cfba", "#cfc4ab", "#e0d7bf", "#c9bfa6", "#d9d0b8", "#efe8d6", "#b8af98"],
+    "奶茶色系方案": ["#c9a06b", "#b98a5a", "#d4b483", "#a97c50", "#e0c79a", "#8f6b42", "#cbb283", "#f0e0c0"],
+    "糖果色系方案": ["#ff7eb6", "#ffd166", "#7bdff2", "#b892ff", "#ff9b85", "#a0e7e5", "#f7d6e0", "#ffb347"],
+    "冰淇淋色系方案": ["#ffd1dc", "#b5ead7", "#c7ceea", "#ffe6a7", "#a2d2ff", "#fbc4ab", "#d0f4de", "#f8f9fa"],
+    "蒙德里安色系方案": ["#e33e3e", "#f6d030", "#1d5bb8", "#111111", "#f5f5f5", "#9a9a9a"],
+    "洛可可色系方案": ["#f6c8d8", "#d4a5c6", "#e8d5b7", "#b5c9a8", "#a8b7c9", "#f2e3c6", "#c9a9a6", "#e3c6a8"],
+    "印象派色系方案": ["#e0a0c0", "#7fa8d0", "#90b8a0", "#f0d070", "#c07070", "#8a9aa0", "#d0b0e0", "#a0c8e0"],
+    "波普色系方案": ["#ff2b4d", "#ffcc00", "#00b8ff", "#00e000", "#ff7a00", "#ff00cc", "#00ffff", "#f0f0f0"],
+    "包豪斯色系方案": ["#e63946", "#f4a300", "#2563eb", "#111111", "#f1f1f1", "#d4a017"],
+    "浮世绘色系方案": ["#2a5f8f", "#c04a3a", "#4a9aa8", "#7a5a9a", "#3a7a5a", "#e8d5a0", "#9a4a4a", "#2a3a6a"],
+    "森林色系方案": ["#2d5a27", "#3f7a33", "#4a8f3f", "#5aa04a", "#7ab55f", "#1f4a1f", "#8fbf6a", "#3a6b2f"],
+    "草木色系方案": ["#66a83c", "#86c442", "#a8d84a", "#bfe060", "#4a8f2d", "#d2f07a", "#5cb85c", "#8fce4a"],
+    "海洋色系方案": ["#0a3d62", "#145a8a", "#1a6f9e", "#2b8fbd", "#3aa5d9", "#67c0e8", "#98d7f0", "#0f4c75"],
+    "湖泊色系方案": ["#2e6b8a", "#3a7f9e", "#4a94b0", "#5aa8c4", "#6ab8d0", "#8acfe0", "#a8ddef", "#1a5a7a"],
+    "暖阳色系方案": ["#ffb347", "#ffcc5c", "#ffe28a", "#ffd700", "#ff9f1c", "#f7b267", "#ffc46b", "#e8972f"],
+    "日落色系方案": ["#ff4e50", "#ff9a3d", "#ffc24b", "#ff6b6b", "#f9a03f", "#e56399", "#c41e3a", "#f77622"],
+    "矿石色系方案": ["#4a4a4a", "#6a6a6a", "#8a8a8a", "#a8a8a8", "#5a5a7a", "#7a5a8a", "#8a6a5a", "#6a8a8a"],
+    "宝石色系方案": ["#e74c3c", "#f1c40f", "#2ecc71", "#3498db", "#9b59b6", "#1abc9c", "#e67e22", "#34495e"],
+    "金属色系方案": ["#8a8a8a", "#b8b8b8", "#d4af37", "#c0c0c0", "#a67c00", "#6a6a6a", "#e0c060", "#9a9a9a"],
+    "木材色系方案": ["#8b5a2b", "#a0522d", "#cd853f", "#d2b48c", "#b8860b", "#7c4a2d", "#c49a6c", "#966f4a"],
+    "中国传统色系方案": ["#c3272b", "#0a5c8a", "#e6a23c", "#3a7a5a", "#9a4a5a", "#e8d5a0", "#7a5a4a", "#4a3a6a"],
+    "和风色系方案": ["#9a3a3a", "#3a5a8a", "#e8d5a0", "#5a8a6a", "#b0a0c8", "#c83a3a", "#8a6a3a", "#3a8a8a"],
+    "日式色系方案": ["#e0a0a0", "#c8d0e0", "#a0c0a0", "#f0e0c0", "#d0b0b0", "#b0b8c8", "#e8e0d0", "#c0a8a0"],
+    "北欧色系方案": ["#f2f2f2", "#d9d9d9", "#a8a8a8", "#4a90c4", "#e0a800", "#7a8a9a", "#5a7a5a", "#c8c8c8"],
+    "斯堪的纳维亚色系方案": ["#f7f7f2", "#e5e5dc", "#c0c8c0", "#8aa8c8", "#c8a060", "#7a8a8a", "#a0b0a0", "#d0d8d0"],
+    "地中海色系方案": ["#3a8ab8", "#f2d8a0", "#e86a5a", "#5aa878", "#f0b860", "#8ab8d0", "#c8e0f0", "#f8e8c0"],
+    "摩洛哥色系方案": ["#c0392b", "#e67e22", "#f1c40f", "#16a085", "#8e44ad", "#d35400", "#2c3e50", "#e74c3c"],
+    "北非色系方案": ["#d4a017", "#8a5a3a", "#c8a24a", "#5a7a5a", "#b86a3a", "#e8c870", "#7a4a2a", "#3a5a3a"],
+    "冷色系方案": ["#1e90ff", "#00bfff", "#00ffff", "#7b68ee", "#4682b4", "#5f9ea0", "#6495ed", "#00ced1"],
+    "暖色系方案": ["#ff4500", "#ff8c00", "#ffd700", "#ff6347", "#ffa07a", "#ff7f50", "#ffdab9", "#ffa500"],
+    "中性色系方案": ["#808080", "#a9a9a9", "#c0c0c0", "#d3d3d3", "#696969", "#b8b8b8", "#e0e0e0", "#8b8b8b"],
+    "废土色系方案": ["#6a5a3a", "#8a7a5a", "#a89a7a", "#5a4a2a", "#7a6a4a", "#b0a080", "#4a3a1a", "#96865a"],
+    "蒸汽波色系方案": ["#ff6ec7", "#7873f5", "#4adede", "#f706cf", "#2de2e6", "#ff00a0", "#6a5acd", "#ff9a00"],
+    "Y2K色系方案": ["#c0c0c0", "#ff66cc", "#00ccff", "#ffcc00", "#ccff00", "#ff9966", "#99ccff", "#e0e0e0"],
+    "克莱因蓝色系方案": ["#002fa7", "#1a4fd0", "#3a6ee8", "#5a8ef0", "#002080", "#7aa8f8", "#001a60", "#9ac0ff"],
+    # ---- 现代风格补充 ----
+    "哥特色系": ["#1a1a2e", "#16213e", "#0f3460", "#533483", "#e94560", "#2d1b3d", "#5a189a", "#10002b"],
+    "暗黑色系": ["#000000", "#111111", "#222222", "#333333", "#444444", "#1a1a1a", "#0a0a0a", "#2b2b2b"],
+    "极简色系": ["#ffffff", "#f0f0f0", "#d9d9d9", "#bfbfbf", "#999999", "#737373", "#4d4d4d", "#262626"],
+    "波西米亚色系": ["#c86b3d", "#e6a24d", "#4a7c59", "#7a5a8a", "#e0b0a0", "#2d6a5f", "#d4a373", "#6a4a3a"],
+    "复古色系": ["#8b5a2b", "#a0522d", "#6b4f3a", "#c0a080", "#7a4a2a", "#d2a679", "#5a3a1a", "#966f4a"],
+    "做旧色系": ["#9a8c7a", "#b0a28c", "#8a7a66", "#c2b49e", "#7a6a52", "#a89880", "#6a5a44", "#d0c2ac"],
+    "褪色色系": ["#c8bfb4", "#b5aca0", "#a3988c", "#d8d0c4", "#8f8578", "#c0b8ac", "#7a7166", "#e0d8cc"],
+    "怀旧色系": ["#d4b896", "#c8a882", "#b8946a", "#e0c8a0", "#a8805a", "#f0dcc0", "#96704a", "#c09070"],
+    "未来主义色系": ["#00e5ff", "#7a00ff", "#e0e0ff", "#00ff9d", "#ff00e0", "#1a1aff", "#c0c0ff", "#8a2be2"],
+    "太空色系": ["#0b0b2a", "#1a1a4a", "#2b2b6a", "#4a4a8a", "#6a5a9a", "#1a0a3a", "#3a2b6a", "#0a1a4a"],
+    "酸性色系": ["#ccff00", "#ff00cc", "#00ffcc", "#ffcc00", "#33ff00", "#ff0066", "#00ccff", "#ff6600"],
+    "迷幻色系": ["#ff00ff", "#00ffff", "#ffff00", "#ff6600", "#00ff66", "#6600ff", "#ff0066", "#66ff00"],
+    "霓虹色系": ["#39ff14", "#ff1493", "#ffff32", "#32cdff", "#ff6414", "#b44dff", "#00ff9d", "#ff2d78"],
+    "荧光色系": ["#ccff00", "#00ff99", "#ff00cc", "#ffff00", "#00ffff", "#ff9900", "#99ff00", "#ff00ff"],
+    "镭射色系": ["#00e5ff", "#ff00e5", "#ff00ff", "#00ffea", "#e5ff00", "#00bfff", "#ff2d95", "#7df9ff"],
+    "日落渐变系": ["#ff512f", "#f09819", "#ff9966", "#ff5e62", "#fa709a", "#fee140", "#f83600", "#ffd86f"],
+    # ---- 艺术流派补充 ----
+    "巴洛克色系": ["#8a2b2b", "#c0a060", "#2b3a5a", "#6a2b3a", "#d4b86a", "#3a2b4a", "#a08050", "#5a2b2b"],
+    "文艺复兴色系": ["#7a4a2b", "#b8860b", "#2b4a7a", "#8b4513", "#cd853f", "#5a3a1a", "#daa520", "#4a2b1a"],
+    "浪漫主义色系": ["#c0392b", "#8e44ad", "#2e86c1", "#e67e22", "#f7d794", "#d35400", "#6c3483", "#a93226"],
+    "新古典主义色系": ["#f5f5dc", "#d4c5a9", "#8a7a5a", "#c0b090", "#5a4a2a", "#e8e0c8", "#a89878", "#6a5a3a"],
+    "野兽派色系": ["#ff4500", "#ffd700", "#00bfff", "#ff00ff", "#32cd32", "#ff1493", "#1e90ff", "#ffa500"],
+    "立体派色系": ["#a0522d", "#708090", "#d2b48c", "#556b2f", "#cd5c5c", "#4a4a4a", "#daa520", "#5f9ea0"],
+    "超现实主义色系": ["#00ffff", "#ff69b4", "#ffd700", "#8a2be2", "#00ff7f", "#ff4500", "#00bfff", "#ff00ff"],
+    "抽象表现主义色系": ["#1a1a1a", "#e0e0e0", "#d4af37", "#8b0000", "#2f4f4f", "#ffd700", "#4a4a4a", "#c0c0c0"],
+    "极简主义色系": ["#ffffff", "#000000", "#808080", "#c0c0c0", "#f0f0f0", "#2f2f2f", "#d0d0d0", "#4a4a4a"],
+    "维也纳分离派色系": ["#d4af37", "#111111", "#e8e0c8", "#8b0000", "#f5f5f5", "#b8860b", "#2f2f2f", "#c8a24a"],
+    "新艺术运动色系": ["#4a7a5a", "#8a4a3a", "#c0a060", "#2b6a8a", "#d4a06a", "#6a3a2b", "#a8c0b0", "#8a6a3a"],
+    "装饰艺术色系": ["#111111", "#d4af37", "#8b0000", "#f5f5dc", "#2f4f4f", "#c0c0c0", "#b8860b", "#3a3a3a"],
+    "荷兰画派色系": ["#3a2b1a", "#8b4513", "#a0522d", "#d2b48c", "#2b2b1a", "#6b4f3a", "#c4a882", "#4a3a2a"],
+    "威尼斯画派色系": ["#7a1a1a", "#c0a060", "#1a3a6a", "#8a2b3a", "#d4b86a", "#2b4a8a", "#b06040", "#4a6a9a"],
+    # ---- 自然补充 ----
+    "沙漠色系": ["#c2a060", "#d4b470", "#a88048", "#e8d0a0", "#b89058", "#f0e0b0", "#96703a", "#d0b880"],
+    "泥土色系": ["#5a3a1a", "#6b4a2a", "#7a5a3a", "#8a6a4a", "#4a2a10", "#9a7a58", "#3a2a10", "#6a4a28"],
+    "岩石色系": ["#6a6a6a", "#7a7a7a", "#8a8a8a", "#5a5a5a", "#9a9a9a", "#4a4a4a", "#a8a8a8", "#3a3a3a"],
+    "苔藓色系": ["#5a7a3a", "#6a8a4a", "#4a6a2a", "#7a9a5a", "#8aa86a", "#3a5a1a", "#9ab87a", "#2b4a10"],
+    "冰雪色系": ["#f0f8ff", "#e0f0ff", "#cfe8ff", "#e6f7ff", "#b8dcff", "#d0f0ff", "#f8fcff", "#a8d0f0"],
+    "云雾色系": ["#e0e0e0", "#d0d0d0", "#c0c0c0", "#e8e8e8", "#b0b0b0", "#f0f0f0", "#a8a8a8", "#d8d8d8"],
+    "天空色系": ["#87ceeb", "#87cefa", "#00bfff", "#4682b4", "#5f9ea0", "#1e90ff", "#a0c8f0", "#7ec8e3"],
+    "星空色系": ["#0a0a2a", "#1a1a4a", "#2b2b6a", "#3a3a8a", "#4a4a9a", "#6a5a9a", "#2a1a4a", "#1a0a3a"],
+    "极光色系": ["#00ff87", "#60efff", "#00ff5e", "#7dffab", "#00f5d4", "#00c9ff", "#b9fbc0", "#00e5ff"],
+    "珊瑚色系": ["#ff7f50", "#ff6347", "#ff6f61", "#ff8c69", "#e07856", "#ffa07a", "#ff7f7f", "#ff937e"],
+    "贝壳色系": ["#fff5ee", "#ffe4e1", "#ffdab9", "#f5deb3", "#ffeef0", "#fff0f5", "#ffe8d6", "#f8f8ff"],
+    "珍珠色系": ["#f5f5f5", "#e8e8e8", "#f8f8f0", "#dcdcdc", "#f0f0e8", "#e0e0d8", "#ffffff", "#c8c8c0"],
+    "琥珀色系": ["#ffbf00", "#ff8c00", "#e6a800", "#c8820a", "#f0b400", "#b8860b", "#d4a017", "#ffa700"],
+    "玛瑙色系": ["#8b0000", "#a0522d", "#cd853f", "#d2691e", "#b87333", "#8b4513", "#c85a17", "#7a3b1a"],
+    "翡翠色系": ["#50c878", "#2e8b57", "#3cb371", "#00a86b", "#1fa35c", "#009b6a", "#32cd32", "#00c957"],
+    "孔雀色系": ["#00a4b8", "#00b5ad", "#00808a", "#1f9a8f", "#005c69", "#008a8a", "#00c4b4", "#006a6a"],
+    "蝴蝶色系": ["#ff69b4", "#ffa500", "#8a2be2", "#ffd700", "#00bfff", "#ff1493", "#7a5a00", "#ff8c00"],
+    "玫瑰色系": ["#ff007f", "#ff1493", "#e0115f", "#ff6f91", "#c21e56", "#ff4d6d", "#d62598", "#ff758f"],
+    "薰衣草色系": ["#b57edc", "#967bb6", "#c8a2c8", "#a78bc0", "#e6e6fa", "#8a5a9a", "#d8b2d1", "#9a6bae"],
+    "郁金香色系": ["#ff6b6b", "#ff9a3d", "#ffd166", "#ff8fa3", "#ff4d6d", "#f9a03f", "#e56399", "#ffb347"],
+    "樱桃色系": ["#de3163", "#d2042d", "#ff073a", "#9b111e", "#e30b5c", "#ff004f", "#c40233", "#ff2a6d"],
+    "柠檬色系": ["#fff700", "#faff00", "#ffe600", "#fff44f", "#eef76c", "#f7e600", "#fff200", "#e8f110"],
+    "葡萄色系": ["#6b2d5c", "#7a3b6a", "#8848a0", "#8e4585", "#5e2a5e", "#9a4a8a", "#6a1a4a", "#4a1a3a"],
+    "肉桂色系": ["#8b4513", "#a0522d", "#7a4a2a", "#b06030", "#cd853f", "#6a3a1a", "#d2691e", "#5a2d0c"],
+    "姜黄色系": ["#ffbf00", "#e6a800", "#d4a017", "#f0a400", "#c8820a", "#ffa700", "#b8860b", "#e8a000"],
+    "藏红色系": ["#e34234", "#c02a2a", "#b7410e", "#d03030", "#a02a1a", "#f05a3a", "#8a2010", "#e05030"],
+    "小麦色系": ["#f5deb3", "#f0d8a8", "#e8c890", "#dfc090", "#f0e0b0", "#d4b070", "#e8d0a0", "#c8a050"],
+    "大麦色系": ["#e0d0a0", "#d0c088", "#c0b070", "#d8c898", "#e8d8a8", "#b0a060", "#c8b888", "#a89858"],
+    "米色系": ["#f5f5dc", "#faf0e6", "#f0e6d8", "#e8dcc8", "#f8f4e0", "#e0d4c0", "#ede8d6", "#d8ccb8"],
+    # ---- 地域文化补充 ----
+    "印度色系": ["#ff9933", "#138808", "#d32f2f", "#ffc400", "#b8860b", "#e64a19", "#ff7043", "#7a3b2e"],
+    "东南亚色系": ["#e8a030", "#2e8b57", "#c0392b", "#f1c40f", "#8e44ad", "#16a085", "#e67e22", "#d35400"],
+    "非洲大地色系": ["#8b5a2b", "#a0522d", "#cd853f", "#d2b48c", "#b8860b", "#6b4f3a", "#c4a882", "#966f4a"],
+    "南美热带色系": ["#16a085", "#f1c40f", "#e74c3c", "#2ecc71", "#3498db", "#e67e22", "#9b59b6", "#1abc9c"],
+    "墨西哥色系": ["#c0392b", "#e67e22", "#f1c40f", "#2ecc71", "#3498db", "#e74c3c", "#8e44ad", "#d35400"],
+    "希腊色系": ["#1a5aa8", "#f5f5f5", "#d4c5a9", "#e8e0c8", "#2f4f6f", "#c0b090", "#7a8a9a", "#e0d8c0"],
+    "托斯卡纳色系": ["#8b5a2b", "#a0522d", "#c0a060", "#cd853f", "#d2b48c", "#7a4a2a", "#b8860b", "#6a3a1a"],
+    "普罗旺斯色系": ["#967bb6", "#c8a2c8", "#b5a8c8", "#d8c8e0", "#8a5a9a", "#e8d8f0", "#a87ab8", "#c0a8d8"],
+    "苏格兰色系": ["#1a2b5a", "#2b3a6a", "#3a5a8a", "#4a6a9a", "#2b2b6a", "#1a1a4a", "#5a7a9a", "#3a4a7a"],
+    "爱尔兰色系": ["#169b62", "#2e8b57", "#3cb371", "#ff8833", "#228b22", "#00a86b", "#c0c040", "#32cd32"],
+    "北欧维京色系": ["#2b4a6a", "#4a2b2b", "#6a5a2b", "#3a2b4a", "#1a2b3a", "#5a3a2b", "#2b6a4a", "#4a3a2b"],
+    "蒙古色系": ["#c03a2b", "#2b4a6a", "#d4a017", "#4a2b1a", "#6a3a2b", "#8a5a2b", "#2b2b4a", "#b06030"],
+    "藏族色系": ["#c3272b", "#f0c040", "#2b5a8a", "#e8e0c0", "#d4a017", "#8a1a1a", "#3a2b4a", "#c0a060"],
+    "傣族色系": ["#e8a030", "#2e8b57", "#c0392b", "#f1c40f", "#16a085", "#e67e22", "#8e44ad", "#d35400"],
+    "彝族色系": ["#a03030", "#2b4a8a", "#d4a017", "#6a2b2b", "#3a6a2b", "#8a2b5a", "#c06030", "#4a2b6a"],
+    # ---- 色彩理论 ----
+    "无彩色系": ["#ffffff", "#e0e0e0", "#c0c0c0", "#a0a0a0", "#808080", "#606060", "#404040", "#202020", "#000000"],
+    "有彩色系": ["#ff0000", "#ff8000", "#ffff00", "#00ff00", "#00ffff", "#0080ff", "#0000ff", "#ff00ff"],
+    "原色系": ["#ff0000", "#ffff00", "#0000ff"],
+    "间色系": ["#ff8000", "#00ff00", "#8000ff"],
+    "复色系": ["#a05030", "#3a8a5a", "#6a4a9a", "#8a6a3a", "#4a7a8a", "#a03a6a"],
+    "互补色系": ["#ff0000", "#00ffff", "#00ff00", "#ff00ff", "#0000ff", "#ffff00"],
+    "邻近色系": ["#ff0000", "#ff4000", "#ff8000", "#ffc000", "#ffff00"],
+    "单色系": ["#1a5aa8", "#3a7ac8", "#5a9ae0", "#7ab8f0", "#9ad8ff", "#0a4a98", "#2a6ab8", "#4a8ad8"],
+    "同类色系": ["#ffd0d0", "#ffb0b0", "#ff9090", "#ff7070", "#ff5050", "#ff3030", "#ff1010", "#f00000"],
+    "对比色系": ["#ff0000", "#00ff00", "#0000ff", "#ffff00", "#ff00ff", "#00ffff"],
+    "高明度色系": ["#ffffff", "#f0f0f0", "#e0e0e0", "#d0d0d0", "#c0c0c0", "#b0b0b0", "#a0a0a0", "#909090"],
+    "中明度色系": ["#808080", "#767676", "#6a6a6a", "#606060", "#585858", "#4e4e4e", "#484848", "#404040"],
+    "低明度色系": ["#3a3a3a", "#303030", "#2a2a2a", "#202020", "#1a1a1a", "#101010", "#0a0a0a", "#000000"],
+    "高纯度色系": ["#ff0000", "#00ff00", "#0000ff", "#ffff00", "#ff00ff", "#00ffff"],
+    "中纯度色系": ["#d08060", "#60b080", "#6080d0", "#d0d060", "#d060d0", "#60d0d0"],
+    "低纯度色系": ["#a09890", "#90a098", "#9090a0", "#a0a090", "#a090a0", "#90a0a0"],
+    "CIE色系": ["#ff0000", "#00ff00", "#0000ff", "#ffffff", "#000000", "#ffff00", "#ff00ff", "#00ffff"],
+    "孟塞尔色系": ["#c83828", "#3a9a3a", "#2b5a9a", "#e8b838", "#8a5a8a", "#6a9a6a", "#d86828", "#4a6a8a"],
+    "奥斯特瓦尔德色系": ["#c03030", "#c09030", "#c0c030", "#30c030", "#30c090", "#30c0c0", "#3090c0", "#3030c0"],
+    "NCS自然色彩体系": ["#c0313a", "#d8a030", "#2b8a6a", "#2b6a8a", "#5a5a8a", "#8a2b5a", "#8a6a2b", "#3a8a5a"],
+    "PCCS实用配色体系": ["#e05a5a", "#e0a05a", "#e0d05a", "#8ac05a", "#5ac08a", "#5ab0d0", "#5a6ad0", "#a05ad0"],
+    "RAL色系(德国劳尔)": ["#d9381e", "#e3a30a", "#4c8d3f", "#1a509a", "#6a2b5a", "#b8a030", "#3a3a3a", "#c8c8c8"],
+    "潘通色系(PANTONE)": ["#e6194b", "#3cb44b", "#ffe119", "#4363d8", "#f58231", "#911eb4", "#46f0f0", "#f032e6"],
+    "DIC色系(日本)": ["#d94f3d", "#e8a03a", "#5a8a4a", "#2b5a9a", "#6a2b8a", "#b86a3a", "#4a9a8a", "#8a3a6a"],
+    "CMYK色系": ["#00ffff", "#ff00ff", "#ffff00", "#ff0000", "#00ff00", "#0000ff", "#000000", "#808080"],
+    "RGB色系": ["#ff0000", "#00ff00", "#0000ff", "#ffff00", "#00ffff", "#ff00ff", "#ffffff", "#000000"],
+    "HSB色系": ["#ff0000", "#ff8000", "#ffff00", "#80ff00", "#00ff00", "#00ff80", "#00ffff", "#0080ff"],
+    "HSL色系": ["#ff0000", "#ff8000", "#ffff00", "#80ff00", "#00ff00", "#00ff80", "#00ffff", "#0080ff"],
+    "LAB色系": ["#ff0000", "#00ff00", "#0000ff", "#ffff00", "#00ffff", "#ff00ff", "#ffffff", "#808080"],
+    "XYZ色系": ["#ff0000", "#00ff00", "#0000ff", "#ffffff", "#000000", "#ff00ff", "#00ffff", "#ffff00"],
+    "YUV色系": ["#ff0000", "#00ff00", "#0000ff", "#ffff00", "#00ffff", "#ff00ff", "#ffffff", "#808080"],
+    # ---- 风格补充 ----
+    "淡粉色系": ["#ffd1dc", "#ffc0cb", "#f8c8dc", "#fddde6", "#fadadd", "#ffd9e8", "#f7c8d0", "#fce4ec"],
+    "明亮色系": ["#ff5555", "#ffaa00", "#ffee00", "#55dd55", "#55ccff", "#cc55ff", "#ff66aa", "#44dddd"],
+    "鲜艳色系": ["#ff0000", "#ff8800", "#ffff00", "#00ff00", "#00ddff", "#0088ff", "#8800ff", "#ff00aa"],
+    "浓烈色系": ["#8b0000", "#a0522d", "#b8860b", "#006400", "#00008b", "#4b0082", "#8b008b", "#a52a2a"],
+    "深重色系": ["#2f1a1a", "#2f2a1a", "#2f2f1a", "#1a2f1a", "#1a2f2f", "#1a1a2f", "#2a1a2f", "#3a2f1a"],
+    "黑灰色系": ["#000000", "#1a1a1a", "#2b2b2b", "#3a3a3a", "#4a4a4a", "#5a5a5a", "#6a6a6a", "#7a7a7a"],
+    "柔和色系": ["#ffd0d0", "#d0ffd0", "#d0d0ff", "#ffffd0", "#ffd0ff", "#d0ffff", "#f0e0d0", "#e0e0f0"],
+    "雅致色系": ["#a8a090", "#b8a890", "#c8b8a0", "#8a8070", "#d8c8b0", "#988878", "#e0d8c8", "#b0a898"],
+    "清爽色系": ["#b8e8f0", "#a8e0d0", "#c0f0e0", "#d0f0ff", "#a0e8f8", "#c8f0f8", "#90e0f0", "#e0f8ff"],
+    "清凉色系": ["#7ec8e3", "#4a90c4", "#1e90ff", "#00bfff", "#5f9ea0", "#2e86c1", "#48a3d0", "#6ab8e8"],
+    "温暖色系": ["#ff6a3d", "#ff9a3d", "#ffc24b", "#f7b267", "#ff7a2a", "#e8972f", "#ffb347", "#f77622"],
+    "古典色系": ["#6b4f3a", "#8b5a2b", "#a0522d", "#b8860b", "#cd853f", "#d2b48c", "#8a6642", "#a67c52"],
+    "自然色系": ["#5a7a3a", "#6a8a4a", "#7a9a5a", "#3a6a2b", "#8a5a3a", "#4a7a5a", "#a87a4a", "#3a5a2b"],
+    "华丽色系": ["#b8860b", "#d4af37", "#8b0000", "#800080", "#c71585", "#daa520", "#2e8b57", "#dc143c"],
+    "浪漫色系": ["#ff69b4", "#ff1493", "#ff6f91", "#ff8fa3", "#ff4d6d", "#e0a0b0", "#ffb3ba", "#d62598"],
+    "跃动色系": ["#ff4500", "#ffcc00", "#00cc00", "#00ccff", "#ff00cc", "#cc00ff", "#ff9900", "#33cc99"],
+    "沉稳色系": ["#2f4f4f", "#3a5a6a", "#4a6a7a", "#5a7a8a", "#2b3a4a", "#6a8a9a", "#1a2a3a", "#7a9aaa"],
+    "宁静色系": ["#b8d4e8", "#a8c8d8", "#c8e0f0", "#d0e8f0", "#98c0d8", "#e0f0f8", "#88b8d0", "#f0f8ff"],
+    "优雅色系": ["#7a6a8a", "#8a7a9a", "#9a8aaa", "#6a5a7a", "#aa9aba", "#5a4a6a", "#b8a8c8", "#4a3a5a"],
+    "知性色系": ["#3a4a6a", "#4a5a7a", "#5a6a8a", "#2b3a5a", "#6a7a9a", "#1a2b4a", "#7a8aaa", "#0a1a3a"],
+    "活力色系": ["#ff3b30", "#ff9500", "#ffcc00", "#4cd964", "#5ac8fa", "#007aff", "#af52de", "#ff2d55"],
+    "青春色系": ["#ff6b9d", "#ff9a76", "#ffd93d", "#6bcb77", "#4d96ff", "#b983ff", "#ff8fab", "#8ecae6"],
+    "成熟色系": ["#8b5a2b", "#a0522d", "#b8860b", "#cd853f", "#6b4f3a", "#d2b48c", "#8a6642", "#a67c52"],
+    "摩登色系": ["#111111", "#d4af37", "#2b2b2b", "#c0c0c0", "#4a4a4a", "#f5f5f5", "#3a3a3a", "#a8a8a8"],
+    "乡村色系": ["#7a4a2a", "#8b5a2b", "#a0522d", "#cd853f", "#d2b48c", "#6b4f3a", "#c4a882", "#966f4a"],
+    "田园色系": ["#8bc34a", "#66bb6a", "#42a5f5", "#ffca28", "#ff7043", "#aed581", "#4db6ac", "#ffab91"],
+    "海滨色系": ["#a8d8ea", "#87ceeb", "#00bfff", "#5f9ea0", "#2e86c1", "#48c9b0", "#66ccff", "#b2dfdb"],
+    "山野色系": ["#2d5a27", "#3f7a33", "#4a8f3f", "#5aa04a", "#7ab55f", "#8fbf6a", "#6a4a2a", "#a08050"],
+    # ---- 传统国色 ----
+    "赤色系": ["#d32f2f", "#e53935", "#f44336", "#ef5350", "#c62828", "#b71c1c", "#e53935", "#fce4ec"],
+    "黄色系": ["#ffd600", "#ffeb3b", "#fdd835", "#fbc02d", "#f9a825", "#f57f17", "#fff59d", "#ffee58"],
+    "青色系": ["#00bcd4", "#00acc1", "#0097a7", "#00838f", "#006064", "#4dd0e1", "#80deea", "#b2ebf2"],
+    "白色系": ["#ffffff", "#fafafa", "#f5f5f5", "#f0f0f0", "#eeeeee", "#e0e0e0", "#f8f8f8", "#eaeaea"],
+    "黑色系": ["#000000", "#111111", "#222222", "#333333", "#1a1a1a", "#2b2b2b", "#0a0a0a", "#404040"],
+    "朱红色系": ["#e0342c", "#c3272b", "#d4322c", "#f03a2e", "#a02020", "#b3261e", "#e6453d", "#f05545"],
+    "胭脂色系": ["#d5326d", "#c2185b", "#ad1457", "#880e4f", "#e91e63", "#ec407a", "#f06292", "#c6286e"],
+    "绯红色系": ["#b22222", "#dc143c", "#ff2400", "#e30b5c", "#c11b17", "#d21f3c", "#ff0038", "#a60000"],
+    "绛红色系": ["#722f37", "#5c0a1a", "#6a0f1a", "#8a1a1a", "#4a0a0a", "#7a1a2a", "#9a2a2a", "#3a0a0a"],
+    "大红系": ["#f44336", "#e53935", "#d32f2f", "#c62828", "#b71c1c", "#ef5350", "#ff1744", "#e60000"],
+    "丹色系": ["#e34234", "#d94f3d", "#c0392b", "#e8503a", "#b03a2b", "#f05a40", "#a52a2a", "#cc4a3a"],
+    "橙色系": ["#ff9800", "#fb8c00", "#f57c00", "#ef6c00", "#e65100", "#ffa726", "#ffb74d", "#ffe0b2"],
+    "鹅黄色系": ["#fff1a8", "#ffe066", "#ffd93d", "#ffd600", "#fbc02d", "#ffe94a", "#ffe27a", "#f9c74f"],
+    "柳黄色系": ["#c8d878", "#b8c858", "#a8b838", "#d0e090", "#98a828", "#e0e8a0", "#889818", "#b0c048"],
+    "杏黄色系": ["#f0b860", "#e8a850", "#e09a3a", "#f8c878", "#d88a2a", "#ffcc80", "#c87a1a", "#eab879"],
+    "金黄色系": ["#ffd700", "#ffc400", "#ffb300", "#ffa000", "#ff8f00", "#ff6f00", "#ffca28", "#ffab00"],
+    "香槟色系": ["#f7e7ce", "#f5deb3", "#eee8aa", "#f0e0c0", "#ead8b8", "#f8f0d0", "#e0d0b0", "#f2e6c8"],
+    "苍黄色系": ["#f0e0a0", "#e8d890", "#e0d080", "#f5e8b0", "#d8c870", "#f8f0c0", "#d0c060", "#e8dc98"],
+    "草绿色系": ["#7cb342", "#689f38", "#558b2f", "#33691e", "#8bc34a", "#9ccc65", "#aed581", "#c5e1a5"],
+    "竹青色系": ["#789262", "#8aa868", "#5a7a4a", "#98b878", "#4a6a3a", "#a8c888", "#3a5a2b", "#88a858"],
+    "松绿色系": ["#00563f", "#00695c", "#00695c", "#004d40", "#00796b", "#00897b", "#1b5e20", "#2e7d32"],
+    "柏绿色系": ["#005b4f", "#00695c", "#00766d", "#1a6a5a", "#2b7a6a", "#0a5a4a", "#3a8a7a", "#00504a"],
+    "柳绿色系": ["#a8b878", "#98a868", "#88a858", "#b8c888", "#789848", "#c8d898", "#688838", "#a0b068"],
+    "黛青色系": ["#2b4a4a", "#3a5a5a", "#4a6a6a", "#1a3a3a", "#5a7a7a", "#0a2a2a", "#6a8a8a", "#2b3a3a"],
+    "黛蓝色系": ["#1a3a5a", "#2b4a6a", "#3a5a7a", "#0a2a4a", "#4a6a8a", "#1a2b4a", "#5a7a9a", "#2b3a5a"],
+    "天青色系": ["#4fa3a0", "#5fb0ac", "#6fbdb8", "#3a8f8c", "#80cac4", "#2a7d7a", "#8fd5d0", "#5aa8a5"],
+    "月白色系": ["#f0f4f4", "#e8eeef", "#dce8ea", "#f5f8f8", "#d0e0e4", "#fafcfc", "#c8d8dc", "#e0eaec"],
+    "皎月色系": ["#eef2f8", "#e0e8f2", "#d0dcea", "#f4f6fa", "#c0d0e2", "#f8fafc", "#b8c8dc", "#e4eaf2"],
+    "霁蓝色系": ["#5a7a9a", "#6a8aaa", "#7a9aba", "#4a6a8a", "#8aaaaa", "#3a5a7a", "#9abaca", "#2b4a6a"],
+    "藏蓝色系": ["#0a1a3a", "#0f2b52", "#143a63", "#1a4a7a", "#2b5a8a", "#123b5a", "#1d4e8f", "#082a4a"],
+    "宝蓝色系": ["#1e3a8a", "#2b4a9a", "#3a5aaa", "#4a6aba", "#2563eb", "#3b82f6", "#1d4ed8", "#1e40af"],
+    "绀青色系": ["#2b4a5a", "#3a5a6a", "#4a6a7a", "#1a3a4a", "#5a7a8a", "#0a2a3a", "#6a8a9a", "#2b3a4a"],
+    "藕荷色系": ["#d8b8c8", "#c8a8b8", "#e0c8d0", "#b898a8", "#f0dce0", "#a88898", "#e8d0d8", "#c0a0b0"],
+    "丁香色系": ["#b5a8d8", "#c0b8e0", "#a898c8", "#d0c8e8", "#9888b8", "#e0d8f0", "#8878a8", "#c8c0e0"],
+    "紫棠色系": ["#4a2b5a", "#5a3a6a", "#6a4a7a", "#3a1a4a", "#7a5a8a", "#2a0a3a", "#8a6a9a", "#4a2b6a"],
+    "灰色系(百草霜)": ["#6a6a6a", "#7a7a7a", "#8a8a8a", "#5a5a5a", "#9a9a9a", "#4a4a4a", "#aaa8a8", "#3a3a3a"],
+    "褐色系(茶褐/秋香)": ["#5a3a1a", "#6b4f3a", "#7a4a2a", "#8b5a2b", "#a0522d", "#96744a", "#6a4422", "#8a6a3a"],
+    "墨色系": ["#1a1a1a", "#0a0a0a", "#2b2b2b", "#101010", "#333333", "#000000", "#252525", "#1e1e1e"],
+    "玄色系": ["#0a0a0a", "#111111", "#1a1a1a", "#222222", "#2b2b2b", "#050505", "#151515", "#202020"],
+    "缁色系": ["#3a2a2a", "#4a3a3a", "#2b1a1a", "#5a4a4a", "#1a0a0a", "#6a5a5a", "#352828", "#0a0a0a"],
+    # ---- 色相环 ----
+    "红色系": ["#ff0000", "#e60000", "#cc0000", "#b30000", "#ff3333", "#ff4d4d", "#ff6666", "#990000"],
+    "橙红色系": ["#ff4500", "#ff3d00", "#ff3300", "#ff5722", "#e64a19", "#d84315", "#bf360c", "#ff6e40"],
+    "橙黄色系": ["#ffa500", "#ff9500", "#ff8c00", "#ff9f1c", "#f7b267", "#e8982f", "#ffb347", "#ffc46b"],
+    "黄绿色系": ["#adff2f", "#a4de02", "#9acd32", "#7fff00", "#b8e800", "#c0eb00", "#cddc39", "#d0e050"],
+    "绿色系": ["#00ff00", "#00cc00", "#009900", "#00e500", "#32cd32", "#3cb371", "#2e8b57", "#00aa00"],
+    "蓝绿色系": ["#00ffcc", "#00e5cc", "#00ccb3", "#00b3a0", "#20b2aa", "#48d1cc", "#66cdaa", "#00a8a8"],
+    "蓝色系": ["#0000ff", "#0000e0", "#0000cc", "#1e90ff", "#4169e1", "#4682b4", "#6495ed", "#0000aa"],
+    "蓝紫色系": ["#4b0082", "#5a009a", "#6a00b0", "#7a00c8", "#8a2be2", "#9370db", "#7b68ee", "#6a5acd"],
+    "紫色系": ["#800080", "#9a009a", "#b000b0", "#c800c8", "#a020f0", "#ba55d3", "#da70d6", "#ee82ee"],
+    "紫红色系": ["#c71585", "#d02090", "#da70d6", "#e0449a", "#ff1493", "#ff69b4", "#f06292", "#c2185b"],
+    "粉红色系": ["#ffc0cb", "#ffb6c1", "#ff99aa", "#ff8fa3", "#ff6f91", "#ff4d6d", "#ffaab8", "#f7a8b8"],
+    "棕红色系": ["#8b4513", "#a0522d", "#b7410e", "#cd5c5c", "#a52a2a", "#c0392b", "#b96a3a", "#9a3b1a"],
+    "棕黄色系": ["#b8860b", "#cd853f", "#d2b48c", "#daa520", "#c8a24a", "#b8904a", "#d4a017", "#c0964a"],
+    "橄榄绿色系": ["#556b2f", "#6b8e23", "#808000", "#708238", "#8a8a3a", "#9a9a3a", "#6a6a2a", "#7a8a3a"],
+    "灰蓝色系": ["#5f7a8a", "#6a8a9a", "#7a9aaa", "#4a6a7a", "#8aaaba", "#3a5a6a", "#9abaca", "#2b4a5a"],
+    "灰紫色系": ["#6a5a7a", "#7a6a8a", "#8a7a9a", "#5a4a6a", "#9a8aaa", "#4a3a5a", "#aa9aba", "#3a2b4a"],
+    "米黄色系": ["#f5deb3", "#f0d8a8", "#ead8b8", "#f8e8c0", "#e0d0a8", "#f0e0c0", "#e8d8b0", "#dcc8a0"],
+    "奶白色系": ["#fdfbf7", "#faf6ef", "#f8f4ec", "#f6f2ea", "#f4efe6", "#f2ede2", "#faf5ee", "#f5f0e6"],
+    # ---- 质感 ----
+    "象牙色系": ["#fffff0", "#fef6e3", "#fdf5e6", "#faf0e6", "#fff8dc", "#fdf6ec", "#fbf5e0", "#f8efd4"],
+    "裸色系": ["#e0c0a8", "#d8b090", "#e8c8b0", "#d0a888", "#f0d8c0", "#c89878", "#e8d0b8", "#d8b898"],
+    "肤色系": ["#f1c27d", "#f0c8a0", "#e8b890", "#f8d8b0", "#e0a880", "#dda07a", "#f4d0a8", "#ecc090"],
+    "陶土色系": ["#cc7a4a", "#b86a3a", "#c87a4a", "#a85a2a", "#d88a5a", "#9a4a1a", "#e09a6a", "#b06030"],
+    "水泥色系": ["#a8a8a8", "#9a9a9a", "#b0b0b0", "#8a8a8a", "#c0c0c0", "#7a7a7a", "#b8b8b8", "#9e9e9e"],
+    "混凝土色系": ["#8a8a8a", "#7a7a7a", "#969696", "#6a6a6a", "#a0a0a0", "#5a5a5a", "#909090", "#4a4a4a"],
+    "沥青色系": ["#2b2b2b", "#202020", "#333333", "#1a1a1a", "#3a3a3a", "#252525", "#2f2f2f", "#151515"],
+    "石墨色系": ["#3a3a3a", "#4a4a4a", "#2b2b2b", "#5a5a5a", "#202020", "#6a6a6a", "#353535", "#1a1a1a"],
+    "碳灰色系": ["#2f2f2f", "#3a3a3a", "#262626", "#444444", "#1e1e1e", "#4e4e4e", "#353535", "#111111"],
+    "烟灰色系": ["#8a8f98", "#7a7f88", "#9a9fa8", "#6a6f78", "#aaaeb8", "#5a5f68", "#b8bcc8", "#4a4f58"],
+    "银灰色系": ["#c0c0c0", "#a8a8a8", "#b8b8b8", "#d0d0d0", "#989898", "#e0e0e0", "#888888", "#c8c8c8"],
+    "锡色系": ["#a8a8a8", "#989898", "#b8b8b8", "#888888", "#c0c0c0", "#787878", "#b0b0b0", "#6a6a6a"],
+    "铅色系": ["#4a4a5a", "#5a5a6a", "#3a3a4a", "#6a6a7a", "#2a2a3a", "#7a7a8a", "#50505f", "#1a1a2a"],
+    "铁锈色系": ["#8b4513", "#a0522d", "#b7410e", "#c0392b", "#9a3b1a", "#b87333", "#a5541a", "#8a3a1a"],
+    "铜绿色系": ["#3a8a7a", "#2e8b57", "#5a9a8a", "#1a7a6a", "#6aaa9a", "#0a6a5a", "#7abaaa", "#2b7a6a"],
+    "青铜色系": ["#5a6a3a", "#6a7a4a", "#7a8a5a", "#4a5a2a", "#8a9a6a", "#3a4a1a", "#9aaa7a", "#2b3a1a"],
+    "古铜色系": ["#6b4f3a", "#8b5a2b", "#a0522d", "#b87333", "#966f4a", "#7a4a2a", "#c0812a", "#5a3a1a"],
+    "黄铜色系": ["#b5a642", "#c0b050", "#a89838", "#d0c060", "#98882a", "#e0d070", "#88781a", "#c8b858"],
+    "玫瑰金色系": ["#b76e79", "#c0808a", "#a05a66", "#d098a0", "#904a58", "#e0aab0", "#803a4a", "#c8909a"],
+    "白金系": ["#e8e8e8", "#f0f0f0", "#dcdcdc", "#e0e0e8", "#d0d0d8", "#f5f5f5", "#c8c8d0", "#eaeaea"],
+    "铂金色系": ["#e5e4e2", "#e8e8e8", "#dcdcd8", "#f0f0f0", "#d0d0cc", "#f8f8f8", "#c8c8c4", "#e0e0dc"],
+    # ---- 分类汇总 ----
+    "花卉色系": ["#ff6f91", "#ffb3ba", "#ff9a76", "#c8a2c8", "#ffd166", "#ff8fa3", "#ff4d6d", "#ffd1dc"],
+    "果实色系": ["#de3163", "#ffa500", "#6b2d5c", "#ffbf00", "#ff7f50", "#8e4585", "#ff8c00", "#c8a24a"],
+    "香料色系": ["#8b4513", "#ffbf00", "#e34234", "#cd853f", "#6a3a1a", "#ffa700", "#d2691e", "#b7410e"],
+    "谷物色系": ["#f5deb3", "#e8c890", "#d4b070", "#f0e0b0", "#dfc090", "#c8a050", "#e8d0a0", "#b89058"],
+}
+
+
+def get_all_color_schemes(config_obj=None):
+    """返回全部配色方案（内置 + 用户自定义），用户自定义可覆盖同名内置"""
+    schemes = dict(BUILTIN_COLOR_SCHEMES)
+    try:
+        custom = getattr(config_obj, "custom_color_schemes", None) or {}
+        schemes.update(custom)
+    except Exception:
+        pass
+    return schemes
+
+
+def parse_color_list(text):
+    """把用户输入的逗号/换行分隔颜色文本解析为 #rrggbb 列表，非法项忽略"""
+    out = []
+    for part in str(text).replace("\n", ",").split(","):
+        part = part.strip().lstrip("#")
+        if len(part) == 6:
+            try:
+                int(part, 16)
+                out.append("#" + part.lower())
+            except Exception:
+                pass
+    return out
+
+
 class sys_config(object):
     def __init__(self):
         self.text_color_r = 255  # RGB颜色
@@ -4323,6 +4672,30 @@ class sys_config(object):
         self.gauge_gpu_temp_sensor = ""   # 仪表盘GPU温度传感器全名
         self.gauge_gpu_load_sensor = ""   # 仪表盘GPU负载传感器全名
         self.gauge_fan_sensor = ""        # 仪表盘风扇传感器全名
+        # --- 磁盘读写速率 ---
+        self.diskio_mode = "经典"         # 显示模式：经典 / 经典2 / 网速样式
+        self.diskio_show_title = 1        # 经典模式：显示"磁盘读写"标题
+        self.diskio_font_auto = 1         # 经典模式：字号自动适配屏幕
+        self.diskio_font_size = 16        # 经典模式：手动字号
+        self.diskio_title_color = "#ffffff"   # 标题颜色
+        self.diskio_read_color = "#ff8000"    # "读"行颜色
+        self.diskio_write_color = "#00ffff"   # "写"行颜色
+        self.diskio_label_color = "#ffffff"   # 网速样式：标签颜色
+        self.diskio_value_auto = 1        # 网速样式：字号自动适配
+        self.diskio_value_font_size = 20  # 网速样式：手动字号
+        self.diskio_bar1_color = "#eb8b8b"    # 网速样式：读柱状图颜色
+        self.diskio_bar2_color = "#92d3d9"    # 网速样式：写柱状图颜色
+        self.diskio_value_read_color = "#ff8000"   # 网速样式：读数值颜色
+        self.diskio_value_write_color = "#00ffff"  # 网速样式：写数值颜色
+        # 经典2样式（仿网络流量布局）：颜色跟随网络流量页面配色，无需独立配置
+        # --- 网络流量监控（上传/下载） ---
+        self.netspeed_mode = "自定义"          # 显示模式：经典 / 自定义
+        self.netspeed_up_color = "#ff8000"    # 网络流量：上传文字颜色
+        self.netspeed_down_color = "#00ffff"  # 网络流量：下载文字颜色
+        self.netspeed_bar1_color = "#eb8b8b"  # 网络流量：上传柱状图颜色
+        self.netspeed_bar2_color = "#92d3d9"  # 网络流量：下载柱状图颜色
+        self.guide_last_page = ""    # 设置"按页面"导航上次选择的页面
+        self.custom_color_schemes = {}  # 用户自定义配色方案 {名称: [颜色hex列表]}
 
 
 # ==================== LCD 屏幕分辨率检测 ====================
@@ -4611,13 +4984,15 @@ def UI_Page():  # 进行图像界面显示
         MEMO_PAGE_ID: ("纪念日：设置列表", 4, (4, "content")),
         TODO_PAGE_ID: ("待办事项：设置列表", 4, (4, "content")),
         PROC_PAGE_ID: ("进程TOP：设置显示数量", 5, (0, "monitor")),
+        DISKIO_PAGE_ID: ("磁盘读写：选择显示模式、标题/字号/颜色", 5, (3, "monitor")),
         HWDETAIL_PAGE_ID: ("硬件详情：设置监控类型与数量", 5, (1, "monitor")),
         GAUGE_PAGE_ID: ("仪表盘：设置项目与颜色", 5, (2, "monitor")),
         SCREEN_PAGE_ID: ("屏幕镜像：设置放大镜", 6, None),
     }
 
     ttk.Label(page_guide_frame, text="选择页面，查看该页面有哪些设置并可一键前往：").pack(anchor=tk.W, pady=(0, pad_scale_xy5))
-    guide_combobox = ttk.Combobox(page_guide_frame, state="readonly", width=26)
+    guide_var = tk.StringVar(page_guide_frame, value=getattr(config_obj, "guide_last_page", ""))
+    guide_combobox = ttk.Combobox(page_guide_frame, textvariable=guide_var, state="readonly", width=26)
     guide_combobox.pack(anchor=tk.W, pady=pad_scale_xy5)
     guide_desc = tk.Label(page_guide_frame, text="", wraplength=320, justify=tk.LEFT, fg="gray")
     guide_desc.pack(anchor=tk.W, pady=pad_scale_xy5)
@@ -4626,6 +5001,10 @@ def UI_Page():  # 进行图像界面显示
         name = guide_combobox.get()
         for pid, pname in PAGE_ID.items():
             if pname == name:
+                # 记住本次选择（按当前设备配置保存，重启后恢复）
+                _ui_set_active()  # 锁定到UI当前设备（避免多屏设置冲突）
+                config_obj.guide_last_page = name
+                save_config()
                 guide = page_setting_guide.get(pid)
                 if guide:
                     guide_desc.config(text=guide[0])
@@ -5149,6 +5528,231 @@ def UI_Page():  # 进行图像界面显示
     memo_text.bind("<KeyRelease>", save_text_config)
     todo_text.bind("<KeyRelease>", save_text_config)
 
+    # ==================== 配色方案：通用套用组件 ====================
+    _scheme_combos = []          # 收集所有"配色方案"下拉框，自定义方案变化后统一刷新
+    _scheme_swatch_buttons = []  # 收集所有"色块选择按钮" [(Menubutton, var)]，方案变化后刷新候选色
+    _current_scheme_colors = []  # 当前选中方案的颜色列表（作为各位置色块下拉的候选色）
+
+    def _is_dark_hex(h):
+        """判断颜色深浅，用于色块上文字选黑/白"""
+        try:
+            h = (h or "#ffffff").lstrip('#')
+            r, g, b = (int(h[i:i + 2], 16) for i in (0, 2, 4))
+            return (r * 299 + g * 587 + b * 114) / 1000 < 140
+        except Exception:
+            return False
+
+    def _build_scheme_menu(anchor, var=None):
+        """构建色块菜单：每项=当前方案的一种颜色（色块显示），点击把颜色写入 var"""
+        menu = tk.Menu(anchor, tearoff=0)
+        colors = _current_scheme_colors or []
+        if not colors:
+            menu.add_command(label="（未选择配色方案）", state="disabled")
+        for c in colors:
+            try:
+                fg = "#ffffff" if _is_dark_hex(c) else "#000000"
+                menu.add_command(label="      ", background=c, foreground=fg,
+                                 command=(lambda col=c: var.set(col)) if var is not None else (lambda: None))
+            except Exception:
+                pass
+        return menu
+
+    def _make_swatch_button(parent, var):
+        """生成色块选择按钮：点击弹出当前方案的颜色色块菜单，选择后写入 var"""
+        mb = tk.Menubutton(parent, text="☰", relief="raised", width=2)
+        _scheme_swatch_buttons.append((mb, var))
+        mb.configure(menu=_build_scheme_menu(mb, var))
+        return mb
+
+    def _refresh_scheme_swatches():
+        """方案变化后刷新所有色块按钮的候选色菜单"""
+        for mb, var in _scheme_swatch_buttons:
+            try:
+                mb.configure(menu=_build_scheme_menu(mb, var))
+            except Exception:
+                pass
+
+    def _save_current_scheme(vars_):
+        """把当前各颜色位置的取值收集为新方案，弹窗命名保存（支持混搭配色）"""
+        colors = []
+        for v in vars_:
+            c = (v.get() or "").strip()
+            if not c:
+                continue
+            colors.append(c if c.startswith("#") else "#" + c)
+        parsed = parse_color_list(",".join(colors))
+        if not parsed:
+            insert_text_message("保存失败：当前没有有效的颜色值")
+            return
+        res = _scheme_dialog("保存当前配色为新方案", colors_text=",".join(parsed))
+        if not res or not res.get("name"):
+            return
+        _ui_set_active()
+        config_obj.custom_color_schemes = config_obj.custom_color_schemes or {}
+        config_obj.custom_color_schemes[res["name"]] = parsed
+        save_config()
+        _refresh_scheme_page()
+        _refresh_scheme_combos()
+        insert_text_message("已保存新配色方案：%s" % res["name"])
+
+    def _make_scheme_row(frame, vars_):
+        """配色方案选择行：选方案仅提供候选色板（各颜色行后的色块下拉可选该方案颜色），不自动套用；
+        并提供"存为新方案"按钮，把当前各位置颜色组合保存为新方案。"""
+        row = ttk.Frame(frame)
+        row.pack(anchor=tk.W, pady=(0, pad_scale_xy5))
+        ttk.Label(row, text="配色方案:").pack(side=tk.LEFT)
+        var = tk.StringVar(frame, "")
+        combo = ttk.Combobox(row, textvariable=var, width=18, state="readonly")
+        combo.pack(side=tk.LEFT, padx=pad_scale_xy5)
+        ttk.Label(row, text="选方案后，各颜色后的色块下拉可选该方案颜色", foreground="gray").pack(side=tk.LEFT)
+        ttk.Button(row, text="存为新方案", padding=pad_scale_xy,
+                   command=lambda: _save_current_scheme(vars_)).pack(side=tk.LEFT, padx=(pad_scale_xy5, 0))
+
+        def _on_select(event=None):
+            schemes = get_all_color_schemes(config_obj)
+            colors = schemes.get(var.get(), [])
+            _current_scheme_colors[:] = colors
+            _refresh_scheme_swatches()
+        combo.bind("<<ComboboxSelected>>", _on_select)
+        _scheme_combos.append(combo)
+        combo["values"] = list(get_all_color_schemes(config_obj).keys())
+        return combo
+
+    def _refresh_scheme_combos():
+        """自定义配色方案增删改后，刷新所有配色方案下拉框的选项"""
+        names = list(get_all_color_schemes(config_obj).keys())
+        for combo in _scheme_combos:
+            combo["values"] = names
+
+    # ---- 子页：配色方案（管理，独立标签） ----
+    scheme_frame = ttk.Frame(settings_notebook, padding=(pad_scale_xy5 * 2, pad_scale_xy5 * 2))
+    settings_notebook.add(scheme_frame, text="  配色方案  ")
+
+    ttk.Label(scheme_frame, text="选择配色方案预览；内置方案只读，可新增/编辑/删除自定义方案：").pack(anchor=tk.W, pady=(0, pad_scale_xy5))
+
+    scheme_row = ttk.Frame(scheme_frame)
+    scheme_row.pack(anchor=tk.W, pady=pad_scale_xy5)
+    ttk.Label(scheme_row, text="方案:").pack(side=tk.LEFT)
+    scheme_var = tk.StringVar(scheme_frame, "")
+    scheme_combo = ttk.Combobox(scheme_row, textvariable=scheme_var, width=24, state="readonly")
+    scheme_combo.pack(side=tk.LEFT, padx=pad_scale_xy5)
+    scheme_canvas = tk.Canvas(scheme_frame, height=28, bg="white", highlightthickness=1)
+    scheme_canvas.pack(fill=tk.X, pady=pad_scale_xy5)
+
+    def _draw_scheme_preview(event=None):
+        schemes = get_all_color_schemes(config_obj)
+        colors = schemes.get(scheme_var.get(), [])
+        scheme_canvas.delete("all")
+        w = scheme_canvas.winfo_width()
+        if w <= 1:
+            w = 380
+        n = max(1, len(colors))
+        cw = max(1, w // n)
+        for i, c in enumerate(colors):
+            scheme_canvas.create_rectangle(i * cw, 0, (i + 1) * cw, 28, fill=c, outline="")
+
+    def _refresh_scheme_page():
+        schemes = get_all_color_schemes(config_obj)
+        names = list(schemes.keys())
+        scheme_combo["values"] = names
+        if scheme_var.get() not in names:
+            scheme_var.set(names[0] if names else "")
+        _draw_scheme_preview()
+
+    scheme_combo.bind("<<ComboboxSelected>>", _draw_scheme_preview)
+
+    def _scheme_dialog(title, name="", colors_text=""):
+        """配色方案编辑对话框，返回 {'name':..,'colors':..} 或 None"""
+        dlg = tk.Toplevel(window)
+        dlg.title(title)
+        dlg.transient(window)
+        dlg.grab_set()
+        dlg.resizable(False, False)
+        frm = ttk.Frame(dlg, padding=(pad_scale_xy5 * 2, pad_scale_xy5 * 2))
+        frm.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(frm, text="方案名称:").pack(anchor=tk.W)
+        name_var = tk.StringVar(frm, name)
+        ttk.Entry(frm, textvariable=name_var, width=30).pack(anchor=tk.W, pady=(pad_scale_xy5, 0))
+        ttk.Label(frm, text="颜色列表（#rrggbb，逗号分隔）:").pack(anchor=tk.W, pady=(pad_scale_xy5, 0))
+        colors_var = tk.StringVar(frm, colors_text)
+        ttk.Entry(frm, textvariable=colors_var, width=44).pack(anchor=tk.W, pady=(pad_scale_xy5, 0))
+        ttk.Label(frm, text="示例：#ffb3ba,#baffc9,#bae1ff,#ddbaff,#ffd6ba,#ffffba",
+                  foreground="gray").pack(anchor=tk.W, pady=(pad_scale_xy5, 0))
+        result = {}
+        def _ok():
+            result["name"] = name_var.get().strip()
+            result["colors"] = colors_var.get().strip()
+            dlg.destroy()
+        def _cancel():
+            dlg.destroy()
+        btn_row = ttk.Frame(frm)
+        btn_row.pack(anchor=tk.E, pady=(pad_scale_xy5, 0))
+        ttk.Button(btn_row, text="确定", padding=pad_scale_xy, command=_ok).pack(side=tk.LEFT, padx=(0, pad_scale_xy5))
+        ttk.Button(btn_row, text="取消", padding=pad_scale_xy, command=_cancel).pack(side=tk.LEFT)
+        dlg.wait_window()
+        return result if result else None
+
+    def add_custom_scheme():
+        res = _scheme_dialog("新增配色方案")
+        if not res or not res.get("name"):
+            return
+        colors = parse_color_list(res.get("colors", ""))
+        if not colors:
+            insert_text_message("新增失败：颜色列表为空或格式不正确")
+            return
+        _ui_set_active()
+        config_obj.custom_color_schemes = config_obj.custom_color_schemes or {}
+        config_obj.custom_color_schemes[res["name"]] = colors
+        save_config()
+        scheme_var.set(res["name"])
+        _refresh_scheme_page()
+        _refresh_scheme_combos()
+
+    def edit_custom_scheme():
+        name = scheme_var.get()
+        if name in BUILTIN_COLOR_SCHEMES:
+            insert_text_message("内置方案不可编辑")
+            return
+        custom = getattr(config_obj, "custom_color_schemes", {}) or {}
+        res = _scheme_dialog("编辑配色方案", name, ",".join(custom.get(name, [])))
+        if not res or not res.get("name"):
+            return
+        colors = parse_color_list(res.get("colors", ""))
+        if not colors:
+            insert_text_message("保存失败：颜色列表为空或格式不正确")
+            return
+        _ui_set_active()
+        config_obj.custom_color_schemes = config_obj.custom_color_schemes or {}
+        if res["name"] != name and name in config_obj.custom_color_schemes:
+            del config_obj.custom_color_schemes[name]
+        config_obj.custom_color_schemes[res["name"]] = colors
+        save_config()
+        scheme_var.set(res["name"])
+        _refresh_scheme_page()
+        _refresh_scheme_combos()
+
+    def del_custom_scheme():
+        name = scheme_var.get()
+        if name in BUILTIN_COLOR_SCHEMES:
+            insert_text_message("内置方案不可删除")
+            return
+        if not tk.messagebox.askyesno("删除配色方案", "确定删除「%s」？" % name, parent=window):
+            return
+        _ui_set_active()
+        config_obj.custom_color_schemes = config_obj.custom_color_schemes or {}
+        config_obj.custom_color_schemes.pop(name, None)
+        save_config()
+        _refresh_scheme_page()
+        _refresh_scheme_combos()
+
+    btn_row = ttk.Frame(scheme_frame)
+    btn_row.pack(anchor=tk.W, pady=pad_scale_xy5)
+    ttk.Button(btn_row, text="新增方案", padding=pad_scale_xy, command=add_custom_scheme).pack(side=tk.LEFT, padx=(0, pad_scale_xy5))
+    ttk.Button(btn_row, text="编辑当前", padding=pad_scale_xy, command=edit_custom_scheme).pack(side=tk.LEFT, padx=(0, pad_scale_xy5))
+    ttk.Button(btn_row, text="删除当前", padding=pad_scale_xy, command=del_custom_scheme).pack(side=tk.LEFT)
+    ttk.Label(btn_row, text="（内置方案只读）", foreground="gray").pack(side=tk.LEFT, padx=pad_scale_xy5)
+    _refresh_scheme_page()
+
     # ---- 子页4.5：监控显示 ----
     monitor_frame = ttk.Frame(settings_notebook)
     settings_notebook.add(monitor_frame, text="  监控显示  ")
@@ -5291,6 +5895,7 @@ def UI_Page():  # 进行图像界面显示
         ttk.Checkbutton(row, text=label, variable=var, command=change_gauge).pack(side=tk.LEFT)
         ttk.Entry(row, textvariable=color_var, width=9).pack(side=tk.LEFT, padx=pad_scale_xy5)
         ttk.Button(row, text="颜色", padding=pad_scale_xy, command=lambda: _pick_gauge_color(color_var)).pack(side=tk.LEFT)
+        _make_swatch_button(row, color_var).pack(side=tk.LEFT, padx=(pad_scale_xy5, 0))
         if sensor_key:
             ttk.Button(row, text="传感器", padding=pad_scale_xy,
                        command=lambda: _open_sensor_picker(
@@ -5313,6 +5918,206 @@ def UI_Page():  # 进行图像界面显示
               gauge_cpu_temp_color_var, gauge_gpu_color_var, gauge_gpu_temp_color_var,
               gauge_fan_color_var, gauge_upload_color_var, gauge_download_color_var):
         v.trace_add("write", change_gauge)
+    _make_scheme_row(gauge_frame, [gauge_cpu_color_var, gauge_mem_color_var, gauge_disk_color_var,
+                                   gauge_cpu_temp_color_var, gauge_gpu_color_var, gauge_gpu_temp_color_var,
+                                   gauge_fan_color_var, gauge_upload_color_var, gauge_download_color_var])
+
+    # ==== 子子页：磁盘读写 ====
+    disk_frame = ttk.Frame(monitor_notebook, padding=(pad_scale_xy5 * 2, pad_scale_xy5 * 2))
+    monitor_notebook.add(disk_frame, text="  磁盘读写  ")
+
+    def change_diskio(*args):
+        global config_obj
+        _ui_set_active()  # 锁定到UI当前设备（避免多屏设置冲突）
+        config_obj.diskio_mode = diskio_mode_var.get()
+        config_obj.diskio_show_title = diskio_show_title_var.get()
+        config_obj.diskio_font_auto = diskio_font_auto_var.get()
+        try:
+            config_obj.diskio_font_size = int(diskio_font_size_var.get())
+        except Exception:
+            pass
+        config_obj.diskio_title_color = diskio_title_color_var.get() or "#ffffff"
+        config_obj.diskio_read_color = diskio_read_color_var.get() or "#ff8000"
+        config_obj.diskio_write_color = diskio_write_color_var.get() or "#00ffff"
+        config_obj.diskio_label_color = diskio_label_color_var.get() or "#ffffff"
+        config_obj.diskio_value_read_color = diskio_value_read_color_var.get() or "#ff8000"
+        config_obj.diskio_value_write_color = diskio_value_write_color_var.get() or "#00ffff"
+        config_obj.diskio_value_auto = diskio_value_auto_var.get()
+        try:
+            config_obj.diskio_value_font_size = int(diskio_value_font_size_var.get())
+        except Exception:
+            pass
+        config_obj.diskio_bar1_color = diskio_bar1_color_var.get() or "#eb8b8b"
+        config_obj.diskio_bar2_color = diskio_bar2_color_var.get() or "#92d3d9"
+        save_config()
+        _sync_diskio_ui_state()
+
+    def _pick_diskio_color(var):
+        color = tkinter.colorchooser.askcolor(color=var.get(), parent=window)
+        if color and color[1]:
+            var.set(color[1])
+
+    def _make_diskio_color_row(frame, label, var):
+        row = ttk.Frame(frame)
+        row.pack(anchor=tk.W, pady=pad_scale_xy5)
+        ttk.Label(row, text=label).pack(side=tk.LEFT)
+        ttk.Entry(row, textvariable=var, width=9).pack(side=tk.LEFT, padx=pad_scale_xy5)
+        ttk.Button(row, text="颜色", padding=pad_scale_xy,
+                   command=lambda: _pick_diskio_color(var)).pack(side=tk.LEFT)
+        _make_swatch_button(row, var).pack(side=tk.LEFT, padx=(pad_scale_xy5, 0))
+        return row
+
+    # 显示模式（顶部，始终可见）
+    mode_row = ttk.Frame(disk_frame)
+    mode_row.pack(anchor=tk.W, pady=(0, pad_scale_xy5))
+    ttk.Label(mode_row, text="显示模式:").pack(side=tk.LEFT)
+    diskio_mode_var = tk.StringVar(disk_frame, config_obj.diskio_mode)
+    diskio_mode_cb = ttk.Combobox(mode_row, textvariable=diskio_mode_var,
+                                  values=["经典", "经典2", "网速样式"], width=10, state="readonly")
+    diskio_mode_cb.pack(side=tk.LEFT, padx=pad_scale_xy5)
+    diskio_mode_var.trace_add("write", change_diskio)
+    ttk.Label(mode_row, text="选中后自动跳转到对应样式标签", foreground="gray").pack(side=tk.LEFT)
+
+    # 磁盘读写内部按样式分标签页，避免单页内容过高
+    disk_notebook = ttk.Notebook(disk_frame)
+    disk_notebook.pack(fill=tk.BOTH, expand=True, pady=(pad_scale_xy5, 0))
+
+    # ---- 标签1：经典模式 ----
+    classic_tab = ttk.Frame(disk_notebook, padding=(pad_scale_xy5 * 2, pad_scale_xy5 * 2))
+    disk_notebook.add(classic_tab, text="  经典模式  ")
+
+    diskio_show_title_var = tk.IntVar(classic_tab, config_obj.diskio_show_title)
+    diskio_show_title_cb = ttk.Checkbutton(classic_tab, text="显示标题“磁盘读写”",
+                                           variable=diskio_show_title_var, command=change_diskio)
+    diskio_show_title_cb.pack(anchor=tk.W, pady=pad_scale_xy5)
+
+    font_auto_row = ttk.Frame(classic_tab)
+    font_auto_row.pack(anchor=tk.W, pady=pad_scale_xy5)
+    diskio_font_auto_var = tk.IntVar(classic_tab, config_obj.diskio_font_auto)
+    diskio_font_auto_cb = ttk.Checkbutton(font_auto_row, text="字号自适应屏幕",
+                                          variable=diskio_font_auto_var, command=change_diskio)
+    diskio_font_auto_cb.pack(side=tk.LEFT)
+    ttk.Label(font_auto_row, text="  手动字号:").pack(side=tk.LEFT)
+    diskio_font_size_var = tk.IntVar(classic_tab, config_obj.diskio_font_size)
+    diskio_font_size_spin = ttk.Spinbox(font_auto_row, from_=8, to=72, textvariable=diskio_font_size_var, width=5)
+    diskio_font_size_spin.pack(side=tk.LEFT, padx=pad_scale_xy5)
+    diskio_font_size_var.trace_add("write", change_diskio)
+
+    diskio_title_color_var = tk.StringVar(classic_tab, config_obj.diskio_title_color)
+    diskio_read_color_var = tk.StringVar(classic_tab, config_obj.diskio_read_color)
+    diskio_write_color_var = tk.StringVar(classic_tab, config_obj.diskio_write_color)
+    classic_color_rows = [
+        _make_diskio_color_row(classic_tab, "标题颜色:", diskio_title_color_var),
+        _make_diskio_color_row(classic_tab, "读 颜色:", diskio_read_color_var),
+        _make_diskio_color_row(classic_tab, "写 颜色:", diskio_write_color_var),
+    ]
+    _make_scheme_row(classic_tab, [diskio_title_color_var, diskio_read_color_var, diskio_write_color_var])
+
+    # ---- 标签2：经典2样式（仿网络流量布局） ----
+    classic2_tab = ttk.Frame(disk_notebook, padding=(pad_scale_xy5 * 2, pad_scale_xy5 * 2))
+    disk_notebook.add(classic2_tab, text="  经典2样式  ")
+
+    ttk.Label(classic2_tab, text="与网络流量页面的字体大小、布局、颜色完全一致（标签为读/写）",
+              wraplength=340, justify=tk.LEFT).pack(anchor=tk.W, pady=pad_scale_xy5)
+    ttk.Label(classic2_tab, text="颜色自动跟随「网络流量」页面的当前配色（经典=通用文字颜色+默认柱色；自定义=独立配色），无需单独配置。",
+              foreground="gray", wraplength=340, justify=tk.LEFT).pack(anchor=tk.W, pady=pad_scale_xy5)
+
+    # ---- 标签3：网速样式 ----
+    netspeed_tab = ttk.Frame(disk_notebook, padding=(pad_scale_xy5 * 2, pad_scale_xy5 * 2))
+    disk_notebook.add(netspeed_tab, text="  网速样式  ")
+
+    ttk.Label(netspeed_tab, text="带实时柱状图").pack(anchor=tk.W, pady=(0, pad_scale_xy5))
+    val_font_row = ttk.Frame(netspeed_tab)
+    val_font_row.pack(anchor=tk.W, pady=pad_scale_xy5)
+    diskio_value_auto_var = tk.IntVar(netspeed_tab, config_obj.diskio_value_auto)
+    diskio_value_auto_cb = ttk.Checkbutton(val_font_row, text="字号自适应屏幕",
+                                           variable=diskio_value_auto_var, command=change_diskio)
+    diskio_value_auto_cb.pack(side=tk.LEFT)
+    ttk.Label(val_font_row, text="  手动字号:").pack(side=tk.LEFT)
+    diskio_value_font_size_var = tk.IntVar(netspeed_tab, config_obj.diskio_value_font_size)
+    diskio_value_font_size_spin = ttk.Spinbox(val_font_row, from_=8, to=40, textvariable=diskio_value_font_size_var, width=5)
+    diskio_value_font_size_spin.pack(side=tk.LEFT, padx=pad_scale_xy5)
+    diskio_value_font_size_var.trace_add("write", change_diskio)
+
+    diskio_label_color_var = tk.StringVar(netspeed_tab, config_obj.diskio_label_color)
+    diskio_value_read_color_var = tk.StringVar(netspeed_tab, config_obj.diskio_value_read_color)
+    diskio_value_write_color_var = tk.StringVar(netspeed_tab, config_obj.diskio_value_write_color)
+    diskio_bar1_color_var = tk.StringVar(netspeed_tab, config_obj.diskio_bar1_color)
+    diskio_bar2_color_var = tk.StringVar(netspeed_tab, config_obj.diskio_bar2_color)
+    netspeed_color_rows = [
+        _make_diskio_color_row(netspeed_tab, "标签颜色:", diskio_label_color_var),
+        _make_diskio_color_row(netspeed_tab, "读数值颜色:", diskio_value_read_color_var),
+        _make_diskio_color_row(netspeed_tab, "写数值颜色:", diskio_value_write_color_var),
+        _make_diskio_color_row(netspeed_tab, "读柱颜色:", diskio_bar1_color_var),
+        _make_diskio_color_row(netspeed_tab, "写柱颜色:", diskio_bar2_color_var),
+    ]
+    _make_scheme_row(netspeed_tab, [diskio_label_color_var, diskio_value_read_color_var,
+                                    diskio_value_write_color_var, diskio_bar1_color_var, diskio_bar2_color_var])
+    for v in (diskio_title_color_var, diskio_read_color_var, diskio_write_color_var,
+              diskio_label_color_var, diskio_value_read_color_var, diskio_value_write_color_var,
+              diskio_bar1_color_var, diskio_bar2_color_var):
+        v.trace_add("write", change_diskio)
+
+    def _sync_diskio_ui_state():
+        """根据显示模式自动切到对应样式标签"""
+        mode = diskio_mode_var.get()
+        if mode == "经典2":
+            disk_notebook.select(classic2_tab)
+        elif mode == "网速样式":
+            disk_notebook.select(netspeed_tab)
+        else:
+            disk_notebook.select(classic_tab)
+    _sync_diskio_ui_state()
+
+    # ==== 子子页：网络流量 ====
+    net_frame = ttk.Frame(monitor_notebook, padding=(pad_scale_xy5 * 2, pad_scale_xy5 * 2))
+    monitor_notebook.add(net_frame, text="  网络流量  ")
+
+    def change_netspeed_color(*args):
+        global config_obj
+        _ui_set_active()  # 锁定到UI当前设备（避免多屏设置冲突）
+        config_obj.netspeed_mode = netspeed_mode_var.get()
+        config_obj.netspeed_up_color = netspeed_up_color_var.get() or "#ff8000"
+        config_obj.netspeed_down_color = netspeed_down_color_var.get() or "#00ffff"
+        config_obj.netspeed_bar1_color = netspeed_bar1_color_var.get() or "#eb8b8b"
+        config_obj.netspeed_bar2_color = netspeed_bar2_color_var.get() or "#92d3d9"
+        save_config()
+        _sync_netspeed_ui_state()
+
+    # 显示模式
+    net_mode_row = ttk.Frame(net_frame)
+    net_mode_row.pack(anchor=tk.W, pady=pad_scale_xy5)
+    ttk.Label(net_mode_row, text="显示模式:").pack(side=tk.LEFT)
+    netspeed_mode_var = tk.StringVar(net_frame, config_obj.netspeed_mode)
+    netspeed_mode_cb = ttk.Combobox(net_mode_row, textvariable=netspeed_mode_var,
+                                    values=["经典", "自定义"], width=10, state="readonly")
+    netspeed_mode_cb.pack(side=tk.LEFT, padx=pad_scale_xy5)
+    netspeed_mode_var.trace_add("write", change_netspeed_color)
+    ttk.Label(net_mode_row, text="经典=修改前样式，自定义=全部颜色独立", foreground="gray").pack(side=tk.LEFT)
+
+    netspeed_up_color_var = tk.StringVar(net_frame, config_obj.netspeed_up_color)
+    netspeed_down_color_var = tk.StringVar(net_frame, config_obj.netspeed_down_color)
+    netspeed_bar1_color_var = tk.StringVar(net_frame, config_obj.netspeed_bar1_color)
+    netspeed_bar2_color_var = tk.StringVar(net_frame, config_obj.netspeed_bar2_color)
+    netspeed_color_rows = [
+        _make_diskio_color_row(net_frame, "上传文字颜色:", netspeed_up_color_var),
+        _make_diskio_color_row(net_frame, "下载文字颜色:", netspeed_down_color_var),
+        _make_diskio_color_row(net_frame, "上传柱颜色:", netspeed_bar1_color_var),
+        _make_diskio_color_row(net_frame, "下载柱颜色:", netspeed_bar2_color_var),
+    ]
+    _make_scheme_row(net_frame, [netspeed_up_color_var, netspeed_down_color_var,
+                                 netspeed_bar1_color_var, netspeed_bar2_color_var])
+    for v in (netspeed_up_color_var, netspeed_down_color_var,
+              netspeed_bar1_color_var, netspeed_bar2_color_var):
+        v.trace_add("write", change_netspeed_color)
+
+    def _sync_netspeed_ui_state():
+        """经典模式禁用自定义颜色区，避免无关注释误导"""
+        custom_state = "normal" if netspeed_mode_var.get() == "自定义" else "disabled"
+        for row in netspeed_color_rows:
+            for child in row.winfo_children():
+                child.configure(state=custom_state)
+    _sync_netspeed_ui_state()
 
     # ---- 子页5：屏幕镜像 ----
     mirror_frame = ttk.Frame(settings_notebook, padding=(pad_scale_xy5 * 2, pad_scale_xy5 * 2))
@@ -5345,6 +6150,8 @@ def UI_Page():  # 进行图像界面显示
         """把当前设备配置刷新到设置页控件（切换设备时调用）"""
         global config_obj
         try:
+            # ---- 按页面导航 ----
+            guide_var.set(getattr(config_obj, "guide_last_page", ""))
             # ---- 通用 ----
             anti_burn_var.set(config_obj.anti_burn)
             preview_var.set(config_obj.preview_enabled)
@@ -5418,6 +6225,35 @@ def UI_Page():  # 进行图像界面显示
             gauge_fan_color_var.set(config_obj.gauge_fan_color)
             gauge_upload_color_var.set(config_obj.gauge_upload_color)
             gauge_download_color_var.set(config_obj.gauge_download_color)
+            # ---- 磁盘读写 ----
+            diskio_mode_var.set(config_obj.diskio_mode)
+            diskio_show_title_var.set(config_obj.diskio_show_title)
+            diskio_font_auto_var.set(config_obj.diskio_font_auto)
+            diskio_font_size_var.set(config_obj.diskio_font_size)
+            diskio_title_color_var.set(config_obj.diskio_title_color)
+            diskio_read_color_var.set(config_obj.diskio_read_color)
+            diskio_write_color_var.set(config_obj.diskio_write_color)
+            diskio_label_color_var.set(config_obj.diskio_label_color)
+            diskio_value_read_color_var.set(config_obj.diskio_value_read_color)
+            diskio_value_write_color_var.set(config_obj.diskio_value_write_color)
+            diskio_value_auto_var.set(config_obj.diskio_value_auto)
+            diskio_value_font_size_var.set(config_obj.diskio_value_font_size)
+            diskio_bar1_color_var.set(config_obj.diskio_bar1_color)
+            diskio_bar2_color_var.set(config_obj.diskio_bar2_color)
+            _sync_diskio_ui_state()
+            # ---- 网络流量 ----
+            netspeed_mode_var.set(config_obj.netspeed_mode)
+            netspeed_up_color_var.set(config_obj.netspeed_up_color)
+            netspeed_down_color_var.set(config_obj.netspeed_down_color)
+            netspeed_bar1_color_var.set(config_obj.netspeed_bar1_color)
+            netspeed_bar2_color_var.set(config_obj.netspeed_bar2_color)
+            _sync_netspeed_ui_state()
+            # ---- 配色方案 ----
+            try:
+                _refresh_scheme_page()
+                _refresh_scheme_combos()
+            except Exception:
+                pass
             # ---- 屏幕镜像 ----
             zoom_enable_var.set(config_obj.zoom_enable)
             zoom_scale_var.set(config_obj.zoom_scale)
@@ -5437,6 +6273,198 @@ def UI_Page():  # 进行图像界面显示
         threading.Thread(target=check_update, daemon=True).start()
 
     ttk.Button(cfg_row, text="检查更新", width=12, padding=pad_scale_xy, command=check_update_async).pack(side=tk.LEFT)
+
+    # ==================== 设备信息标签页（设置与关于之间） ====================
+    hw_info_frame = ttk.Frame(notebook, padding=(pad_scale_xy5 * 3, pad_scale_xy5 * 3))
+    notebook.add(hw_info_frame, text="  设备信息  ")
+
+    hw_title_label = tk.Label(hw_info_frame, text="设备硬件信息",
+                              font=("TkDefaultFont", 14 * scale_factor // 100, "bold"))
+    hw_title_label.pack(pady=(0, 2))
+    hw_sub_label = tk.Label(hw_info_frame, text="固件 / 芯片 / USB / 本机系统信息（连接后点“刷新”）", fg="gray")
+    hw_sub_label.pack(pady=(0, pad_scale_xy5))
+
+    hw_notebook = ttk.Notebook(hw_info_frame)
+    hw_notebook.pack(fill=tk.BOTH, expand=True, pady=(0, pad_scale_xy5))
+
+    hw_conn_frame = ttk.Frame(hw_notebook, padding=(pad_scale_xy5 * 2, pad_scale_xy5 * 2))
+    hw_notebook.add(hw_conn_frame, text="  连接信息  ")
+    hw_sfr_frame = ttk.Frame(hw_notebook, padding=(pad_scale_xy5 * 2, pad_scale_xy5 * 2))
+    hw_notebook.add(hw_sfr_frame, text="  SFR寄存器  ")
+    hw_flash_frame = ttk.Frame(hw_notebook, padding=(pad_scale_xy5 * 2, pad_scale_xy5 * 2))
+    hw_notebook.add(hw_flash_frame, text="  Flash芯片  ")
+    hw_parts_frame = ttk.Frame(hw_notebook, padding=(pad_scale_xy5 * 2, pad_scale_xy5 * 2))
+    hw_notebook.add(hw_parts_frame, text="  Flash分区  ")
+    hw_sys_frame = ttk.Frame(hw_notebook, padding=(pad_scale_xy5 * 2, pad_scale_xy5 * 2))
+    hw_notebook.add(hw_sys_frame, text="  系统信息  ")
+
+    # Flash芯片信息（优先从 device_protocol.json 读取，失败时用内置默认）
+    _flash_default = {
+        "chip": "P25D80", "capacity": "1024KB", "page_size": "256B", "total_pages": 4096,
+        "allocations": {
+            "gif_frames": {"start_page": 0, "pages": 3600, "count": 36, "description": "36张动图, 每张100页"},
+            "demo_image": {"start_page": 3600, "pages": 29, "description": "240x240单色Demo1"},
+            "digit_font_48x66": {"start_page": 3629, "pages": 22, "description": "48x66数码管字体N48X66P"},
+            "clock_font_asc64": {"start_page": 3651, "pages": 128, "description": "32x64 ASCII字体ASC64"},
+            "logo": {"start_page": 3779, "pages": 12, "description": "240x102单色LOGO"},
+            "j1_image": {"start_page": 3791, "pages": 29, "description": "240x240单色J1"},
+            "mlogo": {"start_page": 3820, "pages": 6, "description": "160x68单色MLOGO"},
+            "clock_background": {"start_page": 3826, "pages": 100, "description": "160x80彩色时钟背景CLK_BG"},
+            "photo_album": {"start_page": 3926, "pages": 100, "description": "160x80彩色相册图像PH1"},
+            "state_font_24x33": {"start_page": 4026, "pages": 12, "description": "24x33状态页数码管字体N24X33P"},
+            "state_background": {"start_page": 4038, "pages": 7, "description": "160x80状态页背景MP1"},
+        },
+    }
+
+    def _load_flash_layout():
+        """从 device_protocol.json 读取 Flash 布局，失败时返回内置默认"""
+        try:
+            with open(_get_resource("device_protocol.json"), "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data.get("flash_layout") or _flash_default
+        except Exception:
+            return _flash_default
+
+    def _add_info_row(parent, label, value):
+        row_f = ttk.Frame(parent)
+        row_f.pack(fill=tk.X, pady=1)
+        tk.Label(row_f, text=label, width=16, anchor=tk.E, fg="gray").pack(side=tk.LEFT, padx=(0, 6))
+        tk.Label(row_f, text=value, anchor=tk.W, justify=tk.LEFT).pack(side=tk.LEFT)
+
+    _sfr_type_names = ["u8地址", "u16地址", "u32地址", "字符串", "数组"]
+
+    def _read_sfr_value(entry):
+        """读取单个 SFR 条目的当前值（Read_M_u8/u16 内部已加串口锁，线程安全）"""
+        try:
+            data_type = entry.family[0] // 32
+            if data_type == 0:  # u8, 2B地址
+                return Read_M_u8(entry.data[0] * 256 + entry.data[1])
+            elif data_type == 1:  # u16, 1B地址
+                return Read_M_u16(entry.data[0])
+            elif data_type == 2:  # u32, 2B地址
+                addr = entry.data[0] * 256 + entry.data[1]
+                val = 0
+                for n in range(entry.family[0] % 32):
+                    val = (val << 8) | Read_M_u8(addr + n)
+                return val
+            elif data_type == 3:  # 字符串
+                return entry.data.decode("utf-8", errors="replace")
+            elif data_type == 4:  # 数组
+                return " ".join("%02X" % b for b in entry.data)
+        except Exception:
+            return None
+        return None
+
+    def _sfr_addr_str(entry):
+        """生成 SFR 条目的地址描述字符串"""
+        try:
+            data_type = entry.family[0] // 32
+            length = entry.family[0] % 32
+            if data_type == 0:
+                return "0x%04X(%d字节)" % (entry.data[0] * 256 + entry.data[1], length)
+            elif data_type == 1:
+                return "0x%02X" % entry.data[0]
+            elif data_type == 2:
+                return "0x%04X(%d字节)" % (entry.data[0] * 256 + entry.data[1], length)
+        except Exception:
+            pass
+        return "-"
+
+    def refresh_hw_info():
+        """刷新设备信息（USB连接信息/固件版本 + SFR寄存器 + Flash布局 + 本机系统信息）"""
+        for f in (hw_conn_frame, hw_sfr_frame, hw_flash_frame, hw_parts_frame, hw_sys_frame):
+            for w in f.winfo_children():
+                w.destroy()
+        dev = get_current_device()
+        usb = getattr(dev, "usb_info", {}) if dev is not None else {}
+        fw = getattr(dev, "firmware_version", 0) if dev is not None else 0
+        connected = (dev is not None and dev.ser is not None and dev.ser.is_open)
+
+        # ---- 子页1：连接信息（USB描述符） ----
+        _add_info_row(hw_conn_frame, "连接状态", "已连接" if connected else "未连接")
+        _add_info_row(hw_conn_frame, "端口", usb.get("port") or "-")
+        _add_info_row(hw_conn_frame, "序列号(SN)", usb.get("serial_number") or "-")
+        _add_info_row(hw_conn_frame, "VID", usb.get("vid") or "-")
+        _add_info_row(hw_conn_frame, "PID", usb.get("pid") or "-")
+        _add_info_row(hw_conn_frame, "制造商", usb.get("manufacturer") or "-")
+        _add_info_row(hw_conn_frame, "产品", usb.get("product") or "-")
+        _add_info_row(hw_conn_frame, "名称", usb.get("name") or "-")
+        _add_info_row(hw_conn_frame, "描述", usb.get("description") or "-")
+        _add_info_row(hw_conn_frame, "接口", usb.get("interface") or "-")
+        _add_info_row(hw_conn_frame, "硬件ID", usb.get("hwid") or "-")
+        _add_info_row(hw_conn_frame, "位置", usb.get("location") or "-")
+        _add_info_row(hw_conn_frame, "固件版本", ("v%d" % fw) if fw else "-")
+
+        # ---- 子页2：SFR寄存器（设备固件变量，实时读值） ----
+        sfr = getattr(dev, "msn_data", None) if dev is not None else None
+        if sfr:
+            _add_info_row(hw_sfr_frame, "变量名", "类型 / 地址 / 当前值")
+            for entry in sfr:
+                try:
+                    name = entry.name.decode("utf-8", errors="replace")
+                except Exception:
+                    name = "?"
+                try:
+                    dtype = _sfr_type_names[entry.family[0] // 32]
+                except Exception:
+                    dtype = "?"
+                addr = _sfr_addr_str(entry)
+                val = _read_sfr_value(entry) if connected else None
+                val_str = "-" if val is None else str(val)
+                _add_info_row(hw_sfr_frame, name, "%s %s = %s" % (dtype, addr, val_str))
+        else:
+            _add_info_row(hw_sfr_frame, "SFR数据", "未获取（设备未连接）")
+
+        # ---- 子页3：Flash芯片 ----
+        flash = _load_flash_layout()
+        _add_info_row(hw_flash_frame, "Flash芯片", flash.get("chip") or "-")
+        _add_info_row(hw_flash_frame, "容量", flash.get("capacity") or "-")
+        _add_info_row(hw_flash_frame, "页大小", flash.get("page_size") or "-")
+        _add_info_row(hw_flash_frame, "总页数", str(flash.get("total_pages") or "-"))
+
+        # ---- 子页4：Flash分区 ----
+        allocs = flash.get("allocations") or {}
+        if allocs:
+            for name, info in allocs.items():
+                start = info.get("start_page", "?")
+                pages = info.get("pages", "?")
+                desc = info.get("description", "")
+                _add_info_row(hw_parts_frame, name, "页 %s（共%s页）%s" % (start, pages, desc))
+
+        # ---- 子页5：系统信息（本机） ----
+        import platform
+        _add_info_row(hw_sys_frame, "操作系统", platform.platform())
+        _add_info_row(hw_sys_frame, "电脑名", platform.node())
+        _add_info_row(hw_sys_frame, "架构", platform.machine())
+        _add_info_row(hw_sys_frame, "CPU型号", platform.processor() or "未知")
+        try:
+            _add_info_row(hw_sys_frame, "CPU核心",
+                          "%d物理 / %d逻辑" % (psutil.cpu_count(logical=False) or 0, psutil.cpu_count(logical=True) or 0))
+        except Exception:
+            pass
+        try:
+            freq = psutil.cpu_freq()
+            if freq and freq.current:
+                _add_info_row(hw_sys_frame, "CPU频率", "%.1f GHz" % (freq.current / 1000))
+        except Exception:
+            pass
+        try:
+            _add_info_row(hw_sys_frame, "内存", "%.1f GB" % (psutil.virtual_memory().total / (1024 ** 3)))
+        except Exception:
+            pass
+        try:
+            batt = psutil.sensors_battery()
+            if batt:
+                _add_info_row(hw_sys_frame, "电池", "%d%%" % batt.percent)
+        except Exception:
+            pass
+        _add_info_row(hw_sys_frame, "Python", sys.version.split()[0])
+
+    hw_btn_row = ttk.Frame(hw_info_frame)
+    hw_btn_row.pack(anchor=tk.W)
+    ttk.Button(hw_btn_row, text="刷新", width=12, padding=pad_scale_xy, command=refresh_hw_info).pack(side=tk.LEFT)
+    ttk.Label(hw_btn_row, text="连接信息在设备连接成功时采集；未连接或显示“-”属正常", foreground="gray").pack(side=tk.LEFT, padx=(pad_scale_xy5, 0))
+    refresh_hw_info()
 
     # ==================== 关于标签页 ====================
     about_frame = ttk.Frame(notebook, padding=(pad_scale_xy5 * 3, pad_scale_xy5 * 3))
@@ -7039,9 +8067,22 @@ def UI_Page():  # 进行图像界面显示
         _primary_device.start_threads()
     manager_thread.start()
     
-    # 定期刷新设备列表
+    # 定期刷新设备列表 + 恢复当前设备上次的页面/方向选择
+    last_synced_device_state = None
     def _periodic_refresh():
+        nonlocal last_synced_device_state
         refresh_device_list()
+        try:
+            # 设备配置加载/变化后，把页面/方向下拉框同步为该设备上次的状态
+            dev = get_current_device()
+            if dev is not None and dev.config is not None:
+                key = (dev.device_name, dev.config.state_machine, dev.config.lcd_change)
+                if key != last_synced_device_state:
+                    last_synced_device_state = key
+                    sync_page_combobox()
+                    sync_lcd_combobox()
+        except Exception:
+            pass
         window.after(2000, _periodic_refresh)
     window.after(2000, _periodic_refresh)
 
@@ -7180,6 +8221,20 @@ def Get_MSN_Device(port_list):  # 尝试获取MSN设备
                 My_MSN_Device = MSN_Device(port.device, msn_version)
                 device.com_port = port.device
                 device.serial_number = port.serial_number or ""  # 唯一识别码
+                # 采集设备硬件/固件信息（供“设备信息”标签页展示）
+                device.firmware_version = msn_version
+                device.usb_info = {
+                    "port": port.device,
+                    "name": port.name,
+                    "description": port.description,
+                    "vid": "0x%04X" % (port.vid or 0),
+                    "pid": "0x%04X" % (port.pid or 0),
+                    "serial_number": port.serial_number or "",
+                    "location": port.location,
+                    "manufacturer": port.manufacturer,
+                    "product": port.product,
+                    "interface": port.interface,
+                }
                 # 每屏独立配置：按 serial_number 加载/创建本屏配置并切换生效
                 # （提前加载，使本屏页面/方向等配置立即生效并正确显示自身配置文件）
                 load_device_config(device, device.serial_number)
@@ -7278,9 +8333,20 @@ def MSN_Device_1_State_machine():  # MSN设备1的循环状态机
         elif config_obj.state_machine == STATE_PAGE_ID:
             show_PC_state(device.color_use, BLACK)
         elif config_obj.state_machine == NETSPEED_PAGE_ID:
-            rgb_tuple = (config_obj.text_color_r, config_obj.text_color_g, config_obj.text_color_b)
-            show_netspeed(text_color=rgb_tuple, bar1_color=bar_colors[0], bar2_color=bar_colors[1],
-                          back_color=back_color)
+            if (config_obj.netspeed_mode or "自定义") == "经典":
+                # 经典样式：上传/下载文字用通用文字颜色，柱状图用默认柱颜色
+                rgb_tuple = (config_obj.text_color_r, config_obj.text_color_g, config_obj.text_color_b)
+                show_netspeed(up_text_color=rgb_tuple, down_text_color=rgb_tuple,
+                              bar1_color=bar_colors[0], bar2_color=bar_colors[1],
+                              back_color=back_color)
+            else:
+                up_color = _diskio_hex2rgb(config_obj.netspeed_up_color)
+                down_color = _diskio_hex2rgb(config_obj.netspeed_down_color)
+                net_bar1 = _diskio_hex2rgb(config_obj.netspeed_bar1_color)
+                net_bar2 = _diskio_hex2rgb(config_obj.netspeed_bar2_color)
+                show_netspeed(up_text_color=up_color, down_text_color=down_color,
+                              bar1_color=net_bar1, bar2_color=net_bar2,
+                              back_color=back_color)
         elif config_obj.state_machine == CUSTOM1_PAGE_ID:
             rgb_tuple = (config_obj.text_color_r, config_obj.text_color_g, config_obj.text_color_b)
             show_custom_two_rows(text_color=rgb_tuple, bar1_color=bar_colors[0], bar2_color=bar_colors[1],
@@ -7485,17 +8551,18 @@ def show_marquee():
     dev.sleep_event.wait(0.05)
 
 
-def show_diskio():
-    """磁盘实时读写速率"""
+def _diskio_hex2rgb(h):
+    """配置颜色(#rrggbb)转RGB元组，非法值回退白色"""
+    try:
+        h = (h or "#ffffff").lstrip('#')
+        return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
+    except Exception:
+        return (255, 255, 255)
+
+
+def _diskio_read_speed():
+    """采样磁盘IO速率，返回 (读B/s, 写B/s)，异常时返回 (0,0)"""
     global diskio_last, diskio_last_time
-    dev = get_current_device()
-    if dev is None:
-        return
-    if dev.state_change == 1:
-        state_change_clear()
-        LCD_ADD(0, 0, SHOW_WIDTH, SHOW_HEIGHT)
-        diskio_last = psutil.disk_io_counters()
-        diskio_last_time = time.monotonic()
     now = time.monotonic()
     try:
         io = psutil.disk_io_counters()
@@ -7506,18 +8573,183 @@ def show_diskio():
         write_s = (io.write_bytes - diskio_last.write_bytes) / dt
         diskio_last = io
         diskio_last_time = now
+        return max(0.0, read_s), max(0.0, write_s)
     except Exception:
-        read_s = 0
-        write_s = 0
+        return 0.0, 0.0
+
+
+def show_diskio():
+    """磁盘实时读写速率（两种显示模式：经典 / 网速样式）"""
+    global config_obj, diskio_last, diskio_last_time
+    dev = get_current_device()
+    if dev is None:
+        return
+    if dev.state_change == 1:
+        state_change_clear()
+        LCD_ADD(0, 0, SHOW_WIDTH, SHOW_HEIGHT)
+        diskio_last = psutil.disk_io_counters()
+        diskio_last_time = time.monotonic()
+        if dev.diskio_plot_data is None:
+            dev.diskio_plot_data = {"read": [0] * (SHOW_WIDTH // 2), "write": [0] * (SHOW_WIDTH // 2)}
+    read_s, write_s = _diskio_read_speed()
+
+    try:
+        mode = config_obj.diskio_mode or "经典"
+    except Exception:
+        mode = "经典"
+
+    if mode == "网速样式":
+        _show_diskio_netspeed(dev, read_s, write_s)
+    elif mode == "经典2":
+        _show_diskio_classic2(dev, read_s, write_s)
+    else:
+        _show_diskio_classic(read_s, write_s)
+    dev.sleep_event.wait(0.5)
+
+
+def _show_diskio_classic(read_s, write_s):
+    """经典模式：标题可选 + 读/写两行，字号自适应或手动，颜色可配置"""
+    global config_obj
+    dev = get_current_device()
+    if dev is None:
+        return
+    try:
+        show_title = bool(config_obj.diskio_show_title)
+        font_auto = bool(config_obj.diskio_font_auto)
+    except Exception:
+        show_title, font_auto = True, True
+    # 字号：自动按行数适配，或手动
+    if font_auto:
+        rows = 3 if show_title else 2
+        font_size = max(8, min(40, int(SHOW_HEIGHT / rows) - 3))
+    else:
+        try:
+            font_size = max(8, min(72, int(config_obj.diskio_font_size)))
+        except Exception:
+            font_size = 16
+    title_color = _diskio_hex2rgb(config_obj.diskio_title_color)
+    read_color = _diskio_hex2rgb(config_obj.diskio_read_color)
+    write_color = _diskio_hex2rgb(config_obj.diskio_write_color)
+
+    # 组装要显示的行
+    lines = []
+    if show_title:
+        lines.append(("磁盘读写", title_color))
+    lines.append(("读 %.1f MB/s" % (read_s / 1048576.0), read_color))
+    lines.append(("写 %.1f MB/s" % (write_s / 1048576.0), write_color))
+
     im1 = Image.new("RGB", (SHOW_WIDTH, SHOW_HEIGHT), (0, 0, 0))
     draw = ImageDraw.Draw(im1)
-    font = MiniMark.load_font("./simhei.ttf", 16)
-    draw.text((4, 6), "磁盘读写", fill=(255, 255, 255), font=font)
-    draw.text((4, 34), "读 %.1f MB/s" % (read_s / 1048576.0), fill=(255, 128, 0), font=font)
-    draw.text((4, 56), "写 %.1f MB/s" % (write_s / 1048576.0), fill=(0, 255, 255), font=font)
+    font = MiniMark.load_font("./simhei.ttf", font_size)
+    # 长文本自动缩字号，保证整行放得下
+    while font_size > 8:
+        tw = round(draw.textlength("读 999.9 MB/s", font=font))
+        if tw <= SHOW_WIDTH - 4:
+            break
+        font_size -= 1
+        font = MiniMark.load_font("./simhei.ttf", font_size)
+    line_h = font_size + 3
+    start_y = max(0, (SHOW_HEIGHT - len(lines) * line_h) // 2)
+    for i, (text, color) in enumerate(lines):
+        draw.text((4, start_y + i * line_h), text, fill=color, font=font)
     rgb888 = np.asarray(im1, dtype=np.uint32)
     _safe_send_rgb888(rgb888)
-    dev.sleep_event.wait(0.5)
+
+
+def _show_diskio_netspeed(dev, read_s, write_s):
+    """网速样式：读/写两行标签+数值，下方各一条实时柱状图，颜色可配置"""
+    global config_obj
+    # 追加柱状图采样数据
+    if dev.diskio_plot_data is None:
+        dev.diskio_plot_data = {"read": [0] * (SHOW_WIDTH // 2), "write": [0] * (SHOW_WIDTH // 2)}
+    dev.diskio_plot_data["read"].pop(0)
+    dev.diskio_plot_data["read"].append(read_s)
+    dev.diskio_plot_data["write"].pop(0)
+    dev.diskio_plot_data["write"].append(write_s)
+
+    label_color = _diskio_hex2rgb(config_obj.diskio_label_color)
+    read_color = _diskio_hex2rgb(config_obj.diskio_value_read_color)
+    write_color = _diskio_hex2rgb(config_obj.diskio_value_write_color)
+    bar1_color = _diskio_hex2rgb(config_obj.diskio_bar1_color)
+    bar2_color = _diskio_hex2rgb(config_obj.diskio_bar2_color)
+
+    # 字号：自动适配（按两行+柱状图高度）或手动
+    try:
+        font_auto = bool(config_obj.diskio_value_auto)
+    except Exception:
+        font_auto = True
+    if font_auto:
+        font_size = max(8, min(40, SHOW_HEIGHT // 2 - 6))
+    else:
+        try:
+            font_size = max(8, min(72, int(config_obj.diskio_value_font_size)))
+        except Exception:
+            font_size = 20
+    font = MiniMark.load_font("./simhei.ttf", font_size)
+    while font_size > 8:
+        if round(font.getlength("读 999.9 MB/s")) <= SHOW_WIDTH - 4:
+            break
+        font_size -= 1
+        font = MiniMark.load_font("./simhei.ttf", font_size)
+
+    im1 = Image.new("RGB", (SHOW_WIDTH, SHOW_HEIGHT), (0, 0, 0))
+    draw = ImageDraw.Draw(im1)
+    # 标签 + 数值（标签用标签色，数值用读/写色）
+    for label, value, vcolor, start_y in (
+            ("读", read_s, read_color, SHOW_HEIGHT // 4 - font_size // 2),
+            ("写", write_s, write_color, SHOW_HEIGHT - SHOW_HEIGHT // 4 - font_size // 2)):
+        value_text = "%s/s" % sizeof_fmt(value)
+        lw = round(draw.textlength(label, font=font))
+        draw.text((0, start_y), label, fill=label_color, font=font)
+        draw.text((lw + 2, start_y), value_text, fill=vcolor, font=font)
+    # 柱状图：两条（读/写）
+    min_draw = 1
+    for bar_y, key, color in zip([SHOW_HEIGHT // 4 - 1, SHOW_HEIGHT - SHOW_HEIGHT // 4 - 1],
+                                 ["read", "write"], [bar1_color, bar2_color]):
+        values = dev.diskio_plot_data[key]
+        max_value = max(min_draw, max(values))
+        x0 = -BAR_WIDTH
+        x1 = -1
+        y1 = IMAGE_HEIGHT + bar_y
+        percent = IMAGE_HEIGHT / max_value
+        for sent in values[-(SHOW_WIDTH // BAR_WIDTH):]:
+            bar_height = percent * sent
+            x0 += BAR_WIDTH
+            x1 += BAR_WIDTH
+            y0 = y1 - bar_height
+            draw.rectangle([x0, y0, x1, y1], fill=color)
+    rgb888 = np.asarray(im1, dtype=np.uint32)
+    _safe_send_rgb888(rgb888)
+
+
+def _get_netspeed_colors():
+    """返回网络流量页面当前使用的配色 (上行文字, 下行文字, 柱1, 柱2)。
+    经典模式→通用文字颜色+默认柱色；自定义模式→网络流量独立配色。"""
+    global config_obj
+    if (config_obj.netspeed_mode or "自定义") == "经典":
+        text = (config_obj.text_color_r, config_obj.text_color_g, config_obj.text_color_b)
+        return text, text, bar_colors[0], bar_colors[1]
+    return (_diskio_hex2rgb(config_obj.netspeed_up_color),
+            _diskio_hex2rgb(config_obj.netspeed_down_color),
+            _diskio_hex2rgb(config_obj.netspeed_bar1_color),
+            _diskio_hex2rgb(config_obj.netspeed_bar2_color))
+
+
+def _show_diskio_classic2(dev, read_s, write_s):
+    """经典2样式：完全复刻网络流量页面的字体大小、布局与配色，标签改为读/写"""
+    global config_obj
+    # 追加柱状图采样数据（与网速样式共享同一份 read/write 采样）
+    if dev.diskio_plot_data is None:
+        dev.diskio_plot_data = {"read": [0] * (SHOW_WIDTH // 2), "write": [0] * (SHOW_WIDTH // 2)}
+    dev.diskio_plot_data["read"].pop(0)
+    dev.diskio_plot_data["read"].append(read_s)
+    dev.diskio_plot_data["write"].pop(0)
+    dev.diskio_plot_data["write"].append(write_s)
+
+    read_color, write_color, bar1_color, bar2_color = _get_netspeed_colors()
+    _render_two_line_bars("读", "写", read_s, write_s,
+                          read_color, write_color, bar1_color, bar2_color,
+                          dev.diskio_plot_data, "read", "write")
 
 
 def show_ping():
@@ -8709,6 +9941,7 @@ wait_time = 0.0
 netspeed_last_refresh_snetio = None
 netspeed_plot_data = None
 custom_plot_data = None
+diskio_plot_data = None
 mini_mark_parser = None
 full_custom_error = "OK"
 netspeed_font_size = 20
@@ -8819,6 +10052,7 @@ if __name__ == "__main__":
         column_np_zero = primary.column_np_zero
         netspeed_plot_data = primary.netspeed_plot_data
         custom_plot_data = primary.custom_plot_data
+        diskio_plot_data = primary.diskio_plot_data
 
         MG_daemon_running = True
         primary.mg_screen_thread_running = True

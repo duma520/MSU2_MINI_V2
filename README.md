@@ -36,11 +36,17 @@ https://github.com/dchg43/msu2_mini 能连接，有显示，就是感觉缺点�
 # USB副屏工具 (MSU2_MINI_V2) 完全指南
 
 **版本：** v4.5.10
+
 **作者：** 杜玛
+
 **版权声明：** © 永久 杜玛 保留所有权利。本文档内容未经书面许可不得转载或用于商业用途。
+
 **开源许可证：** MIT
+
 **项目地址：** [https://github.com/duma520/MSU2_MINI_V2](https://github.com/duma520/MSU2_MINI_V2)
+
 **问题报告：** 请通过GitHub Issues提交，以便其他用户也能受益。
+
 **开发时间：** 2026-07-26
 
 ---

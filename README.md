@@ -14,21 +14,39 @@ https://github.com/dchg43/msu2_mini 能连接，有显示，就是感觉缺点�
 2026-08-11
 
 ---
-**软件截图 v3.0.5
+**软件截图 v4.5.10
 
-<img width="658" height="590" alt="image" src="https://github.com/user-attachments/assets/33ee9cc6-c768-4137-855f-c30adab9cf46" />
+<img width="664" height="727" alt="image" src="https://github.com/user-attachments/assets/e02d6863-9f44-4e62-b7af-15271421596e" />
 
-<img width="658" height="590" alt="image" src="https://github.com/user-attachments/assets/0390d276-e2e4-4775-90ab-e4203d73f7b0" />
+<img width="664" height="727" alt="image" src="https://github.com/user-attachments/assets/72d5d470-b0f8-4e16-a757-dc1a05c3bf64" />
 
-<img width="658" height="590" alt="image" src="https://github.com/user-attachments/assets/6441aee8-c1a1-44d8-9795-a96ea2dcd567" />
+<img width="664" height="727" alt="image" src="https://github.com/user-attachments/assets/2aae9939-dfab-490f-b7d5-409658b8dd1c" />
 
-<img width="658" height="590" alt="image" src="https://github.com/user-attachments/assets/4a743c4f-c6e7-410c-a126-995c08bed1f8" />
+<img width="662" height="695" alt="image" src="https://github.com/user-attachments/assets/36623eb1-5d5c-4ab0-817e-46db80462c8e" />
 
-<img width="658" height="590" alt="image" src="https://github.com/user-attachments/assets/889fb2d9-61a3-4534-89f9-bd69f0167e21" />
+<img width="664" height="727" alt="image" src="https://github.com/user-attachments/assets/3166a446-9205-4259-9039-eb013599d5ce" />
 
-<img width="658" height="590" alt="image" src="https://github.com/user-attachments/assets/3cab72e2-a535-4d47-8ab7-e5f3363351c4" />
+<img width="664" height="727" alt="image" src="https://github.com/user-attachments/assets/9f0a83aa-0e2b-491b-b33c-2e6dcceaf304" />
 
-<img width="658" height="590" alt="image" src="https://github.com/user-attachments/assets/b482d3a7-85fc-40c9-968c-5326caa2c0cc" />
+<img width="664" height="727" alt="image" src="https://github.com/user-attachments/assets/4fd65bbf-5c3d-4435-9255-4ee5082b89c4" />
+
+<img width="664" height="727" alt="image" src="https://github.com/user-attachments/assets/46737e52-88c0-47c6-aabc-ba738c3d16cf" />
+
+<img width="664" height="727" alt="image" src="https://github.com/user-attachments/assets/e2ffea96-44ca-4f26-9238-22880a007750" />
+
+<img width="664" height="727" alt="image" src="https://github.com/user-attachments/assets/aa544bba-d308-4a41-b451-259c1f932ebe" />
+
+<img width="664" height="727" alt="image" src="https://github.com/user-attachments/assets/2aa50c6c-6ebd-4ca2-a524-22c45c404754" />
+
+<img width="664" height="727" alt="image" src="https://github.com/user-attachments/assets/025a8a90-ce79-4aef-8405-30620ca8d5cc" />
+
+<img width="664" height="727" alt="image" src="https://github.com/user-attachments/assets/03824596-4b23-49be-afe5-4edd2e0762e0" />
+
+<img width="664" height="727" alt="image" src="https://github.com/user-attachments/assets/900707d5-5c70-4148-beb7-3e893f4a53d6" />
+
+<img width="664" height="727" alt="image" src="https://github.com/user-attachments/assets/c087ea36-f71e-4e19-a5de-bfa54fc4cb5e" />
+
+<img width="664" height="727" alt="image" src="https://github.com/user-attachments/assets/1aa4bb2c-4284-4d1a-b0e3-d10bdda92c34" />
 
 
 ---

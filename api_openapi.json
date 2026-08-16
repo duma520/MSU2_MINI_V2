@@ -1,0 +1,1038 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "MSU2_MINI_V2 投屏 API",
+    "description": "USB 副屏工具的外部接入接口。支持 HTTP REST / WebSocket / SSE(/api/events) / TCP(JSON行,端口+1) / UDP(JSON报,端口+2) / ZeroMQ(REP,端口+3,需pyzmq) / Windows命名管道(\\\\\\.\\\\pipe\\\\MSU2_MINI_V2_api) / Unix Domain Socket(api_unix.sock) / 热文件夹 投屏。可自定义投屏内容（图像、文本、清屏、切页、多图轮播、窗口投屏、实时帧）。支持「强制投屏」：未选 API投屏 页也可投屏，结束自动返回原页面。屏幕分辨率 160x80。未启用访问令牌（可在设置 → API接入 中配置）",
+    "version": "4.6.3",
+    "license": {
+      "name": "MIT",
+      "url": "https://github.com/duma520/MSU2_MINI_V2"
+    }
+  },
+  "servers": [
+    {
+      "url": "http://127.0.0.1:8632",
+      "description": "本地 API 服务"
+    }
+  ],
+  "tags": [
+    {
+      "name": "信息",
+      "description": "查询服务与设备信息"
+    },
+    {
+      "name": "投屏",
+      "description": "投屏图像 / 文本 / 清屏"
+    },
+    {
+      "name": "控制",
+      "description": "页面切换"
+    },
+    {
+      "name": "实时",
+      "description": "WebSocket 实时通道"
+    }
+  ],
+  "paths": {
+    "/api/info": {
+      "get": {
+        "tags": [
+          "信息"
+        ],
+        "summary": "获取服务与设备信息",
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InfoResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/pages": {
+      "get": {
+        "tags": [
+          "信息"
+        ],
+        "summary": "获取可用页面列表",
+        "responses": {
+          "200": {
+            "description": "页面名称数组",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    },
+                    "pages": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/screen": {
+      "post": {
+        "tags": [
+          "投屏"
+        ],
+        "summary": "投屏整帧图像（JSON，三种方式任选）",
+        "description": "image=base64 编码的 PNG/JPG/BMP；rgb888=base64 编码的原始 RGB888 字节(W*H*3)；pixels=扁平 RGB 列表(需同时给 width/height)",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScreenRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功，返回屏幕尺寸"
+          },
+          "400": {
+            "description": "参数错误或图像解析失败"
+          }
+        }
+      }
+    },
+    "/api/screen/raw": {
+      "post": {
+        "tags": [
+          "投屏"
+        ],
+        "summary": "原始 RGB888 字节流投屏（最低开销）",
+        "description": "请求体为 38400 字节原始 RGB888（按屏幕 160x80），Content-Type: application/octet-stream",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功"
+          },
+          "400": {
+            "description": "数据长度不足 W*H*3"
+          }
+        }
+      }
+    },
+    "/api/text": {
+      "post": {
+        "tags": [
+          "投屏"
+        ],
+        "summary": "文本投屏",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TextRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功"
+          }
+        }
+      }
+    },
+    "/api/clear": {
+      "post": {
+        "tags": [
+          "投屏"
+        ],
+        "summary": "清空投屏帧",
+        "responses": {
+          "200": {
+            "description": "成功"
+          }
+        }
+      }
+    },
+    "/api/page": {
+      "post": {
+        "tags": [
+          "控制"
+        ],
+        "summary": "切换页面（按名称或 ID）",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PageRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功，返回当前页面"
+          },
+          "400": {
+            "description": "无效页面或无设备"
+          }
+        }
+      }
+    },
+    "/api/windows": {
+      "get": {
+        "tags": [
+          "控制"
+        ],
+        "summary": "列出本机可投屏的窗口/程序",
+        "responses": {
+          "200": {
+            "description": "窗口列表",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    },
+                    "windows": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "hwnd": {
+                            "type": "integer",
+                            "description": "窗口句柄"
+                          },
+                          "name": {
+                            "type": "string",
+                            "description": "窗口/程序名称"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/devices": {
+      "get": {
+        "tags": [
+          "信息"
+        ],
+        "summary": "列出多屏设备（用于选择投屏目标屏）",
+        "responses": {
+          "200": {
+            "description": "设备列表",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    },
+                    "devices": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "name": {
+                            "type": "string",
+                            "description": "屏名（如 屏幕1）"
+                          },
+                          "index": {
+                            "type": "integer",
+                            "description": "屏序号"
+                          },
+                          "connected": {
+                            "type": "boolean"
+                          },
+                          "page": {
+                            "type": "string",
+                            "description": "当前页面"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/mirror": {
+      "post": {
+        "tags": [
+          "控制"
+        ],
+        "summary": "把指定窗口(hwnd)投屏到指定屏（切换到屏幕镜像页）",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "hwnd"
+                ],
+                "properties": {
+                  "hwnd": {
+                    "type": "integer",
+                    "description": "窗口句柄（来自 /api/windows）"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功，返回 hwnd 与页面名"
+          },
+          "400": {
+            "description": "无设备 / 缺少 hwnd / 无效"
+          }
+        }
+      }
+    },
+    "/api/slideshow": {
+      "post": {
+        "tags": [
+          "投屏"
+        ],
+        "summary": "多图轮播投屏（一次上传多张图片，按间隔自动切换）",
+        "description": "images 为 base64 编码的图像数组，interval 为切换间隔（秒，最小 0.5）。自动缩放至屏幕尺寸。",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SlideshowRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功，返回图片数与间隔"
+          },
+          "400": {
+            "description": "参数错误或图像解析失败"
+          }
+        }
+      }
+    },
+    "/api/slideshow/stop": {
+      "post": {
+        "tags": [
+          "投屏"
+        ],
+        "summary": "停止多图轮播（不切页）",
+        "responses": {
+          "200": {
+            "description": "成功"
+          }
+        }
+      }
+    },
+    "/api/stop": {
+      "post": {
+        "tags": [
+          "投屏"
+        ],
+        "summary": "停止投屏：停止轮播 + 清屏 + 回到 API 投屏页",
+        "responses": {
+          "200": {
+            "description": "成功，返回当前页面"
+          }
+        }
+      }
+    },
+    "/ws": {
+      "get": {
+        "tags": [
+          "实时"
+        ],
+        "summary": "WebSocket 实时通道（需 WebSocket 握手升级）",
+        "description": "二进制帧 = 原始 RGB888（38400 字节）；文本帧 = JSON 命令，type 为 screen / text / clear / page，参数与对应 POST 一致。适合高频推流。",
+        "responses": {
+          "101": {
+            "description": "Switching Protocols（WebSocket 已建立）"
+          }
+        }
+      }
+    },
+    "/api/events": {
+      "get": {
+        "tags": [
+          "实时"
+        ],
+        "summary": "SSE 事件流（Server-Sent Events）",
+        "description": "长连接事件流：帧版本变化时推送 event: frame（data=版本号）；空闲时发送心跳注释行。可用于网页端实时感知投屏内容变化。",
+        "responses": {
+          "200": {
+            "description": "text/event-stream 事件流"
+          }
+        }
+      }
+    },
+    "/api/health": {
+      "get": {
+        "tags": [
+          "信息"
+        ],
+        "summary": "健康检查（探测服务可用性）",
+        "responses": {
+          "200": {
+            "description": "ok + 服务器时间"
+          }
+        }
+      }
+    },
+    "/api/version": {
+      "get": {
+        "tags": [
+          "信息"
+        ],
+        "summary": "获取程序版本与元数据",
+        "responses": {
+          "200": {
+            "description": "版本、构建日期、作者、许可证、仓库地址"
+          }
+        }
+      }
+    },
+    "/api/protocols": {
+      "get": {
+        "tags": [
+          "信息"
+        ],
+        "summary": "列出全部接入协议与地址（自动发现）",
+        "responses": {
+          "200": {
+            "description": "HTTP/WS/SSE/TCP/UDP/ZMQ/管道/Unix/热文件夹/stdin 及其可用状态"
+          }
+        }
+      }
+    },
+    "/api/status": {
+      "get": {
+        "tags": [
+          "信息"
+        ],
+        "summary": "综合运行状态（当前屏/各屏连接/页面/方向/投屏中）",
+        "responses": {
+          "200": {
+            "description": "设备、页面、方向、投屏状态"
+          }
+        }
+      }
+    },
+    "/api/config": {
+      "get": {
+        "tags": [
+          "信息"
+        ],
+        "summary": "读取指定屏完整配置（只读，支持 ?device=屏幕1）",
+        "parameters": [
+          {
+            "name": "device",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "目标屏名称，缺省=当前活跃屏"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "配置对象"
+          }
+        }
+      }
+    },
+    "/api/screenshot": {
+      "get": {
+        "tags": [
+          "信息"
+        ],
+        "summary": "获取指定屏当前画面（PNG + RGB888 的 base64，支持 ?device=屏幕1）",
+        "parameters": [
+          {
+            "name": "device",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "目标屏名称，缺省=当前活跃屏"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "宽高 + png/rgb888 base64"
+          }
+        }
+      }
+    },
+    "/api/orientation": {
+      "post": {
+        "tags": [
+          "控制"
+        ],
+        "summary": "设置 LCD 显示方向",
+        "description": "direction: 0~N 直接设置，或 next 循环切换（正向/反向/镜像/旋转等）。需设备已连接。",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "direction": {
+                    "type": "string",
+                    "description": "0~N 或 next"
+                  },
+                  "device": {
+                    "type": "string",
+                    "description": "目标屏名称，缺省=当前活跃屏"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "设置后的方向索引与名称"
+          }
+        }
+      }
+    },
+    "/api/key": {
+      "post": {
+        "tags": [
+          "控制"
+        ],
+        "summary": "模拟按键动作（下翻页 / 上翻页 / 切换方向 / 无）",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "action": {
+                    "type": "string",
+                    "description": "下翻页/上翻页/切换方向/无"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "执行结果"
+          }
+        }
+      }
+    },
+    "/api/page/next": {
+      "post": {
+        "tags": [
+          "控制"
+        ],
+        "summary": "翻到下一页",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "device": {
+                    "type": "string",
+                    "description": "目标屏名称，缺省=当前活跃屏"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "当前页面"
+          }
+        }
+      }
+    },
+    "/api/page/prev": {
+      "post": {
+        "tags": [
+          "控制"
+        ],
+        "summary": "翻到上一页",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "device": {
+                    "type": "string",
+                    "description": "目标屏名称，缺省=当前活跃屏"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "当前页面"
+          }
+        }
+      }
+    },
+    "/api/config/set": {
+      "post": {
+        "tags": [
+          "控制"
+        ],
+        "summary": "按白名单修改配置并立即生效",
+        "description": "可修改字段见 _API_CONFIG_WRITABLE（页面/方向/翻页/超时/跑马灯/颜色/数据源等显示类字段），自动保存。",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "state_machine": {
+                    "type": "string",
+                    "description": "页面名称或ID"
+                  },
+                  "marquee_text": {
+                    "type": "string",
+                    "description": "跑马灯文本"
+                  },
+                  "device": {
+                    "type": "string",
+                    "description": "目标屏名称，缺省=当前活跃屏"
+                  }
+                },
+                "additionalProperties": true
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "已修改字段列表"
+          }
+        }
+      }
+    },
+    "/api/device/select": {
+      "post": {
+        "tags": [
+          "控制"
+        ],
+        "summary": "切换当前活跃屏（多屏时改变后续命令作用设备）",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "device": {
+                    "type": "string",
+                    "description": "目标屏名称（如 屏幕2）"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "切换结果"
+          }
+        }
+      }
+    },
+    "/api/device/refresh": {
+      "post": {
+        "tags": [
+          "信息"
+        ],
+        "summary": "刷新设备信息（返回当前设备连接快照）",
+        "responses": {
+          "200": {
+            "description": "设备数量与列表"
+          }
+        }
+      }
+    },
+    "/api/marquee": {
+      "post": {
+        "tags": [
+          "投屏"
+        ],
+        "summary": "设置跑马灯文本并切到跑马灯页（text/speed/font_size/color 可选）",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "text": {
+                    "type": "string",
+                    "description": "跑马灯文本"
+                  },
+                  "speed": {
+                    "type": "integer",
+                    "description": "滚动速度"
+                  },
+                  "font_size": {
+                    "type": "integer",
+                    "description": "字号"
+                  },
+                  "color": {
+                    "type": "string",
+                    "description": "颜色 #rrggbb"
+                  },
+                  "device": {
+                    "type": "string",
+                    "description": "目标屏名称"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "页面"
+          }
+        }
+      }
+    },
+    "/api/notify": {
+      "post": {
+        "tags": [
+          "控制"
+        ],
+        "summary": "在 UI 底部状态栏显示通知文本（不投屏）",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "text": {
+                    "type": "string",
+                    "description": "通知文本"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "结果"
+          }
+        }
+      }
+    },
+    "/api/quit": {
+      "post": {
+        "tags": [
+          "控制"
+        ],
+        "summary": "退出程序（需 force: true，延迟执行以便响应返回）",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "force": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "结果"
+          }
+        }
+      }
+    },
+    "/api/screen/id": {
+      "post": {
+        "tags": [
+          "控制"
+        ],
+        "summary": "屏幕序号检测：所有已连接屏显示各自屏号，超时后自动恢复原页面",
+        "description": "timeout 可覆盖设置的时长（秒，1~300），缺省用「设置→API接入」中配置的时长。返回生效时长与已触发屏。",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "timeout": {
+                    "type": "integer",
+                    "description": "显示时长(秒)，可覆盖设置值"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "ok + timeout + devices"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "InfoResponse": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          },
+          "screen": {
+            "type": "object",
+            "properties": {
+              "width": {
+                "type": "integer"
+              },
+              "height": {
+                "type": "integer"
+              },
+              "lcd": {
+                "type": "array",
+                "items": {
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "connected": {
+            "type": "boolean"
+          },
+          "page": {
+            "type": "string"
+          },
+          "pages": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "ScreenRequest": {
+        "type": "object",
+        "properties": {
+          "image": {
+            "type": "string",
+            "format": "byte",
+            "description": "base64 编码的 PNG/JPG/BMP 图像"
+          },
+          "rgb888": {
+            "type": "string",
+            "format": "byte",
+            "description": "base64 编码的原始 RGB888 字节（W*H*3）"
+          },
+          "pixels": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "description": "扁平 RGB 列表（需同时给 width/height）"
+          },
+          "width": {
+            "type": "integer",
+            "description": "pixels 方式的图像宽度"
+          },
+          "height": {
+            "type": "integer",
+            "description": "pixels 方式的图像高度"
+          },
+          "fit": {
+            "type": "string",
+            "enum": [
+              "contain",
+              "stretch",
+              "cover"
+            ],
+            "default": "stretch",
+            "description": "显示方式：contain=自适应完整、stretch=拉伸填满、cover=填充裁剪"
+          },
+          "device": {
+            "type": "string",
+            "description": "目标屏名称（如 屏幕1），缺省=当前活跃屏；可用 /api/devices 查询"
+          }
+        }
+      },
+      "TextRequest": {
+        "type": "object",
+        "required": [
+          "text"
+        ],
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "要显示的文本"
+          },
+          "font_size": {
+            "type": "integer",
+            "default": 16,
+            "minimum": 8,
+            "maximum": 72,
+            "description": "字号"
+          },
+          "color": {
+            "type": "string",
+            "default": "#ffffff",
+            "description": "文本颜色 #rrggbb"
+          },
+          "x": {
+            "type": "integer",
+            "default": 0,
+            "description": "x 坐标"
+          },
+          "y": {
+            "type": "integer",
+            "default": 0,
+            "description": "y 坐标"
+          },
+          "align": {
+            "type": "string",
+            "enum": [
+              "left",
+              "center",
+              "right"
+            ],
+            "default": "left",
+            "description": "水平对齐"
+          },
+          "background": {
+            "type": "string",
+            "default": "#000000",
+            "description": "背景色 #rrggbb"
+          },
+          "device": {
+            "type": "string",
+            "description": "目标屏名称（如 屏幕1），缺省=当前活跃屏"
+          }
+        }
+      },
+      "PageRequest": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "string",
+            "description": "页面名称（或整数 ID），可用 /api/pages 查询可用名称"
+          },
+          "device": {
+            "type": "string",
+            "description": "目标屏名称（如 屏幕1），缺省=当前活跃屏"
+          }
+        }
+      },
+      "SlideshowRequest": {
+        "type": "object",
+        "required": [
+          "images"
+        ],
+        "properties": {
+          "images": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "byte"
+            },
+            "description": "base64 编码的图像数组（PNG/JPG 等）"
+          },
+          "interval": {
+            "type": "number",
+            "default": 3,
+            "minimum": 0.5,
+            "description": "轮播间隔（秒）"
+          },
+          "fit": {
+            "type": "string",
+            "enum": [
+              "contain",
+              "stretch",
+              "cover"
+            ],
+            "default": "stretch",
+            "description": "显示方式：contain=自适应完整、stretch=拉伸填满、cover=填充裁剪"
+          },
+          "device": {
+            "type": "string",
+            "description": "目标屏名称（如 屏幕1），缺省=当前活跃屏"
+          }
+        }
+      }
+    }
+  }
+}

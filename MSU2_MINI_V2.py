@@ -83,11 +83,11 @@ GRAY2 = 0x4208
 # ==================== 程序元数据 ====================
 PROGRAM_TITLE = "USB副屏工具"
 PROGRAM_SUBTITLE = ""
-PROGRAM_VERSION = "4.5.10"
+PROGRAM_VERSION = "4.6.4"
 PROGRAM_AUTHOR = "杜玛"
 PROGRAM_GITHUB = "https://github.com/duma520/MSU2_MINI_V2"
 PROGRAM_LICENSE = "MIT"
-PROGRAM_BUILD_DATE = "2026-08-15"
+PROGRAM_BUILD_DATE = "2026-08-16"
 
 # 整合自以下开源项目（均为MIT协议）
 PROGRAM_SOURCE_PROJECTS = [
@@ -107,6 +107,34 @@ PROGRAM_SOURCE_PROJECTS = [
 
 # 版本更新说明
 PROGRAM_CHANGELOG = """
+v4.6.4 (2026-08-16)
+- 新增「屏幕序号检测」：触发后所有副屏同时显示各自屏号（屏幕1/屏幕2…），显示时长后自动恢复原画面（如 热搜）
+- 触发方式：设置 → API接入 的「检测屏幕」按钮、网页控制台「🔢 屏幕序号检测」按钮、API /api/screen/id 及统一命令 screen_id
+- 显示时长可在「设置 → API接入」配置（1~300秒，默认5秒），检测期间不改变页面状态，结束自动返回原页面
+
+v4.6.3 (2026-08-16)
+- 新增「强制投屏」：设置 → API接入 可勾选，未选择「API投屏」页也可投屏（任何页面都会被投屏覆盖）
+- 强制投屏停止后自动返回投屏前的页面（如 热搜），无需手动切页；按设备保存，多屏各自独立
+- /api/config 与 /api/config/set 白名单新增 api_overlay 字段；文档与 OpenAPI 说明同步更新
+
+v4.6.2 (2026-08-16)
+- API 新增信息/查询接口：/api/health 健康检查、/api/version 版本、/api/protocols 列出全部接入协议与地址（自动发现）、/api/status 综合运行状态、/api/config 读取配置、/api/screenshot 获取当前屏画面（PNG+RGB888）
+- API 新增控制/配置接口：/api/page/next、/api/page/prev 翻页；/api/key 模拟按键；/api/orientation 设置LCD方向；/api/marquee 跑马灯投屏；/api/config/set 白名单改配置（40+字段，立即保存）；/api/device/select 切换活跃屏；/api/device/refresh 刷新设备；/api/notify 状态栏通知；/api/quit 退出程序（需force）
+- 全部新命令同步加入统一命令 type 分发，TCP/UDP/WebSocket/命名管道/热文件夹/stdin 等所有协议均可用；OpenAPI 增至 31 个端点，文档同步
+
+v4.6.1 (2026-08-16)
+- 新增多种本地接入协议：TCP Socket（JSON行，端口+1）、UDP（JSON报，端口+2）、热文件夹（程序目录 hotfolder/ 放入图片/文本即投屏）、Windows命名管道、Unix Domain Socket、ZeroMQ（端口+3，需pyzmq）、stdin/stdout管道、SSE事件流（/api/events）
+- 统一命令执行器：所有协议命令格式与 HTTP/WebSocket 完全一致（type 为 screen/text/clear/slideshow/stop/page/mirror，支持 device 指定目标屏）
+- 设置页「API接入」显示全部协议地址；网页控制台文档、/docs 说明、OpenAPI 描述同步更新
+
+v4.6.0 (2026-08-16)
+- 新增「API投屏」页面与本地 API 服务器（HTTP + WebSocket，默认 127.0.0.1:8632），供其他程序自定义投屏内容
+- 投屏接口：整帧图像（image/rgb888/pixels/原始字节流）、文本、清屏、切页、窗口投屏；可配置端口与访问令牌
+- 提供 OpenAPI 3.0 JSON 规范（/api/openapi.json），启动自动生成 api_openapi.json，并自动校验端点与文档同步
+- 网页投屏控制台（分页标签：投屏/选择程序/文档）：文本、图片（单张/多图轮播+间隔）、选择程序窗口投屏、停止投屏
+- 多屏投屏：各接口支持 device 参数指定目标屏，每屏独立显示；新增 /api/devices 列出多屏
+- 图片投屏显示方式：自适应(contain)/拉伸(stretch)/填充(cover)
+
 v4.5.10 (2026-08-15)
 - 配色方案改为独立标签页（设置 → 配色方案），放在「监控显示」之前，入口更显眼
 - 配色方案交互升级：选择方案只提供候选色板，不再自动套用；每个颜色位置后新增「色块下拉」，可直接看到并挑选该方案的颜色
@@ -601,6 +629,7 @@ CRYPTO_PAGE_ID = 22    # 行情
 HOTSEARCH_PAGE_ID = 23  # 热搜
 BATTERY_PAGE_ID = 24   # 电池
 MUSIC_PAGE_ID = 25     # 音乐
+API_PAGE_ID = 26       # API 投屏
 PAGE_ID = {
     GIF_PAGE_ID: "动图",
     PCTIME_PAGE_ID: "时间",
@@ -625,6 +654,7 @@ PAGE_ID = {
     HOTSEARCH_PAGE_ID: "热搜",
     BATTERY_PAGE_ID: "电池",
     MUSIC_PAGE_ID: "音乐",
+    API_PAGE_ID: "API投屏",
 }
 
 # 多语言：页面名称中英映射
@@ -661,6 +691,7 @@ PAGE_ID_EN = {
     HOTSEARCH_PAGE_ID: "Hot Search",
     BATTERY_PAGE_ID: "Battery",
     MUSIC_PAGE_ID: "Music",
+    API_PAGE_ID: "API Screen",
 }
 
 LCD_STATE_MESSAGE = [
@@ -3567,6 +3598,2515 @@ def _safe_send_rgb888(rgb888_array):
         dev.force_lcd_reset = True
 
 
+# ==================== API 投屏服务器（本地 HTTP + WebSocket） ====================
+# 外部程序可通过 REST API / WebSocket 接入，自定义投屏内容（图像/文本/清屏/切页/实时帧）。
+# 默认仅监听 127.0.0.1:8632，可在「设置 → API接入」中配置端口与令牌。
+# ⚠ 维护约定：新增/修改/删除 API 端点时，必须同步更新 _build_openapi_doc() 中的 paths 与 schemas，
+#   并保证 API 文档页(_API_DOC_HTML)说明同步。启动时会自动检查端点与 JSON 文档是否一致（见 _check_openapi_sync）。
+import base64 as _b64
+import hashlib as _hashlib
+import struct as _struct
+import io as _io
+import http.server
+import webbrowser
+from urllib.parse import urlparse, parse_qs
+
+_WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+_api_frames = {}             # 多屏投屏帧：{设备名: (SHOW_HEIGHT, SHOW_WIDTH, 3) uint8}
+_api_frame_lock = threading.Lock()
+_api_server = None           # HTTPServer 实例
+_api_ws_connections = set()  # 活跃 WebSocket 连接
+_api_slideshow_stops = {}    # 多图轮播：每屏停止信号 {设备名: Event}
+_api_slideshow_threads = {}  # 多图轮播：每屏线程 {设备名: Thread}
+
+
+def _api_device_key(device=None):
+    """把 device(ScreenDevice/设备名/index/None) 解析为帧存储键（设备名）"""
+    if device is None:
+        dev = get_current_device()
+        if dev is not None:
+            return getattr(dev, "device_name", None) or "屏幕1"
+        return "屏幕1"
+    if isinstance(device, str):
+        return device
+    if hasattr(device, "device_name") and getattr(device, "device_name", None):
+        return device.device_name
+    try:
+        return "屏幕%d" % (int(device) + 1)
+    except Exception:
+        return "屏幕1"
+
+
+def api_set_frame(frame, device=None):
+    """写入外部投屏帧到指定屏（device 缺省=当前活跃屏）"""
+    global _api_event_version
+    with _api_frame_lock:
+        key = _api_device_key(device)
+        if frame is None:
+            _api_frames.pop(key, None)
+        else:
+            _api_frames[key] = frame
+        # SSE 帧版本号递增，通知 /api/events 订阅端有新帧
+        with _api_event_lock:
+            _api_event_version += 1
+
+
+def api_get_frame(device=None):
+    """读取指定屏的外部投屏帧（device 缺省=当前活跃屏）"""
+    with _api_frame_lock:
+        return _api_frames.get(_api_device_key(device))
+
+
+def api_start_slideshow(frames, interval, device=None):
+    """启动多图轮播投屏到指定屏（frames 为已缩放 RGB888 数组列表，interval 间隔秒）"""
+    key = _api_device_key(device)
+    api_stop_slideshow(device)
+    stop = threading.Event()
+    _api_slideshow_stops[key] = stop
+
+    def _worker():
+        n = len(frames)
+        idx = 0
+        while not stop.is_set():
+            try:
+                api_set_frame(frames[idx % n], key)
+            except Exception:
+                break
+            idx += 1
+            stop.wait(interval)
+
+    _api_slideshow_threads[key] = threading.Thread(target=_worker, daemon=True)
+    _api_slideshow_threads[key].start()
+
+
+def api_stop_slideshow(device=None):
+    """停止指定屏的多图轮播投屏"""
+    key = _api_device_key(device)
+    stop = _api_slideshow_stops.pop(key, None)
+    if stop:
+        stop.set()
+    t = _api_slideshow_threads.pop(key, None)
+    if t is not None:
+        try:
+            t.join(timeout=2)
+        except Exception:
+            pass
+
+
+def _api_resolve_device(data):
+    """从请求参数解析目标屏设备；返回 ScreenDevice 或 None（缺省=当前活跃屏）"""
+    if not isinstance(data, dict):
+        return None
+    name = data.get("device", "") or ""
+    if not name:
+        return None
+    for dev in all_devices.values():
+        if getattr(dev, "device_name", "") == str(name) or str(getattr(dev, "index", -1)) == str(name):
+            return dev
+    return None
+
+
+def _api_prepare_frame(data, width, height):
+    """把外部 RGB 像素数据整形/缩放到屏幕尺寸的 RGB888 数组"""
+    try:
+        arr = np.asarray(data, dtype=np.uint8).reshape((int(height), int(width), 3))
+    except Exception:
+        return None
+    img = Image.fromarray(arr).convert("RGB")
+    img = img.resize((SHOW_WIDTH, SHOW_HEIGHT), Image.LANCZOS)
+    return np.asarray(img, dtype=np.uint8)
+
+
+def _api_resize_image(img, fit=None):
+    """按显示方式把图像缩放到屏幕尺寸：
+    stretch=拉伸填满(不保持比例)；contain=自适应完整显示(四周留黑边)；cover=填充裁剪(保持比例裁满)。"""
+    tw, th = SHOW_WIDTH, SHOW_HEIGHT
+    try:
+        if fit == "stretch" or fit is None:
+            return img.resize((tw, th), Image.LANCZOS)
+        if fit == "cover":
+            ratio = max(tw / img.width, th / img.height)
+        else:  # contain
+            ratio = min(tw / img.width, th / img.height)
+        nw = max(1, round(img.width * ratio))
+        nh = max(1, round(img.height * ratio))
+        img2 = img.resize((nw, nh), Image.LANCZOS)
+        if (nw, nh) == (tw, th):
+            return img2
+        if fit == "cover":
+            x = (nw - tw) // 2
+            y = (nh - th) // 2
+            return img2.crop((x, y, x + tw, y + th))
+        # contain：居中放到黑底画布
+        canvas = Image.new("RGB", (tw, th), (0, 0, 0))
+        canvas.paste(img2, ((tw - nw) // 2, (th - nh) // 2))
+        return canvas
+    except Exception:
+        return img.resize((tw, th), Image.LANCZOS)
+
+
+def _api_apply_text(data, device=None):
+    """按 JSON 参数把文本渲染到投屏帧（支持字体/颜色/位置/对齐/背景色/目标屏）"""
+    try:
+        text = str(data.get("text", "") or "")
+        if not text:
+            api_set_frame(None, device)
+            return
+        font_size = max(8, min(72, int(data.get("font_size", 16))))
+        color = data.get("color", "#ffffff")
+        x = int(data.get("x", 0))
+        y = int(data.get("y", 0))
+        align = str(data.get("align", "left"))
+        back = data.get("background", "#000000")
+        img = Image.new("RGB", (SHOW_WIDTH, SHOW_HEIGHT), back)
+        draw = ImageDraw.Draw(img)
+        try:
+            font = MiniMark.load_font("./simhei.ttf", font_size)
+        except Exception:
+            font = default_font
+        try:
+            c = (color or "#ffffff").lstrip('#')
+            rgb = tuple(int(c[i:i + 2], 16) for i in (0, 2, 4))
+        except Exception:
+            rgb = (255, 255, 255)
+        bbox = draw.textbbox((0, 0), text, font=font)
+        tw = bbox[2] - bbox[0]
+        th = bbox[3] - bbox[1]
+        if align == "center":
+            x = (SHOW_WIDTH - tw) // 2
+        elif align == "right":
+            x = SHOW_WIDTH - tw - x
+        y = max(0, min(SHOW_HEIGHT - th, y))
+        draw.text((x, y), text, fill=rgb, font=font)
+        api_set_frame(np.asarray(img, dtype=np.uint8), device)
+    except Exception as e:
+        print("API 文本渲染失败：%s" % e)
+
+
+# ---------- 统一命令执行器（HTTP / WebSocket / TCP / UDP 复用） ----------
+def api_apply_screen(data, device=None):
+    """应用整帧图像投屏（image/rgb888/pixels 三种方式），成功返回 True"""
+    width = int(data.get("width", 0) or 0)
+    height = int(data.get("height", 0) or 0)
+    if "image" in data:
+        raw = _b64.b64decode(data["image"])
+        img = Image.open(_io.BytesIO(raw)).convert("RGB")
+        img = _api_resize_image(img, data.get("fit", "stretch"))
+        api_set_frame(np.asarray(img, dtype=np.uint8), device)
+    elif "rgb888" in data:
+        raw = _b64.b64decode(data["rgb888"])
+        need = SHOW_WIDTH * SHOW_HEIGHT * 3
+        arr = np.frombuffer(raw[:need], dtype=np.uint8).reshape(SHOW_HEIGHT, SHOW_WIDTH, 3).copy()
+        api_set_frame(arr, device)
+    elif "pixels" in data and width and height:
+        arr = _api_prepare_frame(data["pixels"], width, height)
+        if arr is not None:
+            api_set_frame(arr, device)
+    else:
+        return False
+    return True
+
+
+def api_apply_slideshow(data, device=None):
+    """应用多图轮播投屏，返回响应 dict"""
+    raws = data.get("images") or []
+    if not isinstance(raws, list) or not raws:
+        return {"ok": False, "error": "需要 images 数组（base64 图像）"}
+    try:
+        interval = max(0.5, float(data.get("interval", 3)))
+    except Exception:
+        interval = 3.0
+    fit = data.get("fit", "stretch")
+    frames = []
+    for raw in raws:
+        img = Image.open(_io.BytesIO(_b64.b64decode(raw))).convert("RGB")
+        img = _api_resize_image(img, fit)
+        frames.append(np.asarray(img, dtype=np.uint8))
+    api_start_slideshow(frames, interval, device)
+    return {"ok": True, "count": len(frames), "interval": interval}
+
+
+def api_apply_stop(device=None):
+    """停止指定屏投屏：停止轮播 + 清屏。强制投屏模式下保留原页面（清帧后自动恢复，如 热搜）；
+    普通模式切回 API 投屏页。返回响应 dict"""
+    api_stop_slideshow(device)
+    api_set_frame(None, device)
+    try:
+        dev = device if device is not None else get_current_device()
+        if dev is not None:
+            set_active_device_config(dev)
+            if getattr(config_obj, "api_overlay", 0):
+                # 强制投屏模式：不切页，清帧后渲染循环自动回到投屏前的页面
+                state_change_set(save=False)
+                return {"ok": True, "page": PAGE_ID.get(config_obj.state_machine, ""), "overlay": True}
+            config_obj.state_machine = API_PAGE_ID
+            if dev:
+                dev.state_machine = API_PAGE_ID
+            state_change_set(save=False)
+    except Exception:
+        pass
+    return {"ok": True, "page": PAGE_ID.get(API_PAGE_ID, "API投屏")}
+
+
+def api_apply_page(data, device=None):
+    """切换指定屏页面，返回响应 dict"""
+    try:
+        dev = device if device is not None else get_current_device()
+        if dev is None:
+            return {"ok": False, "error": "no device"}
+        set_active_device_config(dev)
+        name = str(data.get("page", ""))
+        pid = None
+        for k, v in PAGE_ID.items():
+            if v == name:
+                pid = k
+                break
+        if pid is None:
+            try:
+                pid = int(data.get("page", -1))
+            except Exception:
+                pid = -1
+        if pid in PAGE_ID:
+            config_obj.state_machine = pid
+            if dev:
+                dev.state_machine = pid
+            state_change_set(save=True)
+            return {"ok": True, "page": PAGE_ID.get(pid, str(pid))}
+        return {"ok": False, "error": "无效页面，可用 /api/pages 查看"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def api_apply_mirror(data, device=None):
+    """把窗口投到指定屏，返回响应 dict"""
+    try:
+        dev = device if device is not None else get_current_device()
+        if dev is None:
+            return {"ok": False, "error": "no device"}
+        hwnd = int(data.get("hwnd", 0) or 0)
+        if hwnd == 0:
+            return {"ok": False, "error": "需要 hwnd"}
+        set_active_device_config(dev)
+        config_obj.select_window_hwnd = hwnd
+        config_obj.state_machine = SCREEN_PAGE_ID
+        if dev:
+            dev.state_machine = SCREEN_PAGE_ID
+            dev.screen_frame_generation += 1
+            clear_queue(dev.screen_shot_queue)
+            clear_queue(dev.screen_process_queue)
+        state_change_set(save=True)
+        return {"ok": True, "hwnd": hwnd, "page": PAGE_ID.get(SCREEN_PAGE_ID, "")}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+# ---------- 扩展功能命令（信息/控制/配置，HTTP 与统一命令共用） ----------
+# 允许通过 /api/config/set 修改的字段白名单（安全显示/行为类，排除令牌/端口/自启等敏感项）
+_API_CONFIG_WRITABLE = {
+    "state_machine": "int", "lcd_change": "int",
+    "page_cycle_enable": "int", "page_cycle_interval": "int", "screen_off_timeout": "int",
+    "anti_burn": "int", "preview_enabled": "int", "zoom_enable": "int", "zoom_scale": "int",
+    "marquee_text": "str", "marquee_font": "str", "marquee_font_size": "int",
+    "marquee_color": "str", "marquee_speed": "int",
+    "ping_host": "str", "timer_minutes": "int", "weather_city": "str", "crypto_symbols": "str",
+    "proc_count": "int", "clock_zones": "str", "hwdetail_max": "int",
+    "hotsearch_interval": "int", "hotsearch_total": "int", "hotsearch_count": "int",
+    "text_color_r": "int", "text_color_g": "int", "text_color_b": "int",
+    "netspeed_mode": "str", "netspeed_up_color": "str", "netspeed_down_color": "str",
+    "netspeed_bar1_color": "str", "netspeed_bar2_color": "str",
+    "diskio_mode": "str", "diskio_show_title": "int", "diskio_font_auto": "int",
+    "diskio_font_size": "int", "diskio_title_color": "str", "diskio_read_color": "str",
+    "diskio_write_color": "str", "diskio_label_color": "str", "diskio_value_auto": "int",
+    "diskio_value_font_size": "int", "diskio_bar1_color": "str", "diskio_bar2_color": "str",
+    "diskio_value_read_color": "str", "diskio_value_write_color": "str",
+}
+
+
+def api_get_health():
+    """健康检查：轻量探测服务是否可用"""
+    return {"ok": True, "time": time.time()}
+
+
+def api_get_version():
+    """版本信息"""
+    return {"ok": True, "name": PROGRAM_TITLE, "version": PROGRAM_VERSION,
+            "build_date": PROGRAM_BUILD_DATE, "author": PROGRAM_AUTHOR,
+            "license": PROGRAM_LICENSE, "github": PROGRAM_GITHUB}
+
+
+def api_get_protocols():
+    """列出全部接入协议与地址（供外部程序自动发现可用接入方式）"""
+    port = 8632
+    try:
+        port = int(getattr(config_obj, "api_port", 8632))
+    except Exception:
+        pass
+    base_dir = ""
+    try:
+        base_dir = get_base_config_dir()
+    except Exception:
+        pass
+    import socket as _sock
+    has_unix = hasattr(_sock, "AF_UNIX")
+    has_zmq = False
+    try:
+        import zmq  # noqa: F401
+        has_zmq = True
+    except Exception:
+        pass
+    protocols = [
+        {"name": "HTTP REST", "type": "http", "address": "http://127.0.0.1:%d" % port,
+         "enabled": True, "note": "GET 查询 / POST JSON 命令（主接口）"},
+        {"name": "WebSocket", "type": "ws", "address": "ws://127.0.0.1:%d/ws" % port,
+         "enabled": True, "note": "文本帧=JSON命令，二进制帧=RGB888原始帧"},
+        {"name": "SSE 事件流", "type": "sse", "address": "http://127.0.0.1:%d/api/events" % port,
+         "enabled": True, "note": "帧版本变化推送 event: frame"},
+        {"name": "TCP Socket", "type": "tcp", "address": "127.0.0.1:%d" % (port + 1),
+         "enabled": True, "note": "JSON 行协议"},
+        {"name": "UDP", "type": "udp", "address": "127.0.0.1:%d" % (port + 2),
+         "enabled": True, "note": "JSON 数据报"},
+        {"name": "ZeroMQ", "type": "zmq", "address": "tcp://127.0.0.1:%d" % (port + 3),
+         "enabled": has_zmq, "note": "REP/REQ JSON（需 pip install pyzmq）"},
+        {"name": "Windows 命名管道", "type": "pipe", "address": r"\\.\pipe\MSU2_MINI_V2_api",
+         "enabled": isWindows, "note": "JSON 行协议"},
+        {"name": "Unix Domain Socket", "type": "unix",
+         "address": os.path.join(base_dir, "api_unix.sock") if base_dir else "api_unix.sock",
+         "enabled": has_unix, "note": "JSON 行协议（需系统支持 AF_UNIX）"},
+        {"name": "热文件夹", "type": "hotfolder",
+         "address": os.path.join(base_dir, "hotfolder") if base_dir else "hotfolder",
+         "enabled": True, "note": "放入图片/文本即投屏"},
+        {"name": "stdin 管道", "type": "stdin", "address": "标准输入",
+         "enabled": True, "note": "管道/重定向启动时按行读 JSON 命令"},
+    ]
+    return {"ok": True, "port": port, "protocols": protocols}
+
+
+def api_get_status():
+    """综合运行状态（当前屏、各屏连接、页面、方向、投屏帧、轮播）"""
+    try:
+        dev = get_current_device()
+        cfg = getattr(dev, "config", None) if dev is not None else None
+        if cfg is None:
+            cfg = config_obj
+        devices = []
+        for d in all_devices.values():
+            c = getattr(d, "config", None)
+            devices.append({
+                "name": getattr(d, "device_name", "屏幕1"),
+                "index": getattr(d, "index", 0),
+                "connected": bool(getattr(d, "device_state", 0)),
+                "page": PAGE_ID.get(getattr(c, "state_machine", 0), "") if c is not None else "",
+                "direction": getattr(c, "lcd_change", 0) if c is not None else 0,
+            })
+        devices.sort(key=lambda x: x["index"])
+        frames = {}
+        with _api_frame_lock:
+            for k in _api_frames:
+                frames[k] = True
+        return {"ok": True,
+                "device": getattr(dev, "device_name", "屏幕1") if dev is not None else None,
+                "connected": bool(getattr(dev, "device_state", 0)) if dev is not None else False,
+                "page": PAGE_ID.get(getattr(cfg, "state_machine", 0), "") if cfg else "",
+                "direction": getattr(cfg, "lcd_change", 0) if cfg else 0,
+                "version": PROGRAM_VERSION,
+                "devices": devices,
+                "casting": frames,
+                "slideshows": sorted(_api_slideshow_stops.keys())}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def api_get_config(device=None):
+    """读取指定屏的完整配置（只读，JSON 序列化安全字段）"""
+    dev = device if device is not None else get_current_device()
+    if dev is None:
+        return {"ok": False, "error": "no device"}
+    cfg = getattr(dev, "config", None) if dev is not None else None
+    if cfg is None:
+        cfg = config_obj
+    try:
+        d = {}
+        for k, v in vars(cfg).items():
+            try:
+                json.dumps(v)
+                d[k] = v
+            except Exception:
+                pass
+        return {"ok": True, "device": getattr(dev, "device_name", "屏幕1"), "config": d}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def api_get_screenshot(device=None):
+    """获取指定屏当前画面：优先投屏帧，其次最近预览帧；返回 PNG 与 RGB888 的 base64"""
+    dev = device if device is not None else get_current_device()
+    if dev is None:
+        return {"ok": False, "error": "no device"}
+    frame = api_get_frame(dev)
+    if frame is None:
+        prev = getattr(dev, "last_preview_rgb", None)
+        if prev is None:
+            return {"ok": False, "error": "当前无可用画面（无投屏帧也无预览帧）"}
+        frame = prev
+    try:
+        arr = np.asarray(frame, dtype=np.uint8)
+        if arr.ndim == 3 and arr.shape[2] == 3:
+            h, w = arr.shape[0], arr.shape[1]
+        else:
+            return {"ok": False, "error": "帧数据格式异常"}
+        img = Image.fromarray(arr)
+        buf = _io.BytesIO()
+        img.save(buf, "PNG")
+        return {"ok": True, "device": getattr(dev, "device_name", "屏幕1"),
+                "width": w, "height": h,
+                "png": _b64.b64encode(buf.getvalue()).decode("ascii"),
+                "rgb888": _b64.b64encode(arr.tobytes()).decode("ascii")}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def api_apply_orientation(data, device=None):
+    """设置指定屏 LCD 方向：direction 为 0~N 或 next（循环切换）"""
+    dev = device if device is not None else get_current_device()
+    if dev is None:
+        return {"ok": False, "error": "no device"}
+    if getattr(dev, "device_state", 0) == 0:
+        return {"ok": False, "error": "设备未连接"}
+    prev = _device_context.device
+    _device_context.device = dev
+    try:
+        set_active_device_config(dev)
+        direction = data.get("direction")
+        if str(direction).lower() in ("next", "rotate", "switch"):
+            LCD_Change()
+        else:
+            try:
+                idx = int(direction)
+            except Exception:
+                return {"ok": False, "error": "direction 需为 0~%d 或 next" % (len(LCD_STATE_MESSAGE) - 1)}
+            set_lcd_direction(idx % len(LCD_STATE_MESSAGE))
+        return {"ok": True, "direction": config_obj.lcd_change,
+                "direction_name": LCD_STATE_MESSAGE[config_obj.lcd_change]}
+    finally:
+        _device_context.device = prev
+
+
+def api_apply_key(data):
+    """模拟按键动作：下翻页 / 上翻页 / 切换方向 / 无"""
+    action = str(data.get("action", ""))
+    if action in ("下翻页", "上翻页", "切换方向", "无"):
+        do_key_action(action)
+        return {"ok": True, "action": action}
+    return {"ok": False, "error": "action 需为 下翻页/上翻页/切换方向/无"}
+
+
+def api_page_next(device=None):
+    """翻到下一页（当前活跃屏）"""
+    dev = device if device is not None else get_current_device()
+    if dev is None:
+        return {"ok": False, "error": "no device"}
+    prev = _device_context.device
+    _device_context.device = dev
+    try:
+        Page_UP()
+        return {"ok": True, "page": PAGE_ID.get(config_obj.state_machine, "")}
+    finally:
+        _device_context.device = prev
+
+
+def api_page_prev(device=None):
+    """翻到上一页（当前活跃屏）"""
+    dev = device if device is not None else get_current_device()
+    if dev is None:
+        return {"ok": False, "error": "no device"}
+    prev = _device_context.device
+    _device_context.device = dev
+    try:
+        Page_Down()
+        return {"ok": True, "page": PAGE_ID.get(config_obj.state_machine, "")}
+    finally:
+        _device_context.device = prev
+
+
+def api_apply_config_set(data, device=None):
+    """按白名单修改指定屏配置（字段见 _API_CONFIG_WRITABLE），立即保存生效"""
+    dev = device if device is not None else get_current_device()
+    if dev is None:
+        return {"ok": False, "error": "no device"}
+    set_active_device_config(dev)
+    changed = []
+    for key, val in data.items():
+        if key in ("type", "cmd", "device", "action"):
+            continue
+        if key not in _API_CONFIG_WRITABLE:
+            continue
+        typ = _API_CONFIG_WRITABLE[key]
+        try:
+            if typ == "int":
+                val = int(val)
+            else:
+                val = str(val)
+        except Exception:
+            return {"ok": False, "error": "字段 %s 的值类型错误" % key}
+        if key == "state_machine":
+            pid = val
+            for k, v in PAGE_ID.items():
+                if v == val:
+                    pid = k
+                    break
+            if pid not in PAGE_ID:
+                return {"ok": False, "error": "无效页面: %s（可用 /api/pages 查看）" % val}
+            val = pid
+        setattr(config_obj, key, val)
+        changed.append(key)
+    if changed:
+        if dev:
+            dev.state_machine = config_obj.state_machine
+        state_change_set(save=True)
+    return {"ok": True, "changed": changed}
+
+
+def api_apply_marquee(data, device=None):
+    """设置跑马灯文本并切到跑马灯页（text/speed/font_size/color 可选）"""
+    dev = device if device is not None else get_current_device()
+    if dev is None:
+        return {"ok": False, "error": "no device"}
+    set_active_device_config(dev)
+    if "text" in data:
+        config_obj.marquee_text = str(data.get("text", ""))
+    if "speed" in data:
+        try:
+            config_obj.marquee_speed = int(data.get("speed"))
+        except Exception:
+            pass
+    if "font_size" in data:
+        try:
+            config_obj.marquee_font_size = int(data.get("font_size"))
+        except Exception:
+            pass
+    if "color" in data:
+        config_obj.marquee_color = str(data.get("color"))
+    config_obj.state_machine = MARQUEE_PAGE_ID
+    if dev:
+        dev.state_machine = MARQUEE_PAGE_ID
+    state_change_set(save=True)
+    return {"ok": True, "page": PAGE_ID.get(MARQUEE_PAGE_ID, "文字跑马灯")}
+
+
+def api_apply_device_select(data):
+    """切换当前活跃屏（多屏时改变主控/API 作用的设备）"""
+    global _primary_device
+    name = str(data.get("device", "") or "")
+    for dev in all_devices.values():
+        if dev.device_name == name:
+            old = _primary_device
+            if old is not None and old != dev:
+                old.state_machine = config_obj.state_machine
+            set_current_device(dev)
+            _primary_device = dev
+            set_active_device_config(dev)
+            config_obj.state_machine = getattr(dev, "state_machine", SCREEN_PAGE_ID)
+            state_change_set(save=False)
+            return {"ok": True, "device": name}
+    return {"ok": False, "error": "未找到设备: %s（可用 /api/devices 查看）" % name}
+
+
+def api_apply_device_refresh():
+    """刷新设备信息（返回当前设备连接快照）"""
+    try:
+        connected = [d for d in all_devices.values() if d.device_state == 1]
+        return {"ok": True, "device_count": len(all_devices),
+                "connected_count": len(connected),
+                "devices": [d.device_name for d in all_devices.values()]}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def api_apply_notify(data):
+    """在 UI 底部状态栏显示一条通知文本（不投屏）"""
+    text = str(data.get("text", "") or "")
+    if not text:
+        return {"ok": False, "error": "需要 text"}
+    insert_text_message(text)
+    return {"ok": True}
+
+
+def api_apply_quit(data):
+    """退出程序（需 force: true，延迟执行以便响应返回）"""
+    if not data.get("force"):
+        return {"ok": False, "error": "需要 force: true 才执行退出"}
+    try:
+        root = tk._default_root
+        if root is not None:
+            def _do():
+                try:
+                    stop_api_server()
+                except Exception:
+                    pass
+                try:
+                    root.destroy()
+                except Exception:
+                    pass
+            root.after(300, _do)
+            return {"ok": True}
+    except Exception:
+        pass
+    return {"ok": False, "error": "无法获取主窗口"}
+
+
+def api_execute_command(data):
+    """统一执行投屏命令 dict（供 TCP/UDP/WS 复用，与 HTTP JSON 一致）。返回响应 dict。"""
+    if not isinstance(data, dict):
+        return {"ok": False, "error": "需要 JSON 对象"}
+    cmd = data.get("type")
+    dev = _api_resolve_device(data)
+    try:
+        if cmd == "screen":
+            if api_apply_screen(data, dev):
+                return {"ok": True, "size": [SHOW_WIDTH, SHOW_HEIGHT]}
+            return {"ok": False, "error": "需要 image / rgb888 / pixels 之一"}
+        elif cmd == "text":
+            _api_apply_text(data, dev)
+            return {"ok": True}
+        elif cmd == "clear":
+            api_stop_slideshow(dev)
+            api_set_frame(None, dev)
+            return {"ok": True}
+        elif cmd == "slideshow":
+            return api_apply_slideshow(data, dev)
+        elif cmd == "slideshow_stop":
+            api_stop_slideshow(dev)
+            return {"ok": True}
+        elif cmd == "stop":
+            return api_apply_stop(dev)
+        elif cmd == "page":
+            return api_apply_page(data, dev)
+        elif cmd == "page_next":
+            return api_page_next(dev)
+        elif cmd == "page_prev":
+            return api_page_prev(dev)
+        elif cmd == "mirror":
+            return api_apply_mirror(data, dev)
+        elif cmd == "orientation":
+            return api_apply_orientation(data, dev)
+        elif cmd == "key":
+            return api_apply_key(data)
+        elif cmd == "marquee":
+            return api_apply_marquee(data, dev)
+        elif cmd == "config_set":
+            return api_apply_config_set(data, dev)
+        elif cmd == "device_select":
+            return api_apply_device_select(data)
+        elif cmd == "device_refresh":
+            return api_apply_device_refresh()
+        elif cmd == "notify":
+            return api_apply_notify(data)
+        elif cmd == "quit":
+            return api_apply_quit(data)
+        elif cmd == "health":
+            return api_get_health()
+        elif cmd == "version":
+            return api_get_version()
+        elif cmd == "protocols":
+            return api_get_protocols()
+        elif cmd == "status":
+            return api_get_status()
+        elif cmd == "config_get":
+            return api_get_config(dev)
+        elif cmd == "screenshot":
+            return api_get_screenshot(dev)
+        elif cmd == "screen_id":
+            return api_trigger_screen_id(data)
+        else:
+            return {"ok": False, "error": "未知命令: %s" % cmd}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+class ApiHandler(http.server.BaseHTTPRequestHandler):
+    server_version = "MSU2MiniAPI/1.0"
+
+    def log_message(self, fmt, *args):
+        pass  # 关闭默认请求日志
+
+    # ---------- 工具 ----------
+    def _send_json(self, obj, code=200):
+        body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _read_body(self):
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except Exception:
+            length = 0
+        return self.rfile.read(length) if length > 0 else b""
+
+    def _check_token(self):
+        """配置了令牌时校验 X-API-Token 或 ?token=，通过返回 True"""
+        try:
+            token = getattr(config_obj, "api_token", "") or ""
+            if not token:
+                return True
+            got = self.headers.get("X-API-Token", "")
+            if not got:
+                got = parse_qs(urlparse(self.path).query).get("token", [""])[0]
+            return got == token
+        except Exception:
+            return False
+
+    def _send_info(self):
+        try:
+            dev = get_current_device()
+            info = {
+                "ok": True,
+                "name": "MSU2_MINI_V2",
+                "version": PROGRAM_VERSION,
+                "screen": {"width": SHOW_WIDTH, "height": SHOW_HEIGHT, "lcd": [LCD_MAX_X, LCD_MAX_Y]},
+                "connected": dev is not None and dev.device_state == 1,
+                "page": PAGE_ID.get(config_obj.state_machine, ""),
+                "pages": list(PAGE_ID.values()),
+            }
+        except Exception as e:
+            info = {"ok": False, "error": str(e)}
+        self._send_json(info)
+
+    # ---------- 帧处理 ----------
+    def _apply_screen(self, data, device=None):
+        """整帧投屏（复用统一逻辑）"""
+        return api_apply_screen(data, device)
+
+    # ---------- GET ----------
+    def do_GET(self):
+        if not self._check_token():
+            self._send_json({"ok": False, "error": "invalid token"}, 401)
+            return
+        path = self.path.split("?", 1)[0]
+        if path == "/ws":
+            self._ws_handshake()
+        elif path in ("/", "/api"):
+            self._send_api_doc()
+        elif path == "/docs":
+            self._send_plain_doc()
+        elif path in ("/api/openapi.json", "/api.json", "/api/openapi"):
+            # 机器可读的 OpenAPI 3.0 JSON 规范，供其他程序解析对接
+            self._send_json(_build_openapi_doc())
+        elif path == "/api/info":
+            self._send_info()
+        elif path == "/api/pages":
+            self._send_json({"ok": True, "pages": list(PAGE_ID.values())})
+        elif path == "/api/windows":
+            self._send_windows()
+        elif path == "/api/devices":
+            self._send_devices()
+        elif path == "/api/events":
+            self._sse_events()
+        elif path == "/api/health":
+            self._send_json(api_get_health())
+        elif path == "/api/version":
+            self._send_json(api_get_version())
+        elif path == "/api/protocols":
+            self._send_json(api_get_protocols())
+        elif path == "/api/status":
+            self._send_json(api_get_status())
+        elif path == "/api/config":
+            qs = parse_qs(urlparse(self.path).query)
+            gdev = _api_resolve_device({"device": (qs.get("device") or [""])[0]})
+            self._send_json(api_get_config(gdev))
+        elif path == "/api/screenshot":
+            qs = parse_qs(urlparse(self.path).query)
+            gdev = _api_resolve_device({"device": (qs.get("device") or [""])[0]})
+            self._send_json(api_get_screenshot(gdev))
+        else:
+            self._send_json({"ok": False, "error": "not found"}, 404)
+
+    # ---------- POST ----------
+    def do_POST(self):
+        if not self._check_token():
+            self._send_json({"ok": False, "error": "invalid token"}, 401)
+            return
+        path = self.path.split("?", 1)[0]
+        if path == "/api/screen/raw":
+            # 原始 RGB888 字节流（application/octet-stream），顺序为 W*H*3；目标屏用 ?device=屏幕1
+            raw = self._read_body()
+            need = SHOW_WIDTH * SHOW_HEIGHT * 3
+            qs = parse_qs(urlparse(self.path).query)
+            dev = _api_resolve_device({"device": (qs.get("device") or [""])[0]})
+            if len(raw) >= need:
+                arr = np.frombuffer(raw[:need], dtype=np.uint8).reshape(SHOW_HEIGHT, SHOW_WIDTH, 3).copy()
+                api_set_frame(arr, dev)
+                self._send_json({"ok": True})
+            else:
+                self._send_json({"ok": False, "error": "数据长度不足 W*H*3"}, 400)
+            return
+        try:
+            data = json.loads(self._read_body().decode("utf-8"))
+        except Exception:
+            data = {}
+        dev = _api_resolve_device(data)
+        if path == "/api/screen":
+            try:
+                ok = self._apply_screen(data, dev)
+            except Exception as e:
+                ok = False
+                self._send_json({"ok": False, "error": "图像数据解析失败：%s" % e}, 400)
+                return
+            if ok:
+                self._send_json({"ok": True, "size": [SHOW_WIDTH, SHOW_HEIGHT]})
+            else:
+                self._send_json({"ok": False, "error": "需要 image / rgb888 / pixels 之一"}, 400)
+        elif path == "/api/text":
+            _api_apply_text(data, dev)
+            self._send_json({"ok": True})
+        elif path == "/api/clear":
+            api_stop_slideshow(dev)
+            api_set_frame(None, dev)
+            self._send_json({"ok": True})
+        elif path == "/api/slideshow":
+            self._post_slideshow(data, dev)
+        elif path == "/api/slideshow/stop":
+            api_stop_slideshow(dev)
+            self._send_json({"ok": True})
+        elif path == "/api/stop":
+            self._post_stop(dev)
+        elif path == "/api/page":
+            self._post_page(data, dev)
+        elif path == "/api/mirror":
+            self._post_mirror(data, dev)
+        elif path == "/api/orientation":
+            self._send_json(api_apply_orientation(data, dev))
+        elif path == "/api/key":
+            self._send_json(api_apply_key(data))
+        elif path == "/api/page/next":
+            self._send_json(api_page_next(dev))
+        elif path == "/api/page/prev":
+            self._send_json(api_page_prev(dev))
+        elif path == "/api/config/set":
+            self._send_json(api_apply_config_set(data, dev))
+        elif path == "/api/device/select":
+            self._send_json(api_apply_device_select(data))
+        elif path == "/api/device/refresh":
+            self._send_json(api_apply_device_refresh())
+        elif path == "/api/marquee":
+            self._send_json(api_apply_marquee(data, dev))
+        elif path == "/api/notify":
+            self._send_json(api_apply_notify(data))
+        elif path == "/api/screen/id":
+            self._send_json(api_trigger_screen_id(data))
+        elif path == "/api/quit":
+            self._send_json(api_apply_quit(data))
+        else:
+            self._send_json({"ok": False, "error": "not found"}, 404)
+
+    def _post_page(self, data, device=None):
+        """切页（复用统一逻辑）"""
+        self._send_json(api_apply_page(data, device))
+
+    # ---------- API 文档 ----------
+    def _send_api_doc(self):
+        """返回网页投屏控制台（带分页标签：投屏 / 选择程序 / 文档）"""
+        body = _API_CONSOLE_HTML.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _send_plain_doc(self):
+        """返回原始 API 说明文档（/docs）"""
+        try:
+            port = int(getattr(config_obj, "api_port", 8632))
+        except Exception:
+            port = 8632
+        try:
+            html = _API_DOC_HTML.format(port=port, size="%dx%d" % (SHOW_WIDTH, SHOW_HEIGHT),
+                                        bytes_len=SHOW_WIDTH * SHOW_HEIGHT * 3,
+                                        port_plus_1=port + 1, port_plus_2=port + 2, port_plus_3=port + 3)
+        except Exception:
+            html = "<pre>MSU2_MINI_V2 API: http://127.0.0.1:%d</pre>" % port
+        body = html.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _sse_events(self):
+        """SSE 事件流：/api/events，帧版本变化时推送 event: frame（长连接）"""
+        self.close_connection = False
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("X-Accel-Buffering", "no")
+        self.end_headers()
+        last = -1
+        try:
+            while True:
+                with _api_event_lock:
+                    ver = _api_event_version
+                if ver != last:
+                    last = ver
+                    self.wfile.write(("event: frame\ndata: %d\n\n" % ver).encode("utf-8"))
+                else:
+                    self.wfile.write(b": ping\n\n")  # 心跳保持连接
+                self.wfile.flush()
+                time.sleep(1)
+        except Exception:
+            pass
+        finally:
+            self.close_connection = True
+
+    def _send_windows(self):
+        """返回本机可投屏的窗口列表"""
+        try:
+            wins = get_all_windows()
+            items = [{"hwnd": h, "name": n} for n, (h, _parent) in wins.items()]
+            items.sort(key=lambda x: x["name"].lower())
+            self._send_json({"ok": True, "windows": items})
+        except Exception as e:
+            self._send_json({"ok": False, "error": str(e)}, 500)
+
+    def _send_devices(self):
+        """返回多屏设备列表（供选择投屏目标屏）"""
+        try:
+            items = []
+            for dev in all_devices.values():
+                cfg = getattr(dev, "config", None)
+                items.append({
+                    "name": getattr(dev, "device_name", "屏幕1"),
+                    "index": getattr(dev, "index", 0),
+                    "connected": bool(getattr(dev, "device_state", 0)),
+                    "page": PAGE_ID.get(getattr(cfg, "state_machine", 0), "") if cfg is not None else "",
+                })
+            items.sort(key=lambda x: x["index"])
+            self._send_json({"ok": True, "devices": items})
+        except Exception as e:
+            self._send_json({"ok": False, "error": str(e)}, 500)
+
+    def _post_mirror(self, data, device=None):
+        """窗口投屏（复用统一逻辑）"""
+        self._send_json(api_apply_mirror(data, device))
+
+    def _post_slideshow(self, data, device=None):
+        """多图轮播投屏（复用统一逻辑）"""
+        self._send_json(api_apply_slideshow(data, device))
+
+    def _post_stop(self, device=None):
+        """停止指定屏投屏（复用统一逻辑）"""
+        self._send_json(api_apply_stop(device))
+
+    # ---------- WebSocket ----------
+    def _ws_handshake(self):
+        key = self.headers.get("Sec-WebSocket-Key")
+        if not key:
+            self._send_json({"ok": False, "error": "websocket handshake failed"}, 400)
+            return
+        accept = _b64.b64encode(_hashlib.sha1((key + _WS_GUID).encode("ascii")).digest()).decode("ascii")
+        self.send_response(101, "Switching Protocols")
+        self.send_header("Upgrade", "websocket")
+        self.send_header("Connection", "Upgrade")
+        self.send_header("Sec-WebSocket-Accept", accept)
+        self.end_headers()
+        self._ws_loop()
+
+    def _ws_recv_frame(self):
+        """读取一个 WS 帧，返回 (opcode, payload)；连接关闭返回 None"""
+        try:
+            head = self.rfile.read(2)
+            if len(head) < 2:
+                return None
+            b0, b1 = head
+            opcode = b0 & 0x0F
+            length = b1 & 0x7F
+            masked = b1 & 0x80
+            if length == 126:
+                length = _struct.unpack(">H", self.rfile.read(2))[0]
+            elif length == 127:
+                length = _struct.unpack(">Q", self.rfile.read(8))[0]
+            mask = self.rfile.read(4) if masked else b""
+            payload = self.rfile.read(length)
+            if masked and len(mask) == 4:
+                payload = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+            return opcode, payload
+        except Exception:
+            return None
+
+    def _ws_loop(self):
+        _api_ws_connections.add(self)
+        try:
+            while True:
+                frame = self._ws_recv_frame()
+                if frame is None:
+                    break
+                opcode, payload = frame
+                if opcode == 0x8:  # close
+                    break
+                elif opcode == 0x1:  # text -> JSON 命令
+                    try:
+                        data = json.loads(payload.decode("utf-8", "replace"))
+                    except Exception:
+                        data = {}
+                    cmd = data.get("type")
+                    dev = _api_resolve_device(data)
+                    if cmd == "screen":
+                        self._apply_screen(data, dev)
+                    elif cmd == "text":
+                        _api_apply_text(data, dev)
+                    elif cmd == "clear":
+                        api_stop_slideshow(dev)
+                        api_set_frame(None, dev)
+                    elif cmd == "page":
+                        self._post_page(data, dev)
+                    elif cmd == "mirror":
+                        self._post_mirror(data, dev)
+                    elif cmd == "stop":
+                        self._post_stop(dev)
+                elif opcode == 0x2:  # binary -> 原始 RGB888 帧（W*H*3）
+                    need = SHOW_WIDTH * SHOW_HEIGHT * 3
+                    if len(payload) >= need:
+                        arr = np.frombuffer(payload[:need], dtype=np.uint8).reshape(SHOW_HEIGHT, SHOW_WIDTH, 3).copy()
+                        api_set_frame(arr)
+        except Exception:
+            pass
+        finally:
+            _api_ws_connections.discard(self)
+            try:
+                self.close_connection = True
+                self.connection.close()
+            except Exception:
+                pass
+
+
+def _build_openapi_doc():
+    """生成 OpenAPI 3.0 规范的 API JSON 文档（机器可读，供其他程序解析对接）"""
+    try:
+        port = int(getattr(config_obj, "api_port", 8632))
+    except Exception:
+        port = 8632
+    try:
+        has_token = bool(getattr(config_obj, "api_token", ""))
+    except Exception:
+        has_token = False
+    token_note = ("已启用访问令牌：请求头 X-API-Token 或查询参数 ?token="
+                  if has_token else "未启用访问令牌（可在设置 → API接入 中配置）")
+    need = SHOW_WIDTH * SHOW_HEIGHT * 3
+    return {
+        "openapi": "3.0.0",
+        "info": {
+            "title": "MSU2_MINI_V2 投屏 API",
+            "description": "USB 副屏工具的外部接入接口。支持 HTTP REST / WebSocket / SSE(/api/events) / TCP(JSON行,端口+1) / UDP(JSON报,端口+2) / ZeroMQ(REP,端口+3,需pyzmq) / Windows命名管道(\\\\\\.\\\\pipe\\\\MSU2_MINI_V2_api) / Unix Domain Socket(api_unix.sock) / 热文件夹 投屏。可自定义投屏内容（图像、文本、清屏、切页、多图轮播、窗口投屏、实时帧）。支持「强制投屏」：未选 API投屏 页也可投屏，结束自动返回原页面。屏幕分辨率 %dx%d。%s"
+                           % (SHOW_WIDTH, SHOW_HEIGHT, token_note),
+            "version": PROGRAM_VERSION,
+            "license": {"name": "MIT", "url": PROGRAM_GITHUB},
+        },
+        "servers": [{"url": "http://127.0.0.1:%d" % port, "description": "本地 API 服务"}],
+        "tags": [
+            {"name": "信息", "description": "查询服务与设备信息"},
+            {"name": "投屏", "description": "投屏图像 / 文本 / 清屏"},
+            {"name": "控制", "description": "页面切换"},
+            {"name": "实时", "description": "WebSocket 实时通道"},
+        ],
+        "paths": {
+            "/api/info": {
+                "get": {
+                    "tags": ["信息"],
+                    "summary": "获取服务与设备信息",
+                    "responses": {
+                        "200": {
+                            "description": "成功",
+                            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/InfoResponse"}}},
+                        }
+                    },
+                }
+            },
+            "/api/pages": {
+                "get": {
+                    "tags": ["信息"],
+                    "summary": "获取可用页面列表",
+                    "responses": {
+                        "200": {
+                            "description": "页面名称数组",
+                            "content": {"application/json": {"schema": {
+                                "type": "object",
+                                "properties": {
+                                    "ok": {"type": "boolean"},
+                                    "pages": {"type": "array", "items": {"type": "string"}},
+                                },
+                            }}},
+                        }
+                    },
+                }
+            },
+            "/api/screen": {
+                "post": {
+                    "tags": ["投屏"],
+                    "summary": "投屏整帧图像（JSON，三种方式任选）",
+                    "description": "image=base64 编码的 PNG/JPG/BMP；rgb888=base64 编码的原始 RGB888 字节(W*H*3)；pixels=扁平 RGB 列表(需同时给 width/height)",
+                    "requestBody": {
+                        "required": True,
+                        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ScreenRequest"}}},
+                    },
+                    "responses": {
+                        "200": {"description": "成功，返回屏幕尺寸"},
+                        "400": {"description": "参数错误或图像解析失败"},
+                    },
+                }
+            },
+            "/api/screen/raw": {
+                "post": {
+                    "tags": ["投屏"],
+                    "summary": "原始 RGB888 字节流投屏（最低开销）",
+                    "description": "请求体为 %d 字节原始 RGB888（按屏幕 %dx%d），Content-Type: application/octet-stream" % (need, SHOW_WIDTH, SHOW_HEIGHT),
+                    "requestBody": {
+                        "required": True,
+                        "content": {"application/octet-stream": {"schema": {"type": "string", "format": "binary"}}},
+                    },
+                    "responses": {
+                        "200": {"description": "成功"},
+                        "400": {"description": "数据长度不足 W*H*3"},
+                    },
+                }
+            },
+            "/api/text": {
+                "post": {
+                    "tags": ["投屏"],
+                    "summary": "文本投屏",
+                    "requestBody": {
+                        "required": True,
+                        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/TextRequest"}}},
+                    },
+                    "responses": {"200": {"description": "成功"}},
+                }
+            },
+            "/api/clear": {
+                "post": {
+                    "tags": ["投屏"],
+                    "summary": "清空投屏帧",
+                    "responses": {"200": {"description": "成功"}},
+                }
+            },
+            "/api/page": {
+                "post": {
+                    "tags": ["控制"],
+                    "summary": "切换页面（按名称或 ID）",
+                    "requestBody": {
+                        "required": True,
+                        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/PageRequest"}}},
+                    },
+                    "responses": {
+                        "200": {"description": "成功，返回当前页面"},
+                        "400": {"description": "无效页面或无设备"},
+                    },
+                }
+            },
+            "/api/windows": {
+                "get": {
+                    "tags": ["控制"],
+                    "summary": "列出本机可投屏的窗口/程序",
+                    "responses": {
+                        "200": {
+                            "description": "窗口列表",
+                            "content": {"application/json": {"schema": {
+                                "type": "object",
+                                "properties": {
+                                    "ok": {"type": "boolean"},
+                                    "windows": {
+                                        "type": "array",
+                                        "items": {"type": "object", "properties": {
+                                            "hwnd": {"type": "integer", "description": "窗口句柄"},
+                                            "name": {"type": "string", "description": "窗口/程序名称"},
+                                        }},
+                                    },
+                                },
+                            }}},
+                        }
+                    },
+                }
+            },
+            "/api/devices": {
+                "get": {
+                    "tags": ["信息"],
+                    "summary": "列出多屏设备（用于选择投屏目标屏）",
+                    "responses": {
+                        "200": {
+                            "description": "设备列表",
+                            "content": {"application/json": {"schema": {
+                                "type": "object",
+                                "properties": {
+                                    "ok": {"type": "boolean"},
+                                    "devices": {
+                                        "type": "array",
+                                        "items": {"type": "object", "properties": {
+                                            "name": {"type": "string", "description": "屏名（如 屏幕1）"},
+                                            "index": {"type": "integer", "description": "屏序号"},
+                                            "connected": {"type": "boolean"},
+                                            "page": {"type": "string", "description": "当前页面"},
+                                        }},
+                                    },
+                                },
+                            }}},
+                        }
+                    },
+                }
+            },
+            "/api/mirror": {
+                "post": {
+                    "tags": ["控制"],
+                    "summary": "把指定窗口(hwnd)投屏到指定屏（切换到屏幕镜像页）",
+                    "requestBody": {
+                        "required": True,
+                        "content": {"application/json": {"schema": {
+                            "type": "object",
+                            "required": ["hwnd"],
+                            "properties": {"hwnd": {"type": "integer", "description": "窗口句柄（来自 /api/windows）"}},
+                        }}},
+                    },
+                    "responses": {
+                        "200": {"description": "成功，返回 hwnd 与页面名"},
+                        "400": {"description": "无设备 / 缺少 hwnd / 无效"},
+                    },
+                }
+            },
+            "/api/slideshow": {
+                "post": {
+                    "tags": ["投屏"],
+                    "summary": "多图轮播投屏（一次上传多张图片，按间隔自动切换）",
+                    "description": "images 为 base64 编码的图像数组，interval 为切换间隔（秒，最小 0.5）。自动缩放至屏幕尺寸。",
+                    "requestBody": {
+                        "required": True,
+                        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SlideshowRequest"}}},
+                    },
+                    "responses": {
+                        "200": {"description": "成功，返回图片数与间隔"},
+                        "400": {"description": "参数错误或图像解析失败"},
+                    },
+                }
+            },
+            "/api/slideshow/stop": {
+                "post": {
+                    "tags": ["投屏"],
+                    "summary": "停止多图轮播（不切页）",
+                    "responses": {"200": {"description": "成功"}},
+                }
+            },
+            "/api/stop": {
+                "post": {
+                    "tags": ["投屏"],
+                    "summary": "停止投屏：停止轮播 + 清屏 + 回到 API 投屏页",
+                    "responses": {"200": {"description": "成功，返回当前页面"}},
+                }
+            },
+            "/ws": {
+                "get": {
+                    "tags": ["实时"],
+                    "summary": "WebSocket 实时通道（需 WebSocket 握手升级）",
+                    "description": "二进制帧 = 原始 RGB888（%d 字节）；文本帧 = JSON 命令，type 为 screen / text / clear / page，参数与对应 POST 一致。适合高频推流。" % need,
+                    "responses": {"101": {"description": "Switching Protocols（WebSocket 已建立）"}},
+                }
+            },
+            "/api/events": {
+                "get": {
+                    "tags": ["实时"],
+                    "summary": "SSE 事件流（Server-Sent Events）",
+                    "description": "长连接事件流：帧版本变化时推送 event: frame（data=版本号）；空闲时发送心跳注释行。可用于网页端实时感知投屏内容变化。",
+                    "responses": {"200": {"description": "text/event-stream 事件流"}},
+                }
+            },
+            "/api/health": {
+                "get": {
+                    "tags": ["信息"],
+                    "summary": "健康检查（探测服务可用性）",
+                    "responses": {"200": {"description": "ok + 服务器时间"}},
+                }
+            },
+            "/api/version": {
+                "get": {
+                    "tags": ["信息"],
+                    "summary": "获取程序版本与元数据",
+                    "responses": {"200": {"description": "版本、构建日期、作者、许可证、仓库地址"}},
+                }
+            },
+            "/api/protocols": {
+                "get": {
+                    "tags": ["信息"],
+                    "summary": "列出全部接入协议与地址（自动发现）",
+                    "responses": {"200": {"description": "HTTP/WS/SSE/TCP/UDP/ZMQ/管道/Unix/热文件夹/stdin 及其可用状态"}},
+                }
+            },
+            "/api/status": {
+                "get": {
+                    "tags": ["信息"],
+                    "summary": "综合运行状态（当前屏/各屏连接/页面/方向/投屏中）",
+                    "responses": {"200": {"description": "设备、页面、方向、投屏状态"}},
+                }
+            },
+            "/api/config": {
+                "get": {
+                    "tags": ["信息"],
+                    "summary": "读取指定屏完整配置（只读，支持 ?device=屏幕1）",
+                    "parameters": [{"name": "device", "in": "query", "required": False, "schema": {"type": "string"}, "description": "目标屏名称，缺省=当前活跃屏"}],
+                    "responses": {"200": {"description": "配置对象"}},
+                }
+            },
+            "/api/screenshot": {
+                "get": {
+                    "tags": ["信息"],
+                    "summary": "获取指定屏当前画面（PNG + RGB888 的 base64，支持 ?device=屏幕1）",
+                    "parameters": [{"name": "device", "in": "query", "required": False, "schema": {"type": "string"}, "description": "目标屏名称，缺省=当前活跃屏"}],
+                    "responses": {"200": {"description": "宽高 + png/rgb888 base64"}},
+                }
+            },
+            "/api/orientation": {
+                "post": {
+                    "tags": ["控制"],
+                    "summary": "设置 LCD 显示方向",
+                    "description": "direction: 0~N 直接设置，或 next 循环切换（正向/反向/镜像/旋转等）。需设备已连接。",
+                    "requestBody": {"required": True, "content": {"application/json": {"schema": {
+                        "type": "object", "properties": {
+                            "direction": {"type": "string", "description": "0~N 或 next"},
+                            "device": {"type": "string", "description": "目标屏名称，缺省=当前活跃屏"},
+                        }}}}},
+                    "responses": {"200": {"description": "设置后的方向索引与名称"}},
+                }
+            },
+            "/api/key": {
+                "post": {
+                    "tags": ["控制"],
+                    "summary": "模拟按键动作（下翻页 / 上翻页 / 切换方向 / 无）",
+                    "requestBody": {"required": True, "content": {"application/json": {"schema": {
+                        "type": "object", "properties": {"action": {"type": "string", "description": "下翻页/上翻页/切换方向/无"}},
+                    }}}},
+                    "responses": {"200": {"description": "执行结果"}},
+                }
+            },
+            "/api/page/next": {
+                "post": {
+                    "tags": ["控制"],
+                    "summary": "翻到下一页",
+                    "requestBody": {"required": False, "content": {"application/json": {"schema": {
+                        "type": "object", "properties": {"device": {"type": "string", "description": "目标屏名称，缺省=当前活跃屏"}},
+                    }}}},
+                    "responses": {"200": {"description": "当前页面"}},
+                }
+            },
+            "/api/page/prev": {
+                "post": {
+                    "tags": ["控制"],
+                    "summary": "翻到上一页",
+                    "requestBody": {"required": False, "content": {"application/json": {"schema": {
+                        "type": "object", "properties": {"device": {"type": "string", "description": "目标屏名称，缺省=当前活跃屏"}},
+                    }}}},
+                    "responses": {"200": {"description": "当前页面"}},
+                }
+            },
+            "/api/config/set": {
+                "post": {
+                    "tags": ["控制"],
+                    "summary": "按白名单修改配置并立即生效",
+                    "description": "可修改字段见 _API_CONFIG_WRITABLE（页面/方向/翻页/超时/跑马灯/颜色/数据源等显示类字段），自动保存。",
+                    "requestBody": {"required": True, "content": {"application/json": {"schema": {
+                        "type": "object", "properties": {
+                            "state_machine": {"type": "string", "description": "页面名称或ID"},
+                            "marquee_text": {"type": "string", "description": "跑马灯文本"},
+                            "device": {"type": "string", "description": "目标屏名称，缺省=当前活跃屏"},
+                        },
+                        "additionalProperties": True,
+                    }}}},
+                    "responses": {"200": {"description": "已修改字段列表"}},
+                }
+            },
+            "/api/device/select": {
+                "post": {
+                    "tags": ["控制"],
+                    "summary": "切换当前活跃屏（多屏时改变后续命令作用设备）",
+                    "requestBody": {"required": True, "content": {"application/json": {"schema": {
+                        "type": "object", "properties": {"device": {"type": "string", "description": "目标屏名称（如 屏幕2）"}},
+                    }}}},
+                    "responses": {"200": {"description": "切换结果"}},
+                }
+            },
+            "/api/device/refresh": {
+                "post": {
+                    "tags": ["信息"],
+                    "summary": "刷新设备信息（返回当前设备连接快照）",
+                    "responses": {"200": {"description": "设备数量与列表"}},
+                }
+            },
+            "/api/marquee": {
+                "post": {
+                    "tags": ["投屏"],
+                    "summary": "设置跑马灯文本并切到跑马灯页（text/speed/font_size/color 可选）",
+                    "requestBody": {"required": True, "content": {"application/json": {"schema": {
+                        "type": "object", "properties": {
+                            "text": {"type": "string", "description": "跑马灯文本"},
+                            "speed": {"type": "integer", "description": "滚动速度"},
+                            "font_size": {"type": "integer", "description": "字号"},
+                            "color": {"type": "string", "description": "颜色 #rrggbb"},
+                            "device": {"type": "string", "description": "目标屏名称"},
+                        }}}}},
+                    "responses": {"200": {"description": "页面"}},
+                }
+            },
+            "/api/notify": {
+                "post": {
+                    "tags": ["控制"],
+                    "summary": "在 UI 底部状态栏显示通知文本（不投屏）",
+                    "requestBody": {"required": True, "content": {"application/json": {"schema": {
+                        "type": "object", "properties": {"text": {"type": "string", "description": "通知文本"}},
+                    }}}},
+                    "responses": {"200": {"description": "结果"}},
+                }
+            },
+            "/api/quit": {
+                "post": {
+                    "tags": ["控制"],
+                    "summary": "退出程序（需 force: true，延迟执行以便响应返回）",
+                    "requestBody": {"required": True, "content": {"application/json": {"schema": {
+                        "type": "object", "properties": {"force": {"type": "boolean"}},
+                    }}}},
+                    "responses": {"200": {"description": "结果"}},
+                }
+            },
+            "/api/screen/id": {
+                "post": {
+                    "tags": ["控制"],
+                    "summary": "屏幕序号检测：所有已连接屏显示各自屏号，超时后自动恢复原页面",
+                    "description": "timeout 可覆盖设置的时长（秒，1~300），缺省用「设置→API接入」中配置的时长。返回生效时长与已触发屏。",
+                    "requestBody": {"required": False, "content": {"application/json": {"schema": {
+                        "type": "object", "properties": {"timeout": {"type": "integer", "description": "显示时长(秒)，可覆盖设置值"}},
+                    }}}},
+                    "responses": {"200": {"description": "ok + timeout + devices"}},
+                }
+            },
+        },
+        "components": {
+            "schemas": {
+                "InfoResponse": {
+                    "type": "object",
+                    "properties": {
+                        "ok": {"type": "boolean"},
+                        "name": {"type": "string"},
+                        "version": {"type": "string"},
+                        "screen": {
+                            "type": "object",
+                            "properties": {
+                                "width": {"type": "integer"},
+                                "height": {"type": "integer"},
+                                "lcd": {"type": "array", "items": {"type": "integer"}},
+                            },
+                        },
+                        "connected": {"type": "boolean"},
+                        "page": {"type": "string"},
+                        "pages": {"type": "array", "items": {"type": "string"}},
+                    },
+                },
+                "ScreenRequest": {
+                    "type": "object",
+                    "properties": {
+                        "image": {"type": "string", "format": "byte", "description": "base64 编码的 PNG/JPG/BMP 图像"},
+                        "rgb888": {"type": "string", "format": "byte", "description": "base64 编码的原始 RGB888 字节（W*H*3）"},
+                        "pixels": {"type": "array", "items": {"type": "integer"}, "description": "扁平 RGB 列表（需同时给 width/height）"},
+                        "width": {"type": "integer", "description": "pixels 方式的图像宽度"},
+                        "height": {"type": "integer", "description": "pixels 方式的图像高度"},
+                        "fit": {"type": "string", "enum": ["contain", "stretch", "cover"], "default": "stretch", "description": "显示方式：contain=自适应完整、stretch=拉伸填满、cover=填充裁剪"},
+                        "device": {"type": "string", "description": "目标屏名称（如 屏幕1），缺省=当前活跃屏；可用 /api/devices 查询"},
+                    },
+                },
+                "TextRequest": {
+                    "type": "object",
+                    "required": ["text"],
+                    "properties": {
+                        "text": {"type": "string", "description": "要显示的文本"},
+                        "font_size": {"type": "integer", "default": 16, "minimum": 8, "maximum": 72, "description": "字号"},
+                        "color": {"type": "string", "default": "#ffffff", "description": "文本颜色 #rrggbb"},
+                        "x": {"type": "integer", "default": 0, "description": "x 坐标"},
+                        "y": {"type": "integer", "default": 0, "description": "y 坐标"},
+                        "align": {"type": "string", "enum": ["left", "center", "right"], "default": "left", "description": "水平对齐"},
+                        "background": {"type": "string", "default": "#000000", "description": "背景色 #rrggbb"},
+                        "device": {"type": "string", "description": "目标屏名称（如 屏幕1），缺省=当前活跃屏"},
+                    },
+                },
+                "PageRequest": {
+                    "type": "object",
+                    "properties": {
+                        "page": {"type": "string", "description": "页面名称（或整数 ID），可用 /api/pages 查询可用名称"},
+                        "device": {"type": "string", "description": "目标屏名称（如 屏幕1），缺省=当前活跃屏"},
+                    },
+                },
+                "SlideshowRequest": {
+                    "type": "object",
+                    "required": ["images"],
+                    "properties": {
+                        "images": {"type": "array", "items": {"type": "string", "format": "byte"}, "description": "base64 编码的图像数组（PNG/JPG 等）"},
+                        "interval": {"type": "number", "default": 3, "minimum": 0.5, "description": "轮播间隔（秒）"},
+                        "fit": {"type": "string", "enum": ["contain", "stretch", "cover"], "default": "stretch", "description": "显示方式：contain=自适应完整、stretch=拉伸填满、cover=填充裁剪"},
+                        "device": {"type": "string", "description": "目标屏名称（如 屏幕1），缺省=当前活跃屏"},
+                    },
+                },
+            }
+        },
+    }
+
+
+_API_CONSOLE_HTML = """<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8">
+<title>MSU2_MINI_V2 · 投屏控制台</title>
+<style>
+body{font-family:'Microsoft YaHei',sans-serif;margin:20px;color:#222;max-width:720px}
+h1{margin-bottom:6px}
+.tabs{display:flex;gap:6px;border-bottom:2px solid #4a90d9;margin-bottom:14px}
+.tab{padding:8px 20px;border:1px solid #ccc;border-bottom:none;background:#f0f0f0;cursor:pointer;border-radius:6px 6px 0 0}
+.tab.active{background:#4a90d9;color:#fff;font-weight:bold}
+.panel{display:none}
+.panel.active{display:block}
+.row{margin:8px 0}
+label{display:inline-block;width:110px;color:#555}
+input[type=text],input[type=number]{padding:4px;width:210px}
+input[type=number]{width:80px}
+select{padding:4px}
+button{padding:6px 14px;margin-right:8px;cursor:pointer}
+.msg{color:#2e86c1;margin-top:10px;white-space:pre-wrap}
+table{border-collapse:collapse;width:100%;margin-top:10px}
+td,th{border:1px solid #ccc;padding:6px 8px;text-align:left}
+.win-btn{background:#4a90d9;color:#fff;border:none;padding:4px 12px;border-radius:4px;cursor:pointer}
+.stopbtn{background:#d9534f;color:#fff;border:none;padding:6px 14px;border-radius:4px;cursor:pointer}
+.tok{position:absolute;right:20px;top:20px;color:#888}
+code{background:#eee;padding:1px 4px;border-radius:3px}
+</style></head><body>
+<h1>MSU2_MINI_V2 · 投屏控制台</h1>
+<div class="tok">令牌: <input type="text" id="tok" size="16" placeholder="(可选)"></div>
+<div class="row" style="margin-bottom:10px"><label>目标屏幕:</label><select id="devSel" style="width:240px"></select></div>
+<div class="tabs">
+  <button class="tab active" onclick="showTab('cast',this)">🎨 投屏</button>
+  <button class="tab" onclick="showTab('program',this)">🖥 选择程序</button>
+  <button class="tab" onclick="showTab('docs',this)">📖 文档</button>
+</div>
+
+<div id="panel-cast" class="panel active">
+  <h3>文本投屏</h3>
+  <div class="row"><label>文本:</label><input type="text" id="txt" placeholder="要显示的文字"></div>
+  <div class="row"><label>字号:</label><input type="number" id="fs" value="16" min="8" max="72"></div>
+  <div class="row"><label>颜色:</label><input type="color" id="color" value="#ffffff"> <span id="colorHex">#ffffff</span></div>
+  <div class="row"><label>背景色:</label><input type="color" id="bg" value="#000000"> <span id="bgHex">#000000</span></div>
+  <div class="row"><label>对齐:</label><select id="align"><option value="left">左对齐</option><option value="center">居中</option><option value="right">右对齐</option></select></div>
+  <div class="row"><label>X / Y:</label><input type="number" id="x" value="0"> <input type="number" id="y" value="0"></div>
+  <button onclick="sendText()">投屏文本</button>
+  <hr>
+  <h3>图片投屏</h3>
+  <div class="row"><input type="file" id="imgfile" accept="image/*" multiple> <button onclick="sendImage()">单张投屏</button></div>
+  <div class="row"><label>显示方式:</label><select id="fitSel"><option value="contain">自适应(完整)</option><option value="stretch" selected>拉伸(填满)</option><option value="cover">填充(裁剪)</option></select></div>
+  <div class="row"><label>轮播间隔(秒):</label><input type="number" id="slidInt" value="3" min="0.5" step="0.5"> <button onclick="sendSlideshow()">多图轮播</button></div>
+  <div class="row" style="color:#888">多图轮播：可一次选择多张图片，按间隔自动切换；点「停止投屏」结束。</div>
+  <div class="row"><button onclick="doClear()">清屏</button> <button class="stopbtn" onclick="stopCast()">⏹ 停止投屏</button></div>
+  <div class="row"><button onclick="doScreenId()">🔢 屏幕序号检测</button> <span style="color:#888">所有屏幕显示各自屏号，N秒后自动恢复（时长在程序设置→API接入中配置）</span></div>
+  <div class="msg" id="msg-cast"></div>
+</div>
+
+<div id="panel-program" class="panel">
+  <p>选择本机窗口/程序，点击「投屏」即可把该窗口内容显示到副屏。</p>
+  <button onclick="loadWindows()">刷新窗口列表</button> <button class="stopbtn" onclick="stopCast()">⏹ 停止投屏</button>
+  <div class="msg" id="msg-program"></div>
+  <table><thead><tr><th>窗口</th><th>操作</th></tr></thead><tbody id="winlist"></tbody></table>
+</div>
+
+<div id="panel-docs" class="panel">
+  <p>机器可读规范（OpenAPI 3.0）：<a href="/api/openapi.json">/api/openapi.json</a></p>
+  <p><b>接入协议：</b>HTTP/WebSocket/SSE（端口N）、TCP（JSON行，N+1）、UDP（JSON报，N+2）、ZeroMQ（REP，N+3，需pyzmq）、Windows命名管道（<code>\\.\pipe\MSU2_MINI_V2_api</code>）、Unix Domain Socket（api_unix.sock）、热文件夹（程序目录 hotfolder/，放入图片/文本即投屏）。<br>
+  所有协议命令格式一致（JSON，<code>type</code> 为 screen/text/clear/slideshow/slideshow_stop/stop/page/mirror，可选 <code>device</code> 指定目标屏）。</p>
+  <p>常用接口：</p>
+  <ul>
+    <li><code>POST /api/text</code> 文本投屏</li>
+    <li><code>POST /api/screen</code> 整帧图像（base64 PNG / rgb888 / pixels）</li>
+    <li><code>POST /api/screen/raw</code> 原始 RGB888 字节流</li>
+    <li><code>POST /api/clear</code> 清屏</li>
+    <li><code>POST /api/page</code> 切页</li>
+    <li><code>GET /api/windows</code> 列出可投屏窗口</li>
+    <li><code>POST /api/mirror</code> 投屏指定窗口</li>
+    <li><code>GET /api/devices</code> 列出多屏设备（选择目标屏）</li>
+    <li><code>GET /api/protocols</code> 列出全部接入协议与地址</li>
+    <li><code>GET /api/status</code> 综合运行状态</li>
+    <li><code>GET /api/screenshot</code> 获取当前屏画面</li>
+    <li><code>POST /api/page/next</code> / <code>/api/page/prev</code> 翻页</li>
+    <li><code>POST /api/key</code> 模拟按键（下翻页/上翻页/切换方向）</li>
+    <li><code>POST /api/marquee</code> 跑马灯投屏</li>
+    <li><code>POST /api/device/select</code> 切换活跃屏</li>
+    <li><code>GET /api/info</code> 设备信息</li>
+    <li>各投屏接口均可带 <code>device</code> 参数指定目标屏</li>
+  </ul>
+  <p>参数详见 <a href="/api/openapi.json">JSON 规范</a>，详细说明见 <a href="/docs">说明文档</a>。</p>
+</div>
+
+<script>
+var TOKEN = localStorage.getItem('api_token') || '';
+function saveToken(){ TOKEN = document.getElementById('tok').value.trim(); localStorage.setItem('api_token', TOKEN); }
+document.getElementById('tok').value = TOKEN;
+document.getElementById('tok').onchange = saveToken;
+function showTab(name, btn){
+  document.querySelectorAll('.tab').forEach(function(t){t.classList.remove('active');});
+  document.querySelectorAll('.panel').forEach(function(p){p.classList.remove('active');});
+  btn.classList.add('active');
+  document.getElementById('panel-'+name).classList.add('active');
+}
+function api(path, opts){
+  opts = opts || {};
+  opts.headers = Object.assign({'Content-Type':'application/json'}, opts.headers||{});
+  if(TOKEN){ opts.headers['X-API-Token'] = TOKEN; }
+  return fetch(path, opts).then(function(r){ return r.json(); });
+}
+function setMsg(id, text){ document.getElementById(id).textContent = text; }
+function getDev(){ var s=document.getElementById('devSel'); return s ? s.value : ''; }
+function getFit(){ var s=document.getElementById('fitSel'); return s ? s.value : 'stretch'; }
+function loadDevices(){
+  api('/api/devices').then(function(r){
+    var sel = document.getElementById('devSel');
+    if(!sel) return;
+    if(!r.ok || !r.devices || !r.devices.length){ sel.innerHTML = '<option value="">(默认屏)</option>'; return; }
+    var html = '<option value="">(默认屏)</option>';
+    r.devices.forEach(function(d){
+      html += '<option value="' + d.name + '">' + d.name + (d.connected ? '' : ' (未连接)') + '</option>';
+    });
+    sel.innerHTML = html;
+  });
+}
+loadDevices();
+document.getElementById('color').oninput = function(){ document.getElementById('colorHex').textContent = this.value; };
+document.getElementById('bg').oninput = function(){ document.getElementById('bgHex').textContent = this.value; };
+function sendText(){
+  api('/api/text', {method:'POST', body: JSON.stringify({
+    text: document.getElementById('txt').value,
+    font_size: parseInt(document.getElementById('fs').value)||16,
+    color: document.getElementById('color').value,
+    background: document.getElementById('bg').value,
+    align: document.getElementById('align').value,
+    x: parseInt(document.getElementById('x').value)||0,
+    y: parseInt(document.getElementById('y').value)||0,
+    device: getDev()
+  })}).then(function(r){ setMsg('msg-cast', r.ok ? '已投屏文本' : '失败: ' + (r.error||'')); });
+}
+function sendImage(){
+  var f = document.getElementById('imgfile').files[0];
+  if(!f){ setMsg('msg-cast', '请先选择图片'); return; }
+  var rd = new FileReader();
+  rd.onload = function(){
+    var b64 = rd.result.split(',')[1];
+    api('/api/screen', {method:'POST', body: JSON.stringify({image:b64, fit:getFit(), device:getDev()})})
+      .then(function(r){ setMsg('msg-cast', r.ok ? '已投屏图片' : '失败: ' + (r.error||'')); });
+  };
+  rd.readAsDataURL(f);
+}
+function doClear(){ api('/api/clear', {method:'POST', body: JSON.stringify({device:getDev()})}).then(function(r){ setMsg('msg-cast', r.ok ? '已清屏' : '失败'); }); }
+function loadWindows(){
+  setMsg('msg-program', '加载中...');
+  api('/api/windows').then(function(r){
+    var tb = document.getElementById('winlist');
+    tb.innerHTML = '';
+    if(!r.ok){ setMsg('msg-program', '加载失败: ' + (r.error||'')); return; }
+    var list = r.windows || [];
+    setMsg('msg-program', '共 ' + list.length + ' 个窗口');
+    list.forEach(function(w){
+      var tr = document.createElement('tr');
+      var td1 = document.createElement('td'); td1.textContent = w.name;
+      var td2 = document.createElement('td');
+      var btn = document.createElement('button');
+      btn.className = 'win-btn'; btn.textContent = '投屏';
+      btn.onclick = function(){ mirrorWindow(w.hwnd); };
+      td2.appendChild(btn);
+      tr.appendChild(td1); tr.appendChild(td2);
+      tb.appendChild(tr);
+    });
+  });
+}
+function mirrorWindow(hwnd){
+  api('/api/mirror', {method:'POST', body: JSON.stringify({hwnd:hwnd, device:getDev()})})
+    .then(function(r){ setMsg('msg-program', r.ok ? '已投屏窗口: ' + r.hwnd : '失败: ' + (r.error||'')); });
+}
+function sendSlideshow(){
+  var files = document.getElementById('imgfile').files;
+  if(!files.length){ setMsg('msg-cast', '请先选择多张图片'); return; }
+  var interval = parseFloat(document.getElementById('slidInt').value) || 3;
+  var images = [];
+  var pending = files.length;
+  for(var i=0;i<files.length;i++){
+    (function(file){
+      var rd = new FileReader();
+      rd.onload = function(){
+        images.push(rd.result.split(',')[1]);
+        if(--pending === 0){ startSlideshow(images, interval); }
+      };
+      rd.readAsDataURL(file);
+    })(files[i]);
+  }
+}
+function startSlideshow(images, interval){
+  api('/api/slideshow', {method:'POST', body: JSON.stringify({images:images, interval:interval, fit:getFit(), device:getDev()})})
+    .then(function(r){ setMsg('msg-cast', r.ok ? ('已开始轮播 ' + r.count + ' 张，间隔 ' + r.interval + ' 秒') : '失败: ' + (r.error||'')); });
+}
+function stopCast(){
+  api('/api/stop', {method:'POST', body: JSON.stringify({device:getDev()})})
+    .then(function(r){ setMsg('msg-cast', r.ok ? '已停止投屏（回到 ' + r.page + ' 页）' : '失败: ' + (r.error||'')); });
+}
+function doScreenId(){
+  api('/api/screen/id', {method:'POST', body: JSON.stringify({})})
+    .then(function(r){ setMsg('msg-cast', r.ok ? ('🔢 已触发屏幕序号检测，持续 ' + r.timeout + ' 秒') : '失败: ' + (r.error||'')); });
+}
+</script>
+</body></html>"""
+
+
+_API_DOC_HTML = """<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8">
+<title>MSU2_MINI_V2 API 接入文档</title>
+<style>body{{font-family:'Microsoft YaHei',sans-serif;margin:24px;color:#222;max-width:900px}}
+pre{{background:#f5f5f5;padding:10px;border-radius:6px;overflow:auto}}
+code{{background:#eee;padding:1px 4px;border-radius:3px}}
+h2{{border-bottom:2px solid #4a90d9;padding-bottom:4px}}
+table{{border-collapse:collapse}}td,th{{border:1px solid #ccc;padding:6px 10px}}</style></head><body>
+<h1>MSU2_MINI_V2 · API 接入文档</h1>
+<p>📄 机器可读 JSON 规范（OpenAPI 3.0）：<a href="/api/openapi.json">/api/openapi.json</a>（程序可按此 JSON 自动对接/生成客户端）</p>
+<p>通过本地 HTTP/WebSocket API，其他程序可以自定义投屏内容（图像、文本、清屏、切页、实时帧）。
+服务地址：<code>http://127.0.0.1:{port}</code>，屏幕尺寸 <code>{size}</code>。
+若设置了令牌，请携带请求头 <code>X-API-Token</code> 或查询参数 <code>?token=</code>。</p>
+
+<h2>1. 基础信息</h2>
+<pre>GET /api/info    设备与屏幕信息（JSON）
+GET /api/pages   可用页面列表（JSON）</pre>
+
+<h2>2. 投屏整帧图像</h2>
+<pre>POST /api/screen    JSON，三种方式任选：
+  A. image  : base64 编码的 PNG/JPG/BMP 图像
+  B. rgb888 : base64 编码的原始 RGB888 字节（顺序 W*H*3）
+  C. pixels : 扁平 RGB 列表（需同时给 width/height）</pre>
+<pre># Python 示例（投屏一张 PNG）
+import base64, requests
+raw = open("pic.png","rb").read()
+requests.post("http://127.0.0.1:{port}/api/screen", json={{ "image": base64.b64encode(raw).decode() }})</pre>
+
+<h2>3. 原始字节流投屏（最低开销）</h2>
+<pre>POST /api/screen/raw
+Content-Type: application/octet-stream
+Body: {bytes_len} 字节原始 RGB888（按屏幕 {size}）</pre>
+
+<h2>4. 文本投屏</h2>
+<pre>POST /api/text
+{{ "text": "你好", "font_size": 16, "color": "#ff8000",
+   "x": 0, "y": 0, "align": "left", "background": "#000000" }}
+align: left / center / right</pre>
+
+<h2>5. 清屏 / 切页</h2>
+<pre>POST /api/clear            清空投屏帧
+POST /api/page             {{ "page": "时间" }}  或 {{ "page": 1 }}
+（页面名或 ID，可用 /api/pages 查看）</pre>
+
+<h2>6. WebSocket 实时通道（/ws）</h2>
+<p>二进制帧 = 原始 RGB888（{bytes_len} 字节），文本帧 = JSON 命令
+（与 POST 一致：type 为 screen/text/clear/page）。适合高频推流。</p>
+<pre># Python 示例
+import socket, struct
+# ...（标准 WebSocket 客户端即可，如 websocket-client / websockets）</pre>
+
+<h2>7. curl 快速测试</h2>
+<pre>curl http://127.0.0.1:{port}/api/info
+curl -X POST http://127.0.0.1:{port}/api/text -H "Content-Type: application/json" -d '{{"text":"hello"}}'</pre>
+
+<h2>8. 其他接入协议</h2>
+<p>除 HTTP/WebSocket 外，还支持以下本地接入方式。命令格式与 HTTP JSON 一致（type 为
+screen/text/clear/slideshow/slideshow_stop/stop/page/mirror，可选 device 指定目标屏）。</p>
+<pre>TCP Socket : 127.0.0.1:{port_plus_1}，每行一个 JSON 命令，返回一行 JSON 响应
+UDP        : 127.0.0.1:{port_plus_2}，每条数据报一个 JSON 命令
+ZeroMQ     : tcp://127.0.0.1:{port_plus_3}（REP 模式，需 pip install pyzmq）
+命名管道   : \\\.\\pipe\\MSU2_MINI_V2_api（JSON 行协议，Windows）
+Unix Socket: 程序目录 api_unix.sock（JSON 行协议，需系统支持 AF_UNIX）
+热文件夹   : 程序目录 hotfolder/，放入图片/文本即投屏（文件名 "屏幕1_xxx.png" 指定目标屏）
+stdin 管道 : 管道/重定向启动时从标准输入按行读 JSON 命令
+SSE 事件流 : GET /api/events，帧版本变化推送 event: frame（data=版本号）</pre>
+<pre># TCP 示例（socket 客户端）
+import socket
+s = socket.create_connection(("127.0.0.1", {port_plus_1}))
+s.sendall(b'{{"type":"text","text":"你好"}}\n')
+print(s.recv(1024).decode())</pre>
+
+<h2>9. 信息与状态查询</h2>
+<pre>GET /api/health        健康检查（探测服务可用）
+GET /api/version       版本与元数据
+GET /api/protocols     列出全部接入协议与地址（自动发现）
+GET /api/status        综合运行状态（设备/页面/方向/投屏中）
+GET /api/config        读取当前屏完整配置（?device=屏幕1）
+GET /api/screenshot    获取当前屏画面（PNG + RGB888 base64，?device=屏幕1）</pre>
+
+<h2>10. 控制与配置接口</h2>
+<pre>POST /api/page/next       翻下一页
+POST /api/page/prev       翻上一页
+POST /api/key             {{"action":"下翻页|上翻页|切换方向|无"}}
+POST /api/orientation     {{"direction": 0~7 或 "next"}} 设置 LCD 方向
+POST /api/marquee         {{"text":"...","speed":2,"font_size":20,"color":"#fff"}} 切到跑马灯页
+POST /api/config/set      {{"marquee_text":"...","device":"屏幕1"}} 按白名单改配置
+POST /api/device/select   {{"device":"屏幕2"}} 切换活跃屏
+POST /api/device/refresh  刷新设备信息
+POST /api/notify          {{"text":"通知"}} UI 状态栏通知
+POST /api/screen/id       {{"timeout":5}} 屏幕序号检测（所有屏显示各自屏号，超时后自动恢复原页面）
+POST /api/quit            {{"force":true}} 退出程序
+
+以上所有控制命令也可通过 TCP/UDP/WebSocket 等协议发送（type 字段同名小写：page_next/page_prev/key/orientation/marquee/config_set/device_select/device_refresh/notify/quit/screen_id/health/version/protocols/status/config_get/screenshot）</pre>
+
+<h2>11. 强制投屏</h2>
+<p>在「设置 → API接入」勾选「强制投屏」后，无需把程序切换到「API投屏」页，任何页面（时间/热搜/仪表盘等）
+都会被投屏内容覆盖显示。停止投屏后自动返回投屏前的页面（如 热搜）。
+该选项按设备保存；未开启时仍需手动选择「API投屏」页才能看到投屏内容。</p>
+</body></html>"""
+
+
+def export_api_json(path=None):
+    """导出 OpenAPI JSON 文档到文件。path 为空则存到程序目录 api_openapi.json，返回保存路径。"""
+    try:
+        doc = _build_openapi_doc()
+        if not path:
+            path = os.path.join(get_base_config_dir(), "api_openapi.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(doc, f, ensure_ascii=False, indent=2)
+        return path
+    except Exception as e:
+        print("导出 API JSON 文档失败：%s" % e)
+        return None
+
+
+def _check_openapi_sync():
+    """自动检查：代码中注册的 API 端点与 OpenAPI JSON 文档(_build_openapi_doc)是否一致。
+    不一致时打印警告，提醒开发者同步更新 JSON 文档。
+    若方法源码无法读取（如已打包成 exe、源码被移动），会提示并跳过比对，避免误报。"""
+    try:
+        import inspect as _inspect
+        import re as _re
+        code_routes = set()
+        unreadable = []
+        for method in ("do_GET", "do_POST"):
+            try:
+                src = _inspect.getsource(getattr(ApiHandler, method))
+                code_routes.update(_re.findall(r'"(/api/[a-z_/]*|/ws)"', src))
+            except Exception as e:
+                unreadable.append("%s(%s)" % (method, e))
+        if unreadable:
+            print("API 同步检查：无法读取 %s 的源码，跳过端点比对（打包运行或源码被移动时属正常现象）"
+                  % "、".join(unreadable))
+            return
+        doc_paths = set(_build_openapi_doc().get("paths", {}).keys())
+        meta = {"/api/openapi.json", "/api.json", "/api/openapi", "/api", "/docs", "/"}
+        real = code_routes - meta  # 功能性端点（排除文档/元端点）
+        missing = real - doc_paths      # 代码有、JSON 文档缺失 → 需补进 _build_openapi_doc()
+        extra = doc_paths - code_routes  # JSON 文档有、代码已移除 → 需从 _build_openapi_doc() 删除
+        if missing:
+            print("⚠ API 端点与 OpenAPI JSON 文档不同步：以下端点未加入 _build_openapi_doc() 的 paths → %s"
+                  % sorted(missing))
+        if extra:
+            print("⚠ OpenAPI JSON 文档包含已不存在的端点（建议从 _build_openapi_doc() 删除）→ %s" % sorted(extra))
+    except Exception as e:
+        print("API 同步检查失败：%s" % e)
+
+
+_api_tcp_server = None          # TCP Socket 服务器
+_api_udp_sock = None            # UDP 套接字
+_api_udp_thread = None          # UDP 监听线程
+_api_udp_running = threading.Event()
+_api_hotfolder_running = threading.Event()
+_api_hotfolder_thread = None    # 热文件夹监视线程
+_api_pipe_thread = None         # Windows 命名管道服务线程
+_api_unix_server = None         # Unix Domain Socket 服务器
+_api_unix_thread = None         # Unix Domain Socket 监听线程
+_api_zmq_sock = None            # ZeroMQ 套接字
+_api_zmq_thread = None          # ZeroMQ 监听线程
+_api_extra_running = threading.Event()   # 附加协议统一停止信号（Unix/ZeroMQ）
+_api_event_version = 0          # SSE 帧版本号（帧写入时递增）
+_api_event_lock = threading.Lock()
+_screen_id_until = 0.0          # 屏幕序号检测结束时间戳（time.monotonic），<=0 表示未在检测
+
+
+def start_api_tcp():
+    """TCP Socket 服务器（JSON 行协议），端口 = api_port + 1"""
+    global _api_tcp_server
+    if _api_tcp_server is not None:
+        return
+    try:
+        import socketserver
+        base = int(getattr(config_obj, "api_port", 8632))
+    except Exception:
+        return
+
+    class _TcpHandler(socketserver.StreamRequestHandler):
+        def handle(self):
+            while True:
+                try:
+                    line = self.rfile.readline()
+                except Exception:
+                    break
+                if not line:
+                    break
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line.decode("utf-8"))
+                    resp = api_execute_command(data)
+                except Exception as e:
+                    resp = {"ok": False, "error": str(e)}
+                try:
+                    out = (json.dumps(resp, ensure_ascii=False) + "\n").encode("utf-8")
+                    self.wfile.write(out)
+                    self.wfile.flush()
+                except Exception:
+                    break
+
+    try:
+        server = socketserver.ThreadingTCPServer(("127.0.0.1", base + 1), _TcpHandler)
+        server.daemon_threads = True
+        _api_tcp_server = server
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        print("API TCP 服务器已启动: 127.0.0.1:%d (JSON 行协议)" % (base + 1))
+    except Exception as e:
+        _api_tcp_server = None
+        print("API TCP 服务器启动失败: %s" % e)
+
+
+def start_api_udp():
+    """UDP 服务器（JSON 数据报），端口 = api_port + 2"""
+    global _api_udp_sock, _api_udp_thread
+    if _api_udp_sock is not None:
+        return
+    try:
+        import socket
+        base = int(getattr(config_obj, "api_port", 8632))
+    except Exception:
+        return
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.bind(("127.0.0.1", base + 2))
+        sock.settimeout(1.0)
+        _api_udp_sock = sock
+        _api_udp_running.set()
+
+        def _loop():
+            while _api_udp_running.is_set():
+                try:
+                    data, addr = sock.recvfrom(65536)
+                except Exception:
+                    continue
+                try:
+                    cmd = json.loads(data.decode("utf-8"))
+                    resp = api_execute_command(cmd)
+                except Exception as e:
+                    resp = {"ok": False, "error": str(e)}
+                try:
+                    sock.sendto((json.dumps(resp, ensure_ascii=False) + "\n").encode("utf-8"), addr)
+                except Exception:
+                    pass
+
+        _api_udp_thread = threading.Thread(target=_loop, daemon=True)
+        _api_udp_thread.start()
+        print("API UDP 服务器已启动: 127.0.0.1:%d (JSON 数据报)" % (base + 2))
+    except Exception as e:
+        _api_udp_sock = None
+        print("API UDP 服务器启动失败: %s" % e)
+
+
+def start_api_hotfolder():
+    """文件/热文件夹投屏：把图片/文本放进 hotfolder 目录即投屏（零协议）"""
+    global _api_hotfolder_thread
+    if _api_hotfolder_thread is not None:
+        return
+    try:
+        folder = os.path.join(get_base_config_dir(), "hotfolder")
+        os.makedirs(folder, exist_ok=True)
+    except Exception:
+        return
+    _api_hotfolder_running.set()
+    seen = {}
+
+    def _handle(folder, fname, fpath):
+        try:
+            # 文件名支持 "屏幕1_xxx.png" 指定目标屏
+            dev = None
+            stem = fname
+            for d in all_devices.values():
+                dn = getattr(d, "device_name", "")
+                if stem.startswith(dn + "_"):
+                    dev = d
+                    stem = stem[len(dn) + 1:]
+                    break
+            ext = os.path.splitext(fname)[1].lower()
+            if ext in (".txt", ".md"):
+                with open(fpath, "r", encoding="utf-8", errors="replace") as fh:
+                    text = fh.read().strip()
+                if text:
+                    _api_apply_text({"text": text, "font_size": 16, "color": "#ffffff"}, dev)
+                    print("热文件夹投屏文本: %s" % fname)
+            elif ext in (".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp"):
+                img = Image.open(fpath).convert("RGB")
+                img = _api_resize_image(img, "contain")
+                api_set_frame(np.asarray(img, dtype=np.uint8), dev)
+                print("热文件夹投屏图片: %s" % fname)
+            try:
+                os.remove(fpath)  # 处理完删除，避免重复
+            except Exception:
+                pass
+        except Exception as e:
+            print("热文件夹处理失败 %s: %s" % (fname, e))
+
+    def _loop():
+        while _api_hotfolder_running.is_set():
+            try:
+                for fname in os.listdir(folder):
+                    fpath = os.path.join(folder, fname)
+                    if not os.path.isfile(fpath):
+                        continue
+                    key = fname + "|" + str(os.path.getmtime(fpath))
+                    if seen.get(key):
+                        continue
+                    seen[key] = True
+                    _handle(folder, fname, fpath)
+            except Exception:
+                pass
+            _api_hotfolder_running.wait(1)
+
+    _api_hotfolder_thread = threading.Thread(target=_loop, daemon=True)
+    _api_hotfolder_thread.start()
+    print("API 热文件夹已就绪: %s（放入图片/文本即投屏）" % folder)
+
+
+def start_api_pipe():
+    """Windows 命名管道（pywin32）：\\\\.\\pipe\\MSU2_MINI_V2_api，JSON 行协议（与 TCP 一致）"""
+    global _api_pipe_thread
+    if _api_pipe_thread is not None:
+        return
+    if not isWindows:
+        return
+    try:
+        import win32pipe, win32file, pywintypes, winerror
+    except Exception:
+        print("未安装 pywin32，跳过 Windows 命名管道接入")
+        return
+    pipe_name = r"\\.\pipe\MSU2_MINI_V2_api"
+    _BROKEN = (getattr(winerror, "ERROR_BROKEN_PIPE", 109),
+               getattr(winerror, "ERROR_PIPE_NOT_CONNECTED", 233), 0)
+
+    def _handle_client(pipe):
+        buf = b""
+        while True:
+            try:
+                hr, data = win32file.ReadFile(pipe, 65536)
+            except pywintypes.error as e:
+                if getattr(e, "winerror", None) in _BROKEN:
+                    break
+                continue
+            except Exception:
+                break
+            if not data:
+                break
+            buf += data
+            while b"\n" in buf:
+                line, buf = buf.split(b"\n", 1)
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    cmd = json.loads(line.decode("utf-8"))
+                    resp = api_execute_command(cmd)
+                except Exception as e:
+                    resp = {"ok": False, "error": str(e)}
+                try:
+                    win32file.WriteFile(pipe, (json.dumps(resp, ensure_ascii=False) + "\n").encode("utf-8"))
+                except Exception:
+                    return
+
+    def _loop():
+        while True:
+            try:
+                pipe = win32pipe.CreateNamedPipe(
+                    pipe_name,
+                    win32pipe.PIPE_ACCESS_DUPLEX,
+                    win32pipe.PIPE_TYPE_MESSAGE | win32pipe.PIPE_READMODE_BYTE | win32pipe.PIPE_WAIT,
+                    win32pipe.PIPE_UNLIMITED_INSTANCES, 65536, 65536, 0, None)
+            except Exception:
+                time.sleep(1)
+                continue
+            try:
+                win32pipe.ConnectNamedPipe(pipe, None)  # 阻塞等待客户端
+            except pywintypes.error as e:
+                if getattr(e, "winerror", None) != getattr(winerror, "ERROR_PIPE_CONNECTED", 535):
+                    try:
+                        win32pipe.DisconnectNamedPipe(pipe)
+                    except Exception:
+                        pass
+                    continue
+            except Exception:
+                try:
+                    win32pipe.DisconnectNamedPipe(pipe)
+                except Exception:
+                    pass
+                continue
+            try:
+                _handle_client(pipe)
+            except Exception:
+                pass
+            try:
+                win32pipe.DisconnectNamedPipe(pipe)
+            except Exception:
+                pass
+
+    _api_pipe_thread = threading.Thread(target=_loop, daemon=True)
+    _api_pipe_thread.start()
+    print("API 命名管道已就绪: %s" % pipe_name)
+
+
+def start_api_unix():
+    """Unix Domain Socket（零依赖，Windows 10 1803+ / Python 3.9+）：程序目录 api_unix.sock，JSON 行协议"""
+    global _api_unix_server, _api_unix_thread
+    if _api_unix_server is not None:
+        return
+    import socket as _sock
+    try:
+        path = os.path.join(get_base_config_dir(), "api_unix.sock")
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except Exception:
+            pass
+        server = _sock.socket(_sock.AF_UNIX, _sock.SOCK_STREAM)
+        server.bind(path)
+        server.listen(8)
+        server.settimeout(1.0)
+        _api_unix_server = server
+    except Exception as e:
+        print("API Unix Domain Socket 不可用（当前系统不支持 AF_UNIX）: %s" % e)
+        _api_unix_server = None
+        return
+
+    def _client(conn):
+        try:
+            f = conn.makefile("rb")
+            while True:
+                line = f.readline()
+                if not line:
+                    break
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line.decode("utf-8"))
+                    resp = api_execute_command(data)
+                except Exception as e:
+                    resp = {"ok": False, "error": str(e)}
+                try:
+                    conn.sendall((json.dumps(resp, ensure_ascii=False) + "\n").encode("utf-8"))
+                except Exception:
+                    break
+        except Exception:
+            pass
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    def _loop():
+        while _api_extra_running.is_set():
+            try:
+                conn, _ = server.accept()
+            except Exception:
+                continue
+            threading.Thread(target=_client, args=(conn,), daemon=True).start()
+
+    _api_unix_thread = threading.Thread(target=_loop, daemon=True)
+    _api_unix_thread.start()
+    print("API Unix Domain Socket 已就绪: %s" % path)
+
+
+def start_api_zmq():
+    """ZeroMQ（需 pyzmq，未安装则跳过）：tcp://127.0.0.1:端口+3，REP/REQ 模式，JSON 消息"""
+    global _api_zmq_sock, _api_zmq_thread
+    if _api_zmq_sock is not None:
+        return
+    try:
+        import zmq
+    except Exception:
+        print("未安装 pyzmq，跳过 ZeroMQ 接入（如需启用请 pip install pyzmq）")
+        return
+    try:
+        base = int(getattr(config_obj, "api_port", 8632))
+    except Exception:
+        return
+    try:
+        ctx = zmq.Context.instance()
+        sock = ctx.socket(zmq.REP)
+        sock.bind("tcp://127.0.0.1:%d" % (base + 3))
+        _api_zmq_sock = sock
+
+        def _loop():
+            while _api_extra_running.is_set():
+                try:
+                    msg = sock.recv()
+                except Exception:
+                    break
+                try:
+                    data = json.loads(msg.decode("utf-8"))
+                    resp = api_execute_command(data)
+                except Exception as e:
+                    resp = {"ok": False, "error": str(e)}
+                try:
+                    sock.send(json.dumps(resp, ensure_ascii=False).encode("utf-8"))
+                except Exception:
+                    break
+
+        _api_zmq_thread = threading.Thread(target=_loop, daemon=True)
+        _api_zmq_thread.start()
+        print("API ZeroMQ 已启动: tcp://127.0.0.1:%d (REP/REQ, JSON)" % (base + 3))
+    except Exception as e:
+        try:
+            if _api_zmq_sock is not None:
+                _api_zmq_sock.close()
+        except Exception:
+            pass
+        _api_zmq_sock = None
+        print("API ZeroMQ 启动失败: %s" % e)
+
+
+def _api_stdin_loop():
+    """常驻 stdin 管道：从标准输入按行读取 JSON 命令执行（echo ... | python MSU2_MINI_V2.py）"""
+    while True:
+        try:
+            line = sys.stdin.readline()
+        except Exception:
+            break
+        if not line:
+            break
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            data = json.loads(line)
+            resp = api_execute_command(data)
+        except Exception as e:
+            resp = {"ok": False, "error": str(e)}
+        try:
+            sys.stdout.write(json.dumps(resp, ensure_ascii=False) + "\n")
+            sys.stdout.flush()
+        except Exception:
+            break
+
+
+def stop_api_extra():
+    """停止 TCP / UDP / 热文件夹 / Unix Socket / ZeroMQ（命名管道为 daemon 线程随程序退出结束）"""
+    global _api_tcp_server, _api_udp_sock, _api_udp_thread, _api_hotfolder_thread
+    global _api_unix_server, _api_unix_thread, _api_zmq_sock, _api_zmq_thread
+    if _api_tcp_server is not None:
+        try:
+            _api_tcp_server.shutdown()
+        except Exception:
+            pass
+        try:
+            _api_tcp_server.server_close()
+        except Exception:
+            pass
+        _api_tcp_server = None
+    _api_udp_running.clear()
+    if _api_udp_sock is not None:
+        try:
+            _api_udp_sock.close()
+        except Exception:
+            pass
+        _api_udp_sock = None
+    if _api_udp_thread is not None:
+        try:
+            _api_udp_thread.join(timeout=2)
+        except Exception:
+            pass
+        _api_udp_thread = None
+    _api_hotfolder_running.clear()
+    if _api_hotfolder_thread is not None:
+        try:
+            _api_hotfolder_thread.join(timeout=2)
+        except Exception:
+            pass
+        _api_hotfolder_thread = None
+    _api_extra_running.clear()
+    if _api_unix_server is not None:
+        try:
+            _api_unix_server.close()
+        except Exception:
+            pass
+        _api_unix_server = None
+    if _api_unix_thread is not None:
+        try:
+            _api_unix_thread.join(timeout=2)
+        except Exception:
+            pass
+        _api_unix_thread = None
+    if _api_zmq_sock is not None:
+        try:
+            _api_zmq_sock.close()
+        except Exception:
+            pass
+        _api_zmq_sock = None
+    if _api_zmq_thread is not None:
+        try:
+            _api_zmq_thread.join(timeout=2)
+        except Exception:
+            pass
+        _api_zmq_thread = None
+
+
+def start_api_server():
+    """启动本地全部 API 接入（HTTP + WebSocket + TCP + UDP + 热文件夹），仅监听 127.0.0.1"""
+    global _api_server
+    if _api_server is not None:
+        return
+    try:
+        port = int(getattr(config_obj, "api_port", 8632))
+    except Exception:
+        port = 8632
+    try:
+        from http.server import ThreadingHTTPServer
+        server = ThreadingHTTPServer(("127.0.0.1", port), ApiHandler)
+        _api_server = server
+        t = threading.Thread(target=server.serve_forever, daemon=True)
+        t.start()
+        print("API 投屏服务器已启动: http://127.0.0.1:%d" % port)
+        start_api_tcp()        # TCP Socket（JSON 行协议）
+        start_api_udp()        # UDP（JSON 数据报）
+        start_api_hotfolder()  # 文件/热文件夹投屏
+        start_api_pipe()       # Windows 命名管道
+        start_api_unix()       # Unix Domain Socket
+        start_api_zmq()        # ZeroMQ（需 pyzmq）
+        _check_openapi_sync()  # 启动时校验端点与 JSON 文档同步性
+        try:
+            export_api_json()  # 生成 api_openapi.json 到程序目录，便于其他程序直接读取
+        except Exception:
+            pass
+    except Exception as e:
+        _api_server = None
+        print("API 投屏服务器启动失败: %s" % e)
+
+
+def stop_api_server():
+    """停止本地全部 API 接入（HTTP + WebSocket + TCP + UDP + 热文件夹）"""
+    global _api_server
+    if _api_server is not None:
+        try:
+            _api_server.shutdown()
+        except Exception:
+            pass
+        try:
+            _api_server.server_close()
+        except Exception:
+            pass
+        _api_server = None
+    stop_api_extra()
+
+
+def _api_try_screen_id(device=None):
+    """屏幕序号检测：检测期间直接发送本屏屏号帧并返回 True（跳过普通页面渲染），超时后自动恢复原页面。"""
+    try:
+        if _screen_id_until <= 0:
+            return False
+        if time.monotonic() >= _screen_id_until:
+            return False
+        dev = device if device is not None else get_current_device()
+        if dev is None:
+            return False
+        name = getattr(dev, "device_name", "屏幕1")
+        img = Image.new("RGB", (SHOW_WIDTH, SHOW_HEIGHT), (0, 0, 0))
+        draw = ImageDraw.Draw(img)
+        try:
+            font = MiniMark.load_font("./simhei.ttf", 22)
+        except Exception:
+            font = default_font
+        bbox = draw.textbbox((0, 0), name, font=font)
+        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        draw.text(((SHOW_WIDTH - tw) // 2, (SHOW_HEIGHT - th) // 2), name,
+                  fill=(255, 255, 255), font=font)
+        _safe_send_rgb888(np.asarray(img, dtype=np.uint8))
+        dev.sleep_event.wait(0.05)
+        return True
+    except Exception:
+        return False
+
+
+def api_trigger_screen_id(data=None):
+    """触发屏幕序号检测：所有已连接屏显示各自屏号，超时后自动恢复原页面。
+    data.timeout 可覆盖设置的时长（秒）。返回响应 dict"""
+    global _screen_id_until
+    try:
+        timeout = float((data or {}).get("timeout", getattr(config_obj, "screen_id_timeout", 5) or 5))
+    except Exception:
+        timeout = 5.0
+    timeout = max(1.0, min(timeout, 300.0))
+    _screen_id_until = time.monotonic() + timeout
+    # 触发所有已连接屏立即重绘（显示屏号）
+    for d in all_devices.values():
+        if getattr(d, "device_state", 0) == 1:
+            d.state_change = 1
+            d.force_lcd_reset = True
+            try:
+                d.sleep_event.set()
+            except Exception:
+                pass
+    return {"ok": True, "timeout": timeout, "devices":
+            [d.device_name for d in all_devices.values() if getattr(d, "device_state", 0) == 1]}
+
+
+def _api_try_overlay(device=None):
+    """强制投屏覆盖：开启 api_overlay 且指定屏有投屏帧时，直接发送帧并返回 True（跳过普通页面渲染）。
+    投屏停止(清帧)后自动恢复原页面渲染，无需切页。"""
+    try:
+        if not getattr(config_obj, "api_overlay", 0):
+            return False
+        dev = device if device is not None else get_current_device()
+        if dev is None:
+            return False
+        frame = api_get_frame(dev)
+        if frame is None:
+            return False
+        if dev.state_change == 1:
+            state_change_clear()
+            LCD_ADD(0, 0, SHOW_WIDTH, SHOW_HEIGHT)
+        _safe_send_rgb888(frame)
+        dev.sleep_event.wait(0.05)
+        return True
+    except Exception:
+        return False
+
+
+def show_api():
+    """API 投屏页面：有外部帧则发送，否则显示接入提示"""
+    global config_obj
+    dev = get_current_device()
+    if dev is None:
+        return
+    if dev.state_change == 1:
+        state_change_clear()
+        LCD_ADD(0, 0, SHOW_WIDTH, SHOW_HEIGHT)
+    frame = api_get_frame()
+    if frame is not None:
+        _safe_send_rgb888(frame)
+        dev.sleep_event.wait(0.05)
+        return
+    try:
+        port = int(getattr(config_obj, "api_port", 8632))
+    except Exception:
+        port = 8632
+    img = Image.new("RGB", (SHOW_WIDTH, SHOW_HEIGHT), (0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    font = MiniMark.load_font("./simhei.ttf", 14)
+    small = MiniMark.load_font("./simhei.ttf", 10)
+    draw.text((4, 2), "API 投屏", fill=(255, 255, 255), font=font)
+    draw.text((4, 22), "http://127.0.0.1:%d" % port, fill=(120, 200, 255), font=small)
+    draw.text((4, 40), "等待外部程序接入...", fill=(180, 180, 180), font=small)
+    rgb888 = np.asarray(img, dtype=np.uint32)
+    _safe_send_rgb888(rgb888)
+    dev.sleep_event.wait(1)
+
+
 def _render_two_line_bars(up_label, down_label, up_value, down_value,
                           up_color, down_color, bar1_color, bar2_color,
                           plot_data, key1, key2, back_color=(0, 0, 0)):
@@ -4696,6 +7236,12 @@ class sys_config(object):
         self.netspeed_bar2_color = "#92d3d9"  # 网络流量：下载柱状图颜色
         self.guide_last_page = ""    # 设置"按页面"导航上次选择的页面
         self.custom_color_schemes = {}  # 用户自定义配色方案 {名称: [颜色hex列表]}
+        # --- API 投屏接入 ---
+        self.api_enable = 1        # API 投屏服务器：0=关闭 1=开启
+        self.api_port = 8632       # API 服务器端口
+        self.api_token = ""        # API 访问令牌（可选，空=不校验）
+        self.api_overlay = 0       # 强制投屏覆盖：0=需选择API投屏页 1=任何页面可投屏(结束自动返回原页面)
+        self.screen_id_timeout = 5 # 屏幕序号检测显示时长（秒）
 
 
 # ==================== LCD 屏幕分辨率检测 ====================
@@ -6254,13 +8800,164 @@ def UI_Page():  # 进行图像界面显示
                 _refresh_scheme_combos()
             except Exception:
                 pass
+            # ---- API 接入 ----
+            try:
+                api_enable_var.set(config_obj.api_enable)
+                api_port_var.set(config_obj.api_port)
+                api_token_var.set(config_obj.api_token)
+                api_overlay_var.set(getattr(config_obj, "api_overlay", 0))
+                screen_id_timeout_var.set(getattr(config_obj, "screen_id_timeout", 5))
+                _refresh_api_status()
+            except Exception:
+                pass
             # ---- 屏幕镜像 ----
             zoom_enable_var.set(config_obj.zoom_enable)
             zoom_scale_var.set(config_obj.zoom_scale)
         except Exception as e:
             print("刷新设置页控件失败：%s" % e)
 
-    # ---- 子页6：数据管理 ----
+    # ---- 子页6：API 接入 ----
+    api_frame = ttk.Frame(settings_notebook, padding=(pad_scale_xy5 * 2, pad_scale_xy5 * 2))
+    settings_notebook.add(api_frame, text="  API接入  ")
+
+    def change_api(*args):
+        global config_obj
+        _ui_set_active()  # 锁定到UI当前设备（避免多屏设置冲突）
+        config_obj.api_enable = api_enable_var.get()
+        try:
+            config_obj.api_port = int(api_port_var.get())
+        except Exception:
+            pass
+        config_obj.api_token = api_token_var.get().strip()
+        save_config()
+        try:
+            stop_api_server()
+            if config_obj.api_enable:
+                start_api_server()
+        except Exception as e:
+            print("API 服务器重启失败：%s" % e)
+        _refresh_api_status()
+
+    def _refresh_api_status():
+        try:
+            port = int(getattr(config_obj, "api_port", 8632))
+        except Exception:
+            port = 8632
+        if getattr(config_obj, "api_enable", 1):
+            api_status_var.set("运行中：http://127.0.0.1:%d" % port)
+        else:
+            api_status_var.set("已关闭")
+        api_ws_var.set("WebSocket：ws://127.0.0.1:%d/ws" % port)
+        try:
+            api_json_var.set("JSON 文档：http://127.0.0.1:%d/api/openapi.json　|　文件：%s"
+                             % (port, os.path.join(get_base_config_dir(), "api_openapi.json")))
+        except Exception:
+            pass
+        try:
+            api_proto_var.set("TCP: %d ｜ UDP: %d ｜ ZMQ: %d(需pyzmq) ｜ 管道: \\\.\\pipe\\MSU2_MINI_V2_api ｜ Unix: api_unix.sock"
+                              % (port + 1, port + 2, port + 3))
+        except Exception:
+            pass
+
+    def open_api_doc():
+        try:
+            port = int(getattr(config_obj, "api_port", 8632))
+        except Exception:
+            port = 8632
+        webbrowser.open("http://127.0.0.1:%d" % port)
+
+    api_enable_var = tk.IntVar(api_frame, config_obj.api_enable)
+    ttk.Checkbutton(api_frame, text="启用 API 投屏服务器（本地 127.0.0.1）", variable=api_enable_var,
+                    command=change_api).pack(anchor=tk.W, pady=pad_scale_xy5)
+
+    api_port_row = ttk.Frame(api_frame)
+    api_port_row.pack(anchor=tk.W, pady=pad_scale_xy5)
+    ttk.Label(api_port_row, text="端口:").pack(side=tk.LEFT)
+    api_port_var = tk.IntVar(api_frame, config_obj.api_port)
+    ttk.Spinbox(api_port_row, from_=1024, to=65535, textvariable=api_port_var, width=8).pack(side=tk.LEFT, padx=pad_scale_xy5)
+    api_port_var.trace_add("write", change_api)
+    ttk.Label(api_port_row, text="(修改后自动重启服务器生效)", foreground="gray").pack(side=tk.LEFT)
+
+    api_token_row = ttk.Frame(api_frame)
+    api_token_row.pack(anchor=tk.W, pady=pad_scale_xy5)
+    ttk.Label(api_token_row, text="访问令牌(可选):").pack(side=tk.LEFT)
+    api_token_var = tk.StringVar(api_frame, config_obj.api_token)
+    ttk.Entry(api_token_row, textvariable=api_token_var, width=24).pack(side=tk.LEFT, padx=pad_scale_xy5)
+    api_token_var.trace_add("write", change_api)
+    ttk.Label(api_token_row, text="留空=不校验；非空时需请求头 X-API-Token 或 ?token=", foreground="gray").pack(side=tk.LEFT)
+
+    def _change_api_overlay():
+        global config_obj
+        _ui_set_active()  # 锁定到UI当前设备（避免多屏设置冲突）
+        config_obj.api_overlay = api_overlay_var.get()
+        save_config()
+        insert_text_message("强制投屏已%s" % ("开启" if config_obj.api_overlay else "关闭"))
+
+    api_overlay_var = tk.IntVar(api_frame, getattr(config_obj, "api_overlay", 0))
+    ttk.Checkbutton(api_frame, text="强制投屏：未选择「API投屏」页也可投屏", variable=api_overlay_var,
+                    command=_change_api_overlay).pack(anchor=tk.W, pady=pad_scale_xy5)
+    ttk.Label(api_frame, text="开启后任何页面都会被投屏内容覆盖，停止投屏自动返回原页面（如 热搜）",
+              foreground="gray").pack(anchor=tk.W, pady=(0, pad_scale_xy5))
+
+    def _change_screen_id_timeout(*args):
+        global config_obj
+        _ui_set_active()  # 锁定到UI当前设备（避免多屏设置冲突）
+        try:
+            config_obj.screen_id_timeout = int(screen_id_timeout_var.get())
+        except Exception:
+            config_obj.screen_id_timeout = 5
+        save_config()
+
+    def do_screen_id_ui():
+        global config_obj
+        _ui_set_active()
+        try:
+            config_obj.screen_id_timeout = int(screen_id_timeout_var.get())
+        except Exception:
+            pass
+        save_config()
+        r = api_trigger_screen_id({})
+        insert_text_message("屏幕序号检测：%d 屏，持续 %s 秒" % (len(r.get("devices", [])), r.get("timeout", "")))
+
+    screen_id_row = ttk.Frame(api_frame)
+    screen_id_row.pack(anchor=tk.W, pady=pad_scale_xy5)
+    ttk.Label(screen_id_row, text="屏幕序号检测时长(秒):").pack(side=tk.LEFT)
+    screen_id_timeout_var = tk.IntVar(api_frame, getattr(config_obj, "screen_id_timeout", 5))
+    ttk.Spinbox(screen_id_row, from_=1, to=300, textvariable=screen_id_timeout_var, width=6).pack(side=tk.LEFT, padx=pad_scale_xy5)
+    screen_id_timeout_var.trace_add("write", _change_screen_id_timeout)
+    ttk.Button(screen_id_row, text="检测屏幕", padding=pad_scale_xy,
+               command=do_screen_id_ui).pack(side=tk.LEFT, padx=pad_scale_xy5)
+    ttk.Label(screen_id_row, text="所有屏幕显示各自屏号，超时后自动恢复", foreground="gray").pack(side=tk.LEFT)
+
+    api_status_var = tk.StringVar(api_frame, "")
+    ttk.Label(api_frame, textvariable=api_status_var, foreground="#2e86c1").pack(anchor=tk.W, pady=pad_scale_xy5)
+    api_ws_var = tk.StringVar(api_frame, "")
+    ttk.Label(api_frame, textvariable=api_ws_var, foreground="#2e86c1").pack(anchor=tk.W, pady=(0, pad_scale_xy5))
+    api_json_var = tk.StringVar(api_frame, "")
+    ttk.Label(api_frame, textvariable=api_json_var, foreground="gray").pack(anchor=tk.W, pady=(0, pad_scale_xy5))
+    api_proto_var = tk.StringVar(api_frame, "")
+    ttk.Label(api_frame, textvariable=api_proto_var, foreground="gray").pack(anchor=tk.W, pady=(0, pad_scale_xy5))
+
+    def export_api_json_ui():
+        try:
+            path = tkinter.filedialog.asksaveasfilename(
+                defaultextension=".json", initialfile="api_openapi.json",
+                filetypes=[("JSON", "*.json")], title="导出 API JSON 文档")
+            if not path:
+                return
+            saved = export_api_json(path)
+            insert_text_message("API JSON 文档已导出：%s" % (saved or path))
+        except Exception as e:
+            insert_text_message("导出失败：%s" % e)
+
+    api_btn_row = ttk.Frame(api_frame)
+    api_btn_row.pack(anchor=tk.W, pady=pad_scale_xy5)
+    ttk.Button(api_btn_row, text="打开 API 文档", padding=pad_scale_xy, command=open_api_doc).pack(side=tk.LEFT)
+    ttk.Button(api_btn_row, text="导出 JSON 文档", padding=pad_scale_xy, command=export_api_json_ui).pack(side=tk.LEFT, padx=(pad_scale_xy5, 0))
+    ttk.Label(api_btn_row, text="  其他程序可通过 REST / WebSocket 接入，自定义投屏内容", foreground="gray").pack(side=tk.LEFT, padx=(pad_scale_xy5, 0))
+    _refresh_api_status()
+
+    # ---- 子页7：数据管理 ----
     data_frame = ttk.Frame(settings_notebook, padding=(pad_scale_xy5 * 2, pad_scale_xy5 * 2))
     settings_notebook.add(data_frame, text="  数据管理  ")
 
@@ -8051,6 +10748,7 @@ def UI_Page():  # 进行图像界面显示
     update_preview()
 
     def on_closing():
+        stop_api_server()
         window.destroy()
 
     window.protocol("WM_DELETE_WINDOW", on_closing)
@@ -8102,6 +10800,13 @@ def UI_Page():  # 进行图像界面显示
             pass
         window.after(1000, _auto_cycle_tick)
     window.after(1000, _auto_cycle_tick)
+
+    # 启动本地 API 投屏服务器（HTTP + WebSocket）
+    try:
+        if getattr(config_obj, "api_enable", 1):
+            start_api_server()
+    except Exception as e:
+        print("启动 API 服务器失败：%s" % e)
 
     # 进入消息循环
     window.mainloop()
@@ -8324,7 +11029,11 @@ def MSN_Device_1_State_machine():  # MSN设备1的循环状态机
         device.force_lcd_reset = False
 
     try:
-        if config_obj.state_machine == PCTIME_PAGE_ID:
+        if _api_try_screen_id(device):
+            pass  # 屏幕序号检测：显示本屏屏号，超时后自动恢复原页面
+        elif _api_try_overlay(device):
+            pass  # 强制投屏覆盖：显示外部投屏帧，跳过普通页面渲染
+        elif config_obj.state_machine == PCTIME_PAGE_ID:
             show_PC_time(device.color_use)
         elif config_obj.state_machine == PHOTO_PAGE_ID:
             show_Photo()
@@ -8387,6 +11096,8 @@ def MSN_Device_1_State_machine():  # MSN设备1的循环状态机
             show_battery()
         elif config_obj.state_machine == MUSIC_PAGE_ID:
             show_music()
+        elif config_obj.state_machine == API_PAGE_ID:
+            show_api()
         else:
             show_gif()
     except Exception as e:
@@ -10064,6 +12775,13 @@ if __name__ == "__main__":
         primary.screen_shot_thread = threading.Thread(target=screen_shot_task, args=(primary,), daemon=True)
         primary.screen_process_thread = threading.Thread(target=screen_process_task, args=(primary,), daemon=True)
 
+        # 附加接入：stdin 管道（当通过管道/重定向启动时，从标准输入按行读取 JSON 命令执行）
+        try:
+            if sys.stdin is not None and hasattr(sys.stdin, "isatty") and not sys.stdin.isatty():
+                threading.Thread(target=_api_stdin_loop, daemon=True).start()
+        except Exception:
+            pass
+
         # 打开主页面
         UI_Page()
     except Exception as e:
@@ -10097,6 +12815,7 @@ if __name__ == "__main__":
             _primary_device.screen_process_thread.join(timeout=5.0)
         if _primary_device and _primary_device.screen_shot_thread and _primary_device.screen_shot_thread.is_alive():
             _primary_device.screen_shot_thread.join(timeout=5.0)
+        stop_api_server()
         # 退出前清理LCD屏幕，避免残留花屏
         Cleanup_LCD_On_Exit()
         if _primary_device and _primary_device.ser is not None and _primary_device.ser.is_open:

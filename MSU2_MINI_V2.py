@@ -10,14 +10,21 @@ import queue  # geezmo: 流水线同步和交换数据用
 import sys
 import threading  # 引入多线程支持
 import time  # 引入延时库
-import tkinter as tk  # 引入UI库
-import tkinter.filedialog  # 用于获取文件路径
-import tkinter.font as tkfont
-import tkinter.messagebox
-import tkinter.colorchooser
 import traceback
 from datetime import datetime  # 用于获取当前时间
-from tkinter import ttk  # geezmo: 好看的皮肤
+
+# ================= PySide6 (Qt) UI 库 =================
+# 主界面已从 Tkinter 迁移到 PySide6（Qt 6.11）。业务逻辑层（串口/渲染/配置/API）全部复用。
+from PySide6.QtCore import Qt, QTimer, QThread, Signal, QObject, QPoint, QEvent, QRectF
+from PySide6.QtGui import QAction, QIcon, QImage, QPixmap, QColor, QFont, QCloseEvent, QPalette, QPainter, QPen
+from PySide6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QTabWidget, QVBoxLayout, QHBoxLayout,
+    QGridLayout, QFormLayout, QLabel, QPushButton, QComboBox, QCheckBox, QRadioButton,
+    QSpinBox, QDoubleSpinBox, QLineEdit, QTextEdit, QPlainTextEdit,
+    QGroupBox, QFrame, QScrollArea, QFileDialog, QColorDialog, QSlider,
+    QMessageBox, QDialog, QDialogButtonBox, QSizePolicy, QSplitter, QToolButton, QMenu,
+    QStackedWidget, QListWidget, QListWidgetItem, QStyleFactory,
+)
 
 import cv2
 import numpy as np  # 使用numpy加速数据处理
@@ -38,14 +45,24 @@ if isWindows:
     import win32process
     import win32ui
 
-    # 使用高dpi缩放适配高分屏。0：不使用缩放 1：所有屏幕 2：当前屏幕
-    try:  # >= win 8.1
-        windll.shcore.SetProcessDpiAwareness(1)
-    except:  # win 8.0 or less
+    # 使用高dpi缩放适配高分屏。
+    # 必须在 QApplication 创建前把进程 DPI awareness 精确设为 Qt6 默认的
+    # DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2（(HANDLE)-4）。否则 Qt 初始化时
+    # 无法覆盖已设置的 awareness（Windows 只允许设置一次），会打印
+    # "SetProcessDpiAwarenessContext() failed: 拒绝访问" 警告（无害，但碍眼）。
+    try:  # win 10 1607+（SetProcessDpiAwarenessContext 可用）
+        from ctypes import wintypes
+        windll.user32.SetProcessDpiAwarenessContext.argtypes = [wintypes.HANDLE]
+        windll.user32.SetProcessDpiAwarenessContext.restype = wintypes.BOOL
+        windll.user32.SetProcessDpiAwarenessContext(wintypes.HANDLE(-4))
+    except Exception:  # win 10 1606 及更早，回退到旧接口
         try:
-            windll.user32.SetProcessDPIAware()
-        except:
-            pass
+            windll.shcore.SetProcessDpiAwareness(1)  # 0：不使用缩放 1：所有屏幕 2：当前屏幕
+        except Exception:  # win 8.0 or less
+            try:
+                windll.user32.SetProcessDPIAware()
+            except Exception:
+                pass
     try:
         scale_factor = windll.shcore.GetScaleFactorForDevice(0)
         system_dpi = windll.user32.GetDpiForSystem()
@@ -83,11 +100,11 @@ GRAY2 = 0x4208
 # ==================== 程序元数据 ====================
 PROGRAM_TITLE = "USB副屏工具"
 PROGRAM_SUBTITLE = ""
-PROGRAM_VERSION = "4.6.4"
+PROGRAM_VERSION = "5.3.0"
 PROGRAM_AUTHOR = "杜玛"
 PROGRAM_GITHUB = "https://github.com/duma520/MSU2_MINI_V2"
 PROGRAM_LICENSE = "MIT"
-PROGRAM_BUILD_DATE = "2026-08-16"
+PROGRAM_BUILD_DATE = "2026-08-18"
 
 # 整合自以下开源项目（均为MIT协议）
 PROGRAM_SOURCE_PROJECTS = [
@@ -107,6 +124,46 @@ PROGRAM_SOURCE_PROJECTS = [
 
 # 版本更新说明
 PROGRAM_CHANGELOG = """
+v5.3.0 (2026-08-18)
+- 新增：所有设置持久化保存——窗口大小/位置/最大化状态与上次停留的第一层标签在退出时保存、启动自动恢复（config/MSU2_MINI_ui.json）；退出时强制保存显示墙设置
+
+v5.2.0 (2026-08-17)
+- 优化：显示墙在小屏数量多时不再卡顿——每帧先 numpy 降采样到格子尺寸再显示（单屏处理约 19ms→1~2ms）、仅在显示墙激活且窗口可见时渲染、刷新间隔降为 1 秒
+
+v5.1.2 (2026-08-17)
+- 修复：显示墙布局仍无法在下次启动恢复——启动时屏幕尚未连接，保存的布局会被立即重置为默认并被微调框范围钳制。现改为将保存值作为期望布局缓存，待已连接屏数足以容纳时自动恢复（屏幕渐进连接时生效）
+
+v5.1.1 (2026-08-17)
+- 修复：显示墙设置无法自动保存/恢复——原写入全局配置会被多屏渲染线程切换导致落错文件，现改为独立配置文件 config/MSU2_MINI_wall.json（原子写入），下次启动自动恢复
+
+v5.1.0 (2026-08-17)
+- 新增「电视墙」标签页（第一层：中控 | 电视墙 | 关于）
+- 第一层原「主控」标签更名「中控」，避免与第三层「主控」子页同名混淆
+- 电视墙包含「显示墙」与「显示墙设置」：显示墙按设置的行×列网格实时显示所有小屏预览；显示墙设置根据已连接屏幕数量动态提供快速布局（横向/纵向排布），布局可保存
+
+v5.0.0 (2026-08-16)
+- 重大重构：主界面由 Tkinter 迁移到 PySide6 (Qt 6.11)，界面更现代、布局更规范；业务逻辑层（串口/渲染/配置/API）全部复用
+- 新界面结构：顶部为「主控 | 关于」两个标签；主控页内按屏幕分标签（屏幕1/屏幕2…）；每块屏标签内再嵌套「主控 | 设置 | 设备信息」三个子页，每屏一套独立控件
+- 主控子页：页面/方向选择 + 自定义显示（占位）+ 每屏实时预览；烧写区与信息框为程序级共享（主控页外层）
+- 注：设置页 / 设备信息页当前为占位页，内容将在后续版本逐步填充；原 Tkinter 版保留为 MSU2_MINI_V2.py 可回退
+
+v4.8.0 (2026-08-16)
+- 新增：主控页改为「每屏一个标签页」（多屏时），每块屏一套独立主控控件（颜色/页面/方向/FPS/动图间隔/相机/镜像窗口/实时预览等），彻底隔离各屏状态
+- 新增：设置页与设备信息页顶部也增加「每屏一个标签」，切换标签即切换当前配置屏；主控标签、设置标签、设备信息标签、顶部设备下拉框四处双向联动
+- 各屏主控控件值绑定本屏配置，保存时锁定本屏，从结构上杜绝多屏「串台」（屏幕2显示成屏幕1页面等）
+- 设置页/设备信息页内容共享一套控件，切换标签时刷新为该屏配置（避免每屏复制整套设置控件造成界面臃肿），配合每屏独立配置实现逻辑隔离
+
+v4.7.1 (2026-08-16)
+- 修复：切换屏幕时 API 服务器被反复重启（端口/令牌控件刷新误触发重启），现仅同步配置、不重启服务器，日志不再重复且切换不再卡顿
+- 修复：切换设备时批量刷新控件不再重复写盘，消除切换卡顿；刷新操作锁定到 UI 当前选中屏，避免后台渲染线程切换全局配置导致界面串错
+- 修复：多屏页面串扰（如 屏幕1流量监控 → 切到屏幕2后屏幕2也变成流量监控）；渲染按各屏自己的运行时页面显示，切换设备时页面同步不再经过全局配置对象
+- 修复：切换设备后相机下拉框/屏幕镜像窗口下拉框不再残留上一屏幕的值（找不到时显示为空）
+
+v4.7.0 (2026-08-16)
+- 修复：设备连接后设置页/主控页控件自动同步为设备已保存的配置（此前强制投屏等设置可能显示为默认值，造成"设置没保存"的错觉）
+- 修复：退出程序时等待配置写盘完成再结束，避免修改后立刻关闭导致设置未写入文件
+- 优化：摄像头列表改为后台枚举（启动不再卡顿）；摄像头/窗口下拉框点击后台刷新；「检测屏幕」与设备信息「刷新」改为后台线程执行串口读取，界面不卡顿
+
 v4.6.4 (2026-08-16)
 - 新增「屏幕序号检测」：触发后所有副屏同时显示各自屏号（屏幕1/屏幕2…），显示时长后自动恢复原画面（如 热搜）
 - 触发方式：设置 → API接入 的「检测屏幕」按钮、网页控制台「🔢 屏幕序号检测」按钮、API /api/screen/id 及统一命令 screen_id
@@ -1193,12 +1250,16 @@ def _do_insert_text_message(text, cleanNext=True, item=None):
         clean = True
 
     try:
-        item.config(state=tk.NORMAL)
-        if clean:
-            item.delete("1.0", tk.END)  # 清除文本框
-        item.insert(tk.END, text)
-        item.config(state=tk.DISABLED)
-        item.see(tk.END)
+        if isinstance(item, QTextEdit):
+            item.setReadOnly(False)
+            if clean:
+                item.clear()  # 清除文本框
+            item.insertPlainText(text)
+            item.setReadOnly(True)
+            sb = item.verticalScrollBar()
+            sb.setValue(sb.maximum())
+        else:  # QLineEdit（烧写路径框）
+            item.setText(text)
     except Exception as e:
         print(e)
 
@@ -1216,7 +1277,7 @@ def _process_ui_msg_queue():
         pass
     if _ui_root is not None:
         try:
-            _ui_root.after(100, _process_ui_msg_queue)
+            QTimer.singleShot(100, _process_ui_msg_queue)
         except Exception:
             pass
 
@@ -1271,21 +1332,19 @@ def convertImageToRGB(image):
 # 按键功能定义
 def Get_Photo_Path(index):  # 获取文件路径
     global Label3, Label4, Label5, Label6
+    parent = _ui_root
+    img_filter = "图片文件 (*.jpg *.jpeg *.png *.bmp *.ico *.webp *.jfif *.jpe *.gif)"
     if index == 1:
-        photo_path = tk.filedialog.askopenfilename(
-            title="选择文件", filetypes=[("Bin file", "*.bin")])
+        photo_path, _ = QFileDialog.getOpenFileName(parent, "选择文件", "", "Bin file (*.bin)")
         insert_text_message(photo_path, item=Label3)
     elif index == 2:
-        photo_path = tk.filedialog.askopenfilename(
-            title="选择文件", filetypes=IMAGE_FILE_TYPES + [("Image file", "*.gif")])
+        photo_path, _ = QFileDialog.getOpenFileName(parent, "选择文件", "", img_filter)
         insert_text_message(photo_path, item=Label4)
     elif index == 3:
-        photo_path = tk.filedialog.askopenfilename(
-            title="选择文件", filetypes=IMAGE_FILE_TYPES + [("Image file", "*.gif")])
+        photo_path, _ = QFileDialog.getOpenFileName(parent, "选择文件", "", img_filter)
         insert_text_message(photo_path, item=Label5)
     elif index == 4:
-        photo_path = tk.filedialog.askopenfilename(
-            title="选择文件", filetypes=[("Gif file", "*.gif")] + IMAGE_FILE_TYPES)
+        photo_path, _ = QFileDialog.getOpenFileName(parent, "选择文件", "", img_filter)
         insert_text_message(photo_path, item=Label6)
 
 
@@ -1306,8 +1365,10 @@ def Start_Write_Photo_Path(index):  # 写入文件
 
 
 def Write_Photo_Path1():  # 写入文件
-    global Label3, write_path_index, sleep_event
-    photo_path = Label3.get("1.0", tk.END).rstrip()
+    global write_path_index, sleep_event
+    ctx = _cur_main_ctx()
+    le = ctx.get('label3') if ctx else None
+    photo_path = le.text().strip() if le else ""
     if not photo_path:
         insert_text_message("闪存固件未选择")
         return
@@ -1320,8 +1381,10 @@ def Write_Photo_Path1():  # 写入文件
 
 
 def Write_Photo_Path2():  # 写入文件
-    global config_obj, Label4, write_path_index, Img_data_use, sleep_event
-    photo_path = Label4.get("1.0", tk.END).rstrip()
+    global config_obj, write_path_index, Img_data_use, sleep_event
+    ctx = _cur_main_ctx()
+    le = ctx.get('label4') if ctx else None
+    photo_path = le.text().strip() if le else ""
     if not photo_path:
         insert_text_message("背景图像未选择")
         return
@@ -1336,8 +1399,10 @@ def Write_Photo_Path2():  # 写入文件
 
 
 def Write_Photo_Path3():  # 写入文件
-    global config_obj, Label5, write_path_index, Img_data_use, sleep_event
-    photo_path = Label5.get("1.0", tk.END).rstrip()
+    global config_obj, write_path_index, Img_data_use, sleep_event
+    ctx = _cur_main_ctx()
+    le = ctx.get('label5') if ctx else None
+    photo_path = le.text().strip() if le else ""
     if not photo_path:
         insert_text_message("相册图像未选择")
         return
@@ -1352,8 +1417,10 @@ def Write_Photo_Path3():  # 写入文件
 
 
 def Write_Photo_Path4():  # 写入文件
-    global config_obj, Label6, interval_var, write_path_index, Img_data_use, sleep_event
-    photo_path = Label6.get("1.0", tk.END).rstrip()
+    global config_obj, write_path_index, Img_data_use, sleep_event
+    ctx = _cur_main_ctx()
+    le = ctx.get('label6') if ctx else None
+    photo_path = le.text().strip() if le else ""
     if not photo_path:
         insert_text_message("动图文件未选择")
         return
@@ -1392,13 +1459,17 @@ def Write_Photo_Path4():  # 写入文件
                 longs += duration
 
             realduration = longs / 36.0
+            _ctx_main = _cur_main_ctx()
+            _iv_box = _ctx_main.get('interval_var') if _ctx_main else None
             if realduration >= 10:
                 duration_string = "%.4f" % (realduration / 1000.0)
                 massage = "建议动图间隔：%s" % duration_string
-                interval_var.set(duration_string)
+                if _iv_box is not None:
+                    _iv_box.set(duration_string)
             else:
                 massage = "动图太短，不建议使用此动图"
-                interval_var.set("0.1")
+                if _iv_box is not None:
+                    _iv_box.set("0.1")
             insert_text_message(massage, cleanNext=False)
 
             gifseek = 0
@@ -1582,26 +1653,49 @@ def reset_timer():
     timer_last_tick = time.monotonic()
 
 
+# ===== 每屏主控控件上下文（模块级）：主控页多标签后，每块屏一套主控控件，这里记录各屏上下文 =====
+_main_ctxs = {}            # dev_id -> 该屏主控控件上下文
+_active_main_dev_id = None  # 当前显示的主控标签对应的设备id
+
+
+def _cur_main_ctx():
+    """返回当前主控标签对应的控件上下文（无则 None）"""
+    return _main_ctxs.get(_active_main_dev_id)
+
+
 def sync_page_combobox():
     """同步页面下拉列表的显示值（基于当前设备配置）"""
-    global page_combobox, config_obj
-    if page_combobox is not None:
+    global config_obj
+    ctx = _cur_main_ctx()
+    cb = ctx.get('page_combobox') if ctx else None
+    if cb is not None:
         try:
-            page_combobox['values'] = list(PAGE_ID.values())
             dev = get_current_device()
             cfg = dev.config if dev is not None and dev.config is not None else config_obj
             page_name = PAGE_ID.get(cfg.state_machine, "")
-            page_combobox.set(page_name)
+            cb.blockSignals(True)
+            # 仅当下拉项集合变化(如切换语言)才重建 items；否则只更新选中项。
+            # 避免 clear+addItems 频繁重置，关闭用户正在打开的下拉框导致无法选择。
+            expected = list(PAGE_ID.values())
+            if [cb.itemText(i) for i in range(cb.count())] != expected:
+                cb.clear()
+                cb.addItems(expected)
+            if page_name and cb.currentText() != page_name:
+                cb.setCurrentText(page_name)
+            cb.blockSignals(False)
         except Exception:
             pass
 
 
-def on_page_combobox_select(event):
+def on_page_combobox_select(index=-1):
     """用户通过下拉列表选择页面（仅作用于当前选中设备）"""
-    global config_obj, page_combobox
+    global config_obj
     dev = get_current_device()
-    event.widget.selection_clear()
-    selected_name = page_combobox.get()
+    ctx = _cur_main_ctx()
+    cb = ctx.get('page_combobox') if ctx else None
+    if cb is None:
+        return
+    selected_name = cb.currentText()
     for pid, pname in PAGE_ID.items():
         if pname == selected_name:
             # 基于当前设备自己的配置切换（避免多屏联动）
@@ -1645,19 +1739,21 @@ def set_lcd_direction(index):
 
 def sync_lcd_combobox():
     """同步显示方向下拉列表（基于当前设备配置）"""
-    global lcd_direction_combobox, config_obj
-    if lcd_direction_combobox is not None:
+    global config_obj
+    ctx = _cur_main_ctx()
+    cb = ctx.get('lcd_direction_combobox') if ctx else None
+    if cb is not None:
         try:
             dev = get_current_device()
             cfg = dev.config if dev is not None and dev.config is not None else config_obj
-            lcd_direction_combobox.set(LCD_STATE_MESSAGE[cfg.lcd_change])
+            cb.setCurrentText(LCD_STATE_MESSAGE[cfg.lcd_change])
         except Exception:
             pass
 
 
 def apply_language():
     """切换界面语言（页面名称与方向名称）"""
-    global config_obj, lcd_direction_combobox
+    global config_obj
     try:
         if config_obj.language == "English":
             PAGE_ID.clear()
@@ -1670,19 +1766,27 @@ def apply_language():
     except Exception:
         pass
     sync_page_combobox()
-    if lcd_direction_combobox is not None:
+    ctx = _cur_main_ctx()
+    cb = ctx.get('lcd_direction_combobox') if ctx else None
+    if cb is not None:
         try:
-            lcd_direction_combobox['values'] = list(LCD_STATE_MESSAGE)
+            cb.blockSignals(True)
+            cb.clear()
+            cb.addItems(list(LCD_STATE_MESSAGE))
+            cb.blockSignals(False)
         except Exception:
             pass
     sync_lcd_combobox()
 
 
-def on_lcd_direction_select(event):
+def on_lcd_direction_select(index=-1):
     """用户通过下拉列表选择显示方向"""
-    global config_obj, lcd_direction_combobox
-    event.widget.selection_clear()
-    selected = lcd_direction_combobox.get()
+    global config_obj
+    ctx = _cur_main_ctx()
+    cb = ctx.get('lcd_direction_combobox') if ctx else None
+    if cb is None:
+        return
+    selected = cb.currentText()
     try:
         index = LCD_STATE_MESSAGE.index(selected)
         set_lcd_direction(index)
@@ -1743,15 +1847,20 @@ def SER_Read():
     # 设备在渲染帧期间可能短暂无响应，稍作等待即可恢复。
     deadline = time.monotonic() + 0.5
     recv = bytearray()
-    while len(recv) == 0:
-        if time.monotonic() >= deadline:
-            print("SER_Read timeout")
-            return 0
-        n = ser.in_waiting
-        if n > 0:
-            recv.extend(ser.read(n))
-            break
-        time.sleep(0.005)
+    try:
+        while len(recv) == 0:
+            if time.monotonic() >= deadline:
+                print("SER_Read timeout")
+                return 0
+            n = ser.in_waiting
+            if n > 0:
+                recv.extend(ser.read(n))
+                break
+            time.sleep(0.005)
+    except Exception:
+        # 底层瞬时错误(如串口被并发关闭/句柄异常)视为无响应返回0，
+        # 不抛异常到 SER_rw 的 except，避免误判掉线触发反复重连。
+        return 0
     # 响应可能分片到达：短暂等待并收集剩余字节
     time.sleep(0.01)
     try:
@@ -1794,12 +1903,11 @@ def SER_rw(data, read=True, size=0):
             if len(result) >= size:
                 return result
     except Exception as e:  # 出现异常
+        # 不 ser.close()/set_device_state(0)：瞬时异常(超时/底层竞争)会误判掉线，
+        # 导致 daemon 反复重连→屏幕重新初始化→闪烁。真正拔线由 Read_ADC_CH 连续失败(10次)检测。
         print("串口读写异常，%s" % e)
-        ser.close()
     finally:
         SER_lock.release()
-    # 释放锁后再处理异常
-    device.set_device_state(0)
     return result
 
 
@@ -3119,7 +3227,7 @@ def shrink_image_block_average(image, shrink_factor):
 
 
 def set_select_hwnd(hwnd):
-    global config_obj, windows_combobox
+    global config_obj
     config_obj.select_window_hwnd = hwnd
     save_config()
     # 递增帧代际，使正在处理中的旧窗口帧被丢弃
@@ -3131,8 +3239,10 @@ def set_select_hwnd(hwnd):
     desc = get_hwnd_desc(hwnd)
     if not desc:
         desc = hwnd
-    if windows_combobox is not None:
-        windows_combobox.set(desc)
+    ctx = _cur_main_ctx()
+    wcb = ctx.get('windows_combobox') if ctx else None
+    if wcb is not None:
+        wcb.setCurrentText(desc)
 
 
 def clear_queue(queue):
@@ -3157,19 +3267,21 @@ def screen_shot_task(device=None):
     dev.screenshot_last_limit_time = time.monotonic()
     print("Start screenshot")
     while dev.mg_screen_thread_running:
-        if dev.device_state != 1 or (config_obj.state_machine != SCREEN_PAGE_ID
-                                 and config_obj.state_machine != CAMERA_VIDEO_ID):
+        # 多屏隔离：每次迭代取本设备最新配置（设备重连替换 dev.config 后也能及时用上）
+        cfg = dev.config if dev.config is not None else config_obj
+        if dev.device_state != 1 or (cfg.state_machine != SCREEN_PAGE_ID
+                                 and cfg.state_machine != CAMERA_VIDEO_ID):
             if not dev.screen_shot_queue.empty():
                 time.sleep(0.5)
                 clear_queue(dev.screen_shot_queue)
             time.sleep(0.5)
             continue
         if dev.screen_shot_queue.full():
-            time.sleep(1.0 / config_obj.fps_var)
+            time.sleep(1.0 / cfg.fps_var)
 
         try:
-            if config_obj.state_machine == CAMERA_VIDEO_ID:
-                camera_id = all_cameras.get(config_obj.camera_var)
+            if cfg.state_machine == CAMERA_VIDEO_ID:
+                camera_id = all_cameras.get(cfg.camera_var)
                 if camera_id is None:
                     rgb888 = get_draw_text("请选择相机…")
                     image = Win32_Image(rgb=rgb888, size=(dev.LCD_MAX_X, dev.LCD_MAX_Y))
@@ -3180,7 +3292,7 @@ def screen_shot_task(device=None):
                 rgb888 = get_draw_text("打开中…")
                 image = Win32_Image(rgb=rgb888, size=(dev.LCD_MAX_X, dev.LCD_MAX_Y))
                 dev.screen_shot_queue.put((image, {"width": dev.LCD_MAX_X, "height": dev.LCD_MAX_Y}), timeout=1)
-                camera_name = config_obj.camera_var
+                camera_name = cfg.camera_var
                 cap = cv2.VideoCapture(camera_id, cv2.CAP_DSHOW)
                 try:
                     if cap.isOpened():
@@ -3195,14 +3307,14 @@ def screen_shot_task(device=None):
                         height = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
                         last_time = time.monotonic()
                         while (dev.mg_screen_thread_running and dev.device_state == 1
-                               and config_obj.state_machine == CAMERA_VIDEO_ID
-                               and camera_name == config_obj.camera_var):
+                               and cfg.state_machine == CAMERA_VIDEO_ID
+                               and camera_name == cfg.camera_var):
                             cap_hue = cap.get(cv2.CAP_PROP_HUE)
                             if cap_hue == 13:
                                 time.sleep(1)
                                 raise Exception("get CAP_PROP_HUE failed")
                             if dev.screen_shot_queue.full():
-                                time.sleep(1.0 / config_obj.fps_var)
+                                time.sleep(1.0 / cfg.fps_var)
                             suc, frame = cap.read()
                             if not suc:
                                 raise Exception("cap.read() failed")
@@ -3214,7 +3326,7 @@ def screen_shot_task(device=None):
                             try:
                                 dev.screen_shot_queue.put((image, {"width": width, "height": height}), timeout=1)
                             except queue.Full:
-                                time.sleep(1.0 / config_obj.fps_var)
+                                time.sleep(1.0 / cfg.fps_var)
                                 continue
                             fps_control(dev)
                     else:
@@ -3222,14 +3334,14 @@ def screen_shot_task(device=None):
                 finally:
                     cap.release()
             elif isWindows:
-                if config_obj.zoom_enable:
+                if cfg.zoom_enable:
                     # 放大镜模式：截取鼠标周围区域并放大显示
                     try:
                         import win32api
                         x, y = win32api.GetCursorPos()
                     except Exception:
                         x, y = 0, 0
-                    scale = max(1, int(config_obj.zoom_scale))
+                    scale = max(1, int(cfg.zoom_scale))
                     w = max(8, dev.LCD_MAX_X // scale)
                     h = max(8, dev.LCD_MAX_Y // scale)
                     left = max(0, x - w // 2)
@@ -3244,13 +3356,13 @@ def screen_shot_task(device=None):
                     except Exception:
                         pass
                 else:
-                    sct_img = get_window_image(config_obj.select_window_hwnd)
+                    sct_img = get_window_image(cfg.select_window_hwnd)
                     dev.screen_shot_queue.put((sct_img, {"width": sct_img.size[0], "height": sct_img.size[1]}), timeout=1)
             else:
                 sct_img = _thread_mss.grab(cropped_monitor)
                 dev.screen_shot_queue.put((sct_img, cropped_monitor), timeout=1)
         except queue.Full:
-            time.sleep(1.0 / config_obj.fps_var)
+            time.sleep(1.0 / cfg.fps_var)
             continue
         except Exception as e:
             print("获取图像失败 %s" % traceback.format_exc())
@@ -3269,14 +3381,16 @@ def fps_control(device=None):
     if device is None:
         device = get_current_device()
     dev = device
+    # 多屏隔离：fps 用本设备配置，避免全局 config_obj 被 daemon 切换导致节奏错乱
+    fps = max(1, getattr(dev.config if dev.config is not None else config_obj, "fps_var", 30))
     current_monoto_time = time.monotonic()
     elapse_time = current_monoto_time - dev.screenshot_last_limit_time
     if elapse_time > 5:
         dev.wait_time = 0
-        elapse_time = 1.0 / config_obj.fps_var
+        elapse_time = 1.0 / fps
 
     dev.screenshot_last_limit_time = current_monoto_time
-    dev.wait_time += 1.0 / config_obj.fps_var - elapse_time
+    dev.wait_time += 1.0 / fps - elapse_time
     if dev.wait_time > 0:
         dev.sleep_event.wait(dev.wait_time)
     elif dev.wait_time < -5:
@@ -3292,8 +3406,10 @@ def screen_process_task(device=None):
     set_current_device(device)
     print("Start screen process")
     while dev.mg_screen_thread_running:
-        if dev.device_state != 1 or (config_obj.state_machine != SCREEN_PAGE_ID
-                                 and config_obj.state_machine != CAMERA_VIDEO_ID):
+        # 多屏隔离：每次迭代取本设备最新配置（设备重连替换 dev.config 后也能及时用上）
+        cfg = dev.config if dev.config is not None else config_obj
+        if dev.device_state != 1 or (cfg.state_machine != SCREEN_PAGE_ID
+                                 and cfg.state_machine != CAMERA_VIDEO_ID):
             if not dev.screen_process_queue.empty():
                 time.sleep(0.5)
                 clear_queue(dev.screen_process_queue)
@@ -3302,7 +3418,7 @@ def screen_process_task(device=None):
 
         try:
             if dev.screen_process_queue.full():
-                time.sleep(1.0 / config_obj.fps_var)
+                time.sleep(1.0 / cfg.fps_var)
 
             frame_gen = dev.screen_frame_generation
 
@@ -3381,7 +3497,7 @@ def screen_process_task(device=None):
             # 压缩图像到LCD屏幕尺寸，不足的填充
             width = monitor["width"]
             heightx2 = monitor["height"] * 2
-            if config_obj.shrink_type == 1:
+            if cfg.shrink_type == 1:
                 # 方法1：裁剪以 填充屏幕
                 if width > heightx2:  # 图片长宽比例超过2:1
                     im1 = shrink_image_block_average(rgb, rgb.shape[0] / LCD_MAX_Y)
@@ -3447,7 +3563,7 @@ def screen_process_task(device=None):
             im1 = im1.astype(np.uint16)
 
             # 实时预览：保存屏幕镜像图像供UI刷新（per-device）
-            if config_obj and config_obj.preview_enabled:
+            if cfg and cfg.preview_enabled:
                 with dev._preview_lock:
                     dev.last_preview_rgb = im1.astype(np.uint8).copy()
                     _preview_rgb = dev.last_preview_rgb  # 全局兼容
@@ -4202,11 +4318,17 @@ def api_apply_device_select(data):
         if dev.device_name == name:
             old = _primary_device
             if old is not None and old != dev:
-                old.state_machine = config_obj.state_machine
+                # 旧设备页面同步到其自身配置（不读全局 config_obj，避免串扰）
+                if old.config is not None:
+                    old.config.state_machine = old.state_machine
+                else:
+                    old.state_machine = config_obj.state_machine
             set_current_device(dev)
             _primary_device = dev
             set_active_device_config(dev)
-            config_obj.state_machine = getattr(dev, "state_machine", SCREEN_PAGE_ID)
+            # 新设备页面同步到其自身配置（不经过全局 config_obj）
+            if dev.config is not None:
+                dev.config.state_machine = getattr(dev, "state_machine", SCREEN_PAGE_ID)
             state_change_set(save=False)
             return {"ok": True, "device": name}
     return {"ok": False, "error": "未找到设备: %s（可用 /api/devices 查看）" % name}
@@ -4237,7 +4359,7 @@ def api_apply_quit(data):
     if not data.get("force"):
         return {"ok": False, "error": "需要 force: true 才执行退出"}
     try:
-        root = tk._default_root
+        root = _ui_root
         if root is not None:
             def _do():
                 try:
@@ -4245,10 +4367,10 @@ def api_apply_quit(data):
                 except Exception:
                     pass
                 try:
-                    root.destroy()
+                    root.close()
                 except Exception:
                     pass
-            root.after(300, _do)
+            QTimer.singleShot(300, _do)
             return {"ok": True}
     except Exception:
         pass
@@ -6510,9 +6632,16 @@ def show_full_custom():
         dev.sleep_event.wait(dev.wait_time)
 
 
+# UI批量同步控件（切换设备刷新设置页/主控页）时抑制落盘，刷新完统一保存一次，
+# 避免几十个控件的 trace 回调各自触发 save_config 造成切换卡顿
+_ui_batch_sync = False
+
+
 # now 是否立即保存
 def save_config(now=False):
     global last_config_save_time, save_thread, config_event
+    if _ui_batch_sync:
+        return
     last_config_save_time = time.monotonic()
     if now:
         last_config_save_time -= 5
@@ -6714,8 +6843,8 @@ def set_auto_start(enable):
 
 def export_config():
     """导出配置到JSON文件"""
-    path = tkinter.filedialog.asksaveasfilename(defaultextension=".json",
-                                                filetypes=[("配置文件", "*.json")], title="导出配置")
+    parent = _ui_root
+    path, _ = QFileDialog.getSaveFileName(parent, "导出配置", "", "配置文件 (*.json)")
     if not path:
         return
     try:
@@ -6728,7 +6857,8 @@ def export_config():
 
 def import_config():
     """从JSON文件导入配置"""
-    path = tkinter.filedialog.askopenfilename(filetypes=[("配置文件", "*.json")], title="导入配置")
+    parent = _ui_root
+    path, _ = QFileDialog.getOpenFileName(parent, "导入配置", "", "配置文件 (*.json)")
     if not path:
         return
     try:
@@ -7365,20 +7495,30 @@ def Detect_LCD_Size():
 
 
 def ReDetect_LCD_Size():
-    """重新检测LCD分辨率"""
+    """重新检测LCD分辨率（后台线程执行串口读取，避免卡住界面）"""
     insert_text_message('正在重新检测屏幕分辨率...')
-    Detect_LCD_Size()
-    dev = get_current_device()
-    if dev is not None:
-        dev.state_change = 1
+    def _worker():
+        try:
+            Detect_LCD_Size()
+        except Exception:
+            pass
+        dev = get_current_device()
+        if dev is not None:
+            dev.state_change = 1
+    threading.Thread(target=_worker, daemon=True).start()
 
 
 def Set_LCD_Size_Manual(*args):
     """手动设置LCD分辨率"""
-    global LCD_MAX_X, LCD_MAX_Y, lcd_size_var
+    global LCD_MAX_X, LCD_MAX_Y
     dev = get_current_device()
     _ui_set_active()  # 锁定到UI当前设备（避免多屏设置冲突）
-    size_str = lcd_size_var.get()
+    ctx = _cur_main_ctx()
+    if ctx and ctx.get('lcd_size_var'):
+        v = ctx['lcd_size_var']
+        size_str = v.currentText() if isinstance(v, QComboBox) else v.get()
+    else:
+        size_str = "%dx%d (默认)" % (LCD_MAX_X, LCD_MAX_Y)
     size_map = {
         '160x80 (默认)': (160, 80),
         '128x64 (0.96寸OLED)': (128, 64),
@@ -7405,2009 +7545,157 @@ def Cleanup_LCD_On_Exit():
 
 # ==================== UI 界面 ====================
 
-def UI_Page():  # 进行图像界面显示
-    global config_obj, Text1, interval_var, all_windows, all_cameras, windows_combobox
-    global Label1, Label3, Label4, Label5, Label6, PAGE_ID
+def UI_Page():  # PySide6 (Qt) 主界面
+# -*- coding: UTF-8 -*-
+# 临时文件：新的 PySide6 UI_Page 函数体（不含 def 行），由脚本替换进 MSU2_MINI_V2_qt.py
+# 三层结构：第一层「中控|关于」→ 第二层「屏幕1|屏幕2|屏幕3…」→ 第三层「主控|设置|设备信息」
+# 第三层主控页 = 原版完整主控布局（设为自动连接/烧写区/RGB颜色/填充适应/动图间隔/最大FPS/
+#              自定义内容/上翻下翻/方向/页面/相机/屏幕镜像窗口/分辨率/实时预览），每屏一套
+
+    # ======================================================================
+    # PySide6 (Qt) 主界面
+    # ======================================================================
+    global config_obj, Text1, all_windows, all_cameras
+    global Label1, Label3, Label4, Label5, Label6, PAGE_ID, _tray_icon
 
     config_obj = load_config()
     apply_command_line_args()  # 应用命令行参数（--page/--com）
     apply_language()  # 应用界面语言设置
-    pad_scale_xy = scale_factor / 100.0
-    pad_scale_xy5 = pad_scale_xy * 5
 
-    # 创建主窗口
-    window = tk.Tk()  # 实例化主窗口
-    # window.tk.call('tk', 'scaling', pad_scale_xy)
-    window.title(f"{PROGRAM_TITLE} v{PROGRAM_VERSION} - {PROGRAM_SUBTITLE} - {PROGRAM_GITHUB}")  # 设置标题
+    # -------- Qt 应用与主窗口 --------
+    app = QApplication.instance() or QApplication(sys.argv)
+    window = QMainWindow()
+    window.setWindowTitle("%s v%s - %s - %s" % (PROGRAM_TITLE, PROGRAM_VERSION, PROGRAM_SUBTITLE, PROGRAM_GITHUB))
 
-    # 设置主窗口引用并启动UI消息队列轮询（工作线程→主线程安全更新界面）
     global _ui_root
     _ui_root = window
-    window.after(100, _process_ui_msg_queue)
+    QTimer.singleShot(100, _process_ui_msg_queue)
 
-    # 修改默认图标
-    if scale_factor < 200:
-        iconimage = MiniMark.load_image("resource/icon_small.ico")
-    else:
-        iconimage = MiniMark.load_image("resource/icon.ico")
-    defaulticon = ImageTk.PhotoImage(iconimage)
-    window.wm_iconphoto(True, defaulticon)
+    try:
+        ico_path = "resource/icon.ico" if scale_factor >= 200 else "resource/icon_small.ico"
+        iconimage = MiniMark.load_image(ico_path)
+        window.setWindowIcon(QIcon(ico_path))
+    except Exception:
+        iconimage = None
+
+    central = QWidget()
+    window.setCentralWidget(central)
+    root_lay = QVBoxLayout(central)
+    root_lay.setContentsMargins(8, 8, 8, 8)
+    root_lay.setSpacing(6)
 
     # ==================== 多设备选择栏 ====================
-    device_bar = ttk.Frame(window)
-    device_bar.pack(side=tk.TOP, fill=tk.X, padx=pad_scale_xy5 * 2, pady=(pad_scale_xy5, 0))
-    
-    ttk.Label(device_bar, text="已连接设备:").pack(side=tk.LEFT, padx=(0, pad_scale_xy5))
-    
-    device_selector_var = tk.StringVar(window, "屏幕1")
-    device_selector = ttk.Combobox(device_bar, textvariable=device_selector_var, 
-                                   values=["屏幕1"], state="readonly", width=10)
-    device_selector.pack(side=tk.LEFT, padx=(0, pad_scale_xy5))
-    
-    device_count_label = ttk.Label(device_bar, text="(0个设备)", foreground="gray")
-    device_count_label.pack(side=tk.LEFT)
-    
+    device_bar = QHBoxLayout()
+    root_lay.addLayout(device_bar)
+    device_bar.addWidget(QLabel("已连接设备:"))
+
+    device_selector = QComboBox()
+    device_selector.setMinimumWidth(110)
+    device_bar.addWidget(device_selector)
+
+    device_count_label = QLabel("(0个设备)")
+    device_count_label.setStyleSheet("color:gray;")
+    device_bar.addWidget(device_count_label)
+    device_bar.addStretch(1)
+
     def refresh_device_list():
         """刷新设备列表下拉框"""
         connected = [d for d in all_devices.values() if d.device_state == 1]
         names = [d.device_name for d in connected] if connected else ["屏幕1"]
-        device_selector["values"] = names
-        device_count_label.config(text="(%d个设备)" % len(connected))
-        if device_selector_var.get() not in names:
-            device_selector_var.set(names[0])
-    
-    def on_device_select(event=None):
+        cur = device_selector.currentText()
+        device_selector.blockSignals(True)
+        device_selector.clear()
+        device_selector.addItems(names)
+        device_selector.blockSignals(False)
+        device_count_label.setText("(%d个设备)" % len(connected))
+        if cur in names:
+            device_selector.setCurrentText(cur)
+        else:
+            device_selector.setCurrentText(names[0])
+
+    def on_device_select(index=-1):
         """切换当前活跃设备（每屏独立配置/页面）"""
         global config_obj, _primary_device
-        name = device_selector_var.get()
+        name = device_selector.currentText()
         old = _primary_device
         for dev in all_devices.values():
             if dev.device_name == name and dev.device_state == 1:
-                # 保存旧设备页面到其自身配置（每屏记住自己的页面）
                 if old is not None and old != dev:
-                    old.state_machine = config_obj.state_machine
+                    if old.config is not None:
+                        old.config.state_machine = old.state_machine
+                    else:
+                        old.state_machine = config_obj.state_machine
                 set_current_device(dev)
                 _primary_device = dev
-                # 切换为该屏独立配置（config_obj/config_file 指向本屏配置）
                 set_active_device_config(dev)
-                config_obj.state_machine = getattr(dev, "state_machine", SCREEN_PAGE_ID)
+                if dev.config is not None:
+                    dev.config.state_machine = getattr(dev, "state_machine", SCREEN_PAGE_ID)
                 state_change_set(save=False)
                 sync_page_combobox()
                 sync_lcd_combobox()
-                # 刷新主控页/设置页控件为当前屏配置
                 try:
-                    _apply_main_ui_to_config()
+                    _select_main_tab(dev.index)
                 except Exception:
                     pass
-                try:
-                    _apply_settings_ui_to_config()
-                except Exception:
-                    pass
-                # 更新镜像窗口下拉框
-                desc = get_hwnd_desc(config_obj.select_window_hwnd)
-                if desc:
-                    windows_combobox.set(desc)
                 break
-    
-    device_selector.bind("<<ComboboxSelected>>", on_device_select)
-    
-    refresh_btn = ttk.Button(device_bar, text="刷新", width=6, command=refresh_device_list)
-    refresh_btn.pack(side=tk.LEFT, padx=(pad_scale_xy5, 0))
-    
-    # 初始刷新
+
+    device_selector.currentIndexChanged.connect(on_device_select)
+
+    refresh_btn = QPushButton("刷新")
+    refresh_btn.setFixedWidth(60)
+    refresh_btn.clicked.connect(refresh_device_list)
+    device_bar.addWidget(refresh_btn)
+
     refresh_device_list()
 
-    # 创建标签页容器（Notebook）
-    notebook = ttk.Notebook(window)
-    notebook.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=pad_scale_xy5 * 2, pady=pad_scale_xy5 * 2)
+    # ==================== 第一层标签：中控 | 关于 ====================
+    top_nb = QTabWidget()
+    root_lay.addWidget(top_nb, 1)
 
-    # ==================== 第一页：主控 ====================
-    # 创建 Frame 容器
-    root = tk.Frame(notebook, padx=pad_scale_xy5, pady=pad_scale_xy5, highlightthickness=1,
-                    highlightcolor="lightgray", highlightbackground="lightgray")
-    notebook.add(root, text="  主控  ")
+    # ---------- 中控页（第二层：每屏标签 + 底部共享信息框） ----------
+    root = QWidget()
+    top_nb.addTab(root, "  中控  ")
+    root_lay2 = QVBoxLayout(root)
+    root_lay2.setContentsMargins(4, 4, 4, 4)
 
-    # ==================== 设置标签页 ====================
-    settings_frame = ttk.Frame(notebook, padding=(pad_scale_xy5 * 2, pad_scale_xy5 * 2))
-    notebook.add(settings_frame, text="  设置  ")
+    # 状态栏（共享）：设为自动连接 + 设备状态 + 隐藏按钮（参照老版布局）
+    status_bar = QHBoxLayout()
+    root_lay2.addLayout(status_bar)
+    auto_cb = QCheckBox("设为自动连接")
+    auto_cb.setChecked(bool(_auto_connect))
 
-    # 设置页内部使用子标签页，避免设置项过多导致界面过高
-    settings_notebook = ttk.Notebook(settings_frame)
-    settings_notebook.pack(fill=tk.BOTH, expand=True)
+    def _toggle_auto(val):
+        global _auto_connect
+        _auto_connect = bool(val)
+        insert_text_message("已开启自动连接（默认）" if _auto_connect else "已关闭自动连接（需手动点击\"连接\"）")
 
-    # ---- 子页0：按页面（按页面查看/跳转设置，便于找到每一项设置在哪） ----
-    page_guide_frame = ttk.Frame(settings_notebook, padding=(pad_scale_xy5 * 2, pad_scale_xy5 * 2))
-    settings_notebook.add(page_guide_frame, text="  按页面  ")
+    auto_cb.toggled.connect(_toggle_auto)
+    status_bar.addWidget(auto_cb)
+    dev_state_lbl = QLabel("")
+    dev_state_lbl.setStyleSheet("color:gray;")
+    status_bar.addWidget(dev_state_lbl)
+    status_bar.addStretch(1)
+    hide_btn = QPushButton("隐藏")
+    hide_btn.setFixedWidth(60)
+    hide_btn.clicked.connect(lambda: hide_to_tray())
+    status_bar.addWidget(hide_btn)
 
-    page_setting_guide = {
-        MARQUEE_PAGE_ID: ("文字跑马灯：文本、字体、字号、颜色", 4, (0, "content")),
-        WEATHER_PAGE_ID: ("天气：设置城市（支持中文）", 4, (1, "content")),
-        CRYPTO_PAGE_ID: ("行情：设置交易对", 4, (1, "content")),
-        HOTSEARCH_PAGE_ID: ("热搜：设置显示条数/字体/翻页/刷新", 4, (2, "content")),
-        PING_PAGE_ID: ("网络延迟：设置测试目标", 4, (1, "content")),
-        TIMER_PAGE_ID: ("番茄钟：设置时长", 4, (3, "content")),
-        WORLDCLOCK_PAGE_ID: ("世界时钟：设置时区", 4, (3, "content")),
-        MEMO_PAGE_ID: ("纪念日：设置列表", 4, (4, "content")),
-        TODO_PAGE_ID: ("待办事项：设置列表", 4, (4, "content")),
-        PROC_PAGE_ID: ("进程TOP：设置显示数量", 5, (0, "monitor")),
-        DISKIO_PAGE_ID: ("磁盘读写：选择显示模式、标题/字号/颜色", 5, (3, "monitor")),
-        HWDETAIL_PAGE_ID: ("硬件详情：设置监控类型与数量", 5, (1, "monitor")),
-        GAUGE_PAGE_ID: ("仪表盘：设置项目与颜色", 5, (2, "monitor")),
-        SCREEN_PAGE_ID: ("屏幕镜像：设置放大镜", 6, None),
-    }
+    main_notebook = QTabWidget()
+    root_lay2.addWidget(main_notebook, 1)
+    # 共享信息框（业务逻辑 insert_text_message 使用全局 Text1）
+    info_lbl = QLabel("信息:")
+    root_lay2.addWidget(info_lbl)
+    Text1 = QTextEdit()
+    Text1.setReadOnly(True)
+    Text1.setMaximumHeight(90)
+    root_lay2.addWidget(Text1)
 
-    ttk.Label(page_guide_frame, text="选择页面，查看该页面有哪些设置并可一键前往：").pack(anchor=tk.W, pady=(0, pad_scale_xy5))
-    guide_var = tk.StringVar(page_guide_frame, value=getattr(config_obj, "guide_last_page", ""))
-    guide_combobox = ttk.Combobox(page_guide_frame, textvariable=guide_var, state="readonly", width=26)
-    guide_combobox.pack(anchor=tk.W, pady=pad_scale_xy5)
-    guide_desc = tk.Label(page_guide_frame, text="", wraplength=320, justify=tk.LEFT, fg="gray")
-    guide_desc.pack(anchor=tk.W, pady=pad_scale_xy5)
+    def apply_color_preset(event=None):
+        pass
 
-    def on_guide_select(event=None):
-        name = guide_combobox.get()
-        for pid, pname in PAGE_ID.items():
-            if pname == name:
-                # 记住本次选择（按当前设备配置保存，重启后恢复）
-                _ui_set_active()  # 锁定到UI当前设备（避免多屏设置冲突）
-                config_obj.guide_last_page = name
-                save_config()
-                guide = page_setting_guide.get(pid)
-                if guide:
-                    guide_desc.config(text=guide[0])
-                else:
-                    guide_desc.config(text="该页面没有独立设置项，设置由主控页或设备控制。")
-                break
-
-    def goto_guide_setting():
-        name = guide_combobox.get()
-        for pid, pname in PAGE_ID.items():
-            if pname == name:
-                guide = page_setting_guide.get(pid)
-                if guide:
-                    try:
-                        settings_notebook.select(guide[1])
-                        sub = guide[2]
-                        if sub:
-                            sub_idx, ntype = sub
-                            if ntype == "content":
-                                content_notebook.select(sub_idx)
-                            elif ntype == "monitor":
-                                monitor_notebook.select(sub_idx)
-                    except Exception:
-                        pass
-                break
-
-    guide_combobox.bind("<<ComboboxSelected>>", on_guide_select)
-    guide_combobox['values'] = list(PAGE_ID.values())
-    ttk.Button(page_guide_frame, text="前往该设置", padding=pad_scale_xy, command=goto_guide_setting).pack(anchor=tk.W, pady=pad_scale_xy5)
-    ttk.Label(page_guide_frame, text="提示：以下标签页按功能分类。若找不到某项设置在哪，可在此按页面查找。",
-              foreground="gray", wraplength=320, justify=tk.LEFT).pack(anchor=tk.W, pady=pad_scale_xy5)
-
-    # ---- 子页1：通用 ----
-    common_frame = ttk.Frame(settings_notebook, padding=(pad_scale_xy5 * 2, pad_scale_xy5 * 2))
-    settings_notebook.add(common_frame, text="  通用  ")
-
-    def change_anti_burn(*args):
+    def _show_custom_dialog():
+        """自定义显示编辑窗口（PySide6）：显示多项数值 / 显示两项图表 + 模板编辑 + 实时预览"""
         global config_obj
-        _ui_set_active()  # 锁定到UI当前设备（避免多屏设置冲突）
-        dev = get_current_device()
-        config_obj.anti_burn = anti_burn_var.get()
-        if config_obj.anti_burn == 0 and dev:
-            dev.burn_offset_x = 0
-            dev.burn_offset_y = 0
-        save_config()
-
-    anti_burn_var = tk.IntVar(common_frame, 0)
-    anti_burn_var.set(config_obj.anti_burn)
-    ttk.Checkbutton(
-        common_frame, text="防烧屏（每30秒微调像素位置，延缓OLED烧屏）", variable=anti_burn_var,
-        command=change_anti_burn
-    ).pack(anchor=tk.W, pady=pad_scale_xy5)
-
-    def change_preview(*args):
-        global config_obj
-        _ui_set_active()  # 锁定到UI当前设备（避免多屏设置冲突）
-        config_obj.preview_enabled = preview_var.get()
-        save_config()
-
-    preview_var = tk.IntVar(common_frame, 0)
-    preview_var.set(config_obj.preview_enabled)
-    ttk.Checkbutton(
-        common_frame, text="开启实时预览（显示小屏当前内容）", variable=preview_var,
-        command=change_preview
-    ).pack(anchor=tk.W, pady=pad_scale_xy5)
-
-    def change_auto_start(*args):
-        global config_obj
-        _ui_set_active()  # 锁定到UI当前设备（避免多屏设置冲突）
-        config_obj.auto_start = auto_start_var.get()
-        if not set_auto_start(config_obj.auto_start):
-            auto_start_var.set(0)
-            config_obj.auto_start = 0
-        save_config()
-
-    auto_start_var = tk.IntVar(common_frame, 0)
-    auto_start_var.set(config_obj.auto_start)
-    ttk.Checkbutton(
-        common_frame, text="开机自启动（随Windows启动）", variable=auto_start_var,
-        command=change_auto_start
-    ).pack(anchor=tk.W, pady=pad_scale_xy5)
-
-    def change_language(*args):
-        global config_obj
-        _ui_set_active()  # 锁定到UI当前设备（避免多屏设置冲突）
-        config_obj.language = language_var.get()
-        save_config()
-        apply_language()
-
-    language_row = ttk.Frame(common_frame)
-    language_row.pack(anchor=tk.W, pady=pad_scale_xy5)
-    ttk.Label(language_row, text="界面语言:").pack(side=tk.LEFT)
-    language_var = tk.StringVar(common_frame, config_obj.language)
-    ttk.Combobox(language_row, textvariable=language_var, values=["中文", "English"], width=10, state="readonly").pack(side=tk.LEFT, padx=pad_scale_xy5)
-    language_var.trace_add("write", change_language)
-
-    # ---- 子页2：自动化 ----
-    auto_frame = ttk.Frame(settings_notebook, padding=(pad_scale_xy5 * 2, pad_scale_xy5 * 2))
-    settings_notebook.add(auto_frame, text="  自动化  ")
-
-    def change_page_cycle(*args):
-        global config_obj
-        _ui_set_active()  # 锁定到UI当前设备（避免多屏设置冲突）
-        try:
-            config_obj.page_cycle_enable = page_cycle_var.get()
-            config_obj.page_cycle_interval = int(page_cycle_interval_var.get())
-        except Exception:
-            return
-        save_config()
-
-    page_cycle_var = tk.IntVar(auto_frame, 0)
-    page_cycle_var.set(config_obj.page_cycle_enable)
-    ttk.Checkbutton(
-        auto_frame, text="自动翻页轮播", variable=page_cycle_var,
-        command=change_page_cycle
-    ).pack(anchor=tk.W, pady=pad_scale_xy5)
-
-    cycle_row = ttk.Frame(auto_frame)
-    cycle_row.pack(anchor=tk.W, pady=pad_scale_xy5)
-    ttk.Label(cycle_row, text="轮播间隔(秒):").pack(side=tk.LEFT)
-    page_cycle_interval_var = tk.IntVar(auto_frame, 0)
-    page_cycle_interval_var.set(config_obj.page_cycle_interval)
-    page_cycle_interval_entry = ttk.Spinbox(cycle_row, from_=3, to=3600, textvariable=page_cycle_interval_var, width=8)
-    page_cycle_interval_entry.pack(side=tk.LEFT, padx=pad_scale_xy5)
-    page_cycle_interval_var.trace_add("write", change_page_cycle)
-
-    def change_screen_off(*args):
-        global config_obj
-        _ui_set_active()  # 锁定到UI当前设备（避免多屏设置冲突）
-        try:
-            config_obj.screen_off_timeout = int(screen_off_var.get())
-        except Exception:
-            return
-        save_config()
-
-    screen_off_var = tk.IntVar(auto_frame, 0)
-    screen_off_var.set(config_obj.screen_off_timeout)
-    screen_off_row = ttk.Frame(auto_frame)
-    screen_off_row.pack(anchor=tk.W, pady=pad_scale_xy5)
-    ttk.Label(screen_off_row, text="无操作息屏超时(秒, 0=禁用):").pack(side=tk.LEFT)
-    screen_off_entry = ttk.Spinbox(screen_off_row, from_=0, to=3600, textvariable=screen_off_var, width=8)
-    screen_off_entry.pack(side=tk.LEFT, padx=pad_scale_xy5)
-    screen_off_var.trace_add("write", change_screen_off)
-
-    # ---- 子页3：按键 ----
-    key_frame = ttk.Frame(settings_notebook, padding=(pad_scale_xy5 * 2, pad_scale_xy5 * 2))
-    settings_notebook.add(key_frame, text="  按键  ")
-
-    ttk.Label(key_frame, text="按键动作映射（单击 / 双击 / 长按）:").pack(anchor=tk.W, pady=(0, pad_scale_xy5))
-    key_row = ttk.Frame(key_frame)
-    key_row.pack(anchor=tk.W, pady=pad_scale_xy5)
-    key_actions = ["下翻页", "上翻页", "切换方向", "无"]
-
-    def change_key_action(*args):
-        global config_obj
-        _ui_set_active()  # 锁定到UI当前设备（避免多屏设置冲突）
-        config_obj.key_single = key_single_var.get()
-        config_obj.key_double = key_double_var.get()
-        config_obj.key_long = key_long_var.get()
-        save_config()
-
-    key_single_var = tk.StringVar(key_frame, config_obj.key_single)
-    key_double_var = tk.StringVar(key_frame, config_obj.key_double)
-    key_long_var = tk.StringVar(key_frame, config_obj.key_long)
-    ttk.Label(key_row, text="单击:").pack(side=tk.LEFT)
-    ttk.Combobox(key_row, textvariable=key_single_var, values=key_actions, width=8, state="readonly").pack(side=tk.LEFT, padx=(0, pad_scale_xy5))
-    ttk.Label(key_row, text="双击:").pack(side=tk.LEFT)
-    ttk.Combobox(key_row, textvariable=key_double_var, values=key_actions, width=8, state="readonly").pack(side=tk.LEFT, padx=(0, pad_scale_xy5))
-    ttk.Label(key_row, text="长按:").pack(side=tk.LEFT)
-    ttk.Combobox(key_row, textvariable=key_long_var, values=key_actions, width=8, state="readonly").pack(side=tk.LEFT)
-    for v in (key_single_var, key_double_var, key_long_var):
-        v.trace_add("write", change_key_action)
-
-    # ---- 子页4：页面内容 ----
-    content_frame = ttk.Frame(settings_notebook)
-    settings_notebook.add(content_frame, text="  页面内容  ")
-
-    # 页面内容内部再分子标签页，避免内容过多拉高界面
-    content_notebook = ttk.Notebook(content_frame)
-    content_notebook.pack(fill=tk.BOTH, expand=True)
-
-    # ==== 子子页：跑马灯 ====
-    marquee_frame = ttk.Frame(content_notebook, padding=(pad_scale_xy5 * 2, pad_scale_xy5 * 2))
-    content_notebook.add(marquee_frame, text="  文字跑马灯  ")
-
-    def change_marquee(*args):
-        global config_obj
-        _ui_set_active()  # 锁定到UI当前设备（避免多屏设置冲突）
-        config_obj.marquee_text = marquee_var.get() or " "
-        config_obj.marquee_color = marquee_color_var.get() or "#ffffff"
-        try:
-            config_obj.marquee_font_size = int(marquee_font_size_var.get())
-        except Exception:
-            config_obj.marquee_font_size = 20
-        try:
-            config_obj.marquee_speed = float(marquee_speed_var.get())
-        except Exception:
-            config_obj.marquee_speed = 2
-        save_config()
-        update_marquee_preview()
-
-    marquee_row = ttk.Frame(marquee_frame)
-    marquee_row.pack(anchor=tk.W, pady=pad_scale_xy5)
-    ttk.Label(marquee_row, text="跑马灯文本:").pack(side=tk.LEFT)
-    marquee_var = tk.StringVar(marquee_frame, config_obj.marquee_text)
-    ttk.Entry(marquee_row, textvariable=marquee_var, width=24).pack(side=tk.LEFT, padx=pad_scale_xy5)
-
-    marquee_size_row = ttk.Frame(marquee_frame)
-    marquee_size_row.pack(anchor=tk.W, pady=pad_scale_xy5)
-    ttk.Label(marquee_size_row, text="字号:").pack(side=tk.LEFT)
-    marquee_font_size_var = tk.IntVar(marquee_frame, 0)
-    marquee_font_size_var.set(config_obj.marquee_font_size)
-    ttk.Spinbox(marquee_size_row, from_=8, to=72, textvariable=marquee_font_size_var, width=5).pack(side=tk.LEFT, padx=pad_scale_xy5)
-
-    marquee_speed_row = ttk.Frame(marquee_frame)
-    marquee_speed_row.pack(anchor=tk.W, pady=pad_scale_xy5)
-    ttk.Label(marquee_speed_row, text="滚动速度:").pack(side=tk.LEFT)
-    marquee_speed_var = tk.DoubleVar(marquee_frame, config_obj.marquee_speed)
-    ttk.Spinbox(marquee_speed_row, from_=1, to=20, increment=1, textvariable=marquee_speed_var, width=5).pack(side=tk.LEFT, padx=pad_scale_xy5)
-    ttk.Label(marquee_speed_row, text="(像素/帧，越大越快)", foreground="gray").pack(side=tk.LEFT)
-
-    marquee_color_row = ttk.Frame(marquee_frame)
-    marquee_color_row.pack(anchor=tk.W, pady=pad_scale_xy5)
-    ttk.Label(marquee_color_row, text="字体颜色:").pack(side=tk.LEFT)
-    marquee_color_var = tk.StringVar(marquee_frame, config_obj.marquee_color)
-    ttk.Entry(marquee_color_row, textvariable=marquee_color_var, width=10).pack(side=tk.LEFT, padx=pad_scale_xy5)
-
-    def pick_marquee_color():
-        color = tkinter.colorchooser.askcolor(color=marquee_color_var.get(), parent=window)
-        if color and color[1]:
-            marquee_color_var.set(color[1])
-
-    ttk.Button(marquee_color_row, text="调色板", padding=pad_scale_xy, command=pick_marquee_color).pack(side=tk.LEFT)
-
-    # 跑马灯实时预览（所见即所得）
-    marquee_preview_canvas = tk.Canvas(marquee_frame, width=(SHOW_WIDTH * scale_factor // 100),
-                                       height=(SHOW_HEIGHT * scale_factor // 100), bg="black", borderwidth=1,
-                                       highlightbackground="gray")
-    marquee_preview_canvas.pack(anchor=tk.W, pady=pad_scale_xy5)
-
-    def update_marquee_preview(*args):
-        try:
-            text = marquee_var.get() or " "
-            font_size = max(8, int(marquee_font_size_var.get()))
-            font_path = "./simhei.ttf"  # 跑马灯字体固定用黑体
-            hex_color = (marquee_color_var.get() or "#ffffff").lstrip('#')
-            color = tuple(int(hex_color[i:i + 2], 16) for i in (0, 2, 4))
-            im1 = Image.new("RGB", (SHOW_WIDTH, SHOW_HEIGHT), (0, 0, 0))
-            draw = ImageDraw.Draw(im1)
-            try:
-                font = MiniMark.load_font(font_path, font_size)
-            except Exception:
-                font = MiniMark.load_font("./simhei.ttf", font_size)
-            draw.text((0, (SHOW_HEIGHT - font_size) // 2), text, fill=color, font=font)
-            im = im1.resize((SHOW_WIDTH * scale_factor // 100, SHOW_HEIGHT * scale_factor // 100),
-                            Image.Resampling.LANCZOS)
-            tk_im = ImageTk.PhotoImage(im)
-            marquee_preview_canvas.delete("all")
-            marquee_preview_canvas.create_image(0, 0, anchor=tk.NW, image=tk_im)
-            marquee_preview_canvas.image = tk_im
-        except Exception:
-            pass
-
-    marquee_var.trace_add("write", change_marquee)
-    marquee_font_size_var.trace_add("write", change_marquee)
-    marquee_color_var.trace_add("write", change_marquee)
-    marquee_speed_var.trace_add("write", change_marquee)
-    update_marquee_preview()
-
-    # ==== 子子页：天气与行情 ====
-    net_frame = ttk.Frame(content_notebook, padding=(pad_scale_xy5 * 2, pad_scale_xy5 * 2))
-    content_notebook.add(net_frame, text="  天气与行情  ")
-
-    def change_weather_city(*args):
-        global config_obj
-        _ui_set_active()  # 锁定到UI当前设备（避免多屏设置冲突）
-        config_obj.weather_city = weather_city_var.get() or "Beijing"
-        save_config()
-        # 实时生效：立即刷新天气数据，若当前在天气页则重绘
-        _refresh_page_now(WEATHER_PAGE_ID, _weather_cache, fetch_weather)
-
-    weather_row = ttk.Frame(net_frame)
-    weather_row.pack(anchor=tk.W, pady=pad_scale_xy5)
-    ttk.Label(weather_row, text="天气城市:").pack(side=tk.LEFT)
-    weather_city_var = tk.StringVar(net_frame, config_obj.weather_city)
-    ttk.Entry(weather_row, textvariable=weather_city_var, width=14).pack(side=tk.LEFT, padx=pad_scale_xy5)
-    weather_city_var.trace_add("write", change_weather_city)
-    ttk.Label(net_frame, text="支持中文城市名，如 北京 或 Beijing", foreground="gray").pack(anchor=tk.W, pady=(0, pad_scale_xy5))
-
-    def change_crypto_symbols(*args):
-        global config_obj
-        _ui_set_active()  # 锁定到UI当前设备（避免多屏设置冲突）
-        config_obj.crypto_symbols = crypto_symbols_var.get() or "BTCUSDT,ETHUSDT"
-        save_config()
-        # 实时生效：立即刷新行情数据，若当前在行情页则重绘
-        _refresh_page_now(CRYPTO_PAGE_ID, _crypto_cache, fetch_crypto)
-
-    crypto_row = ttk.Frame(net_frame)
-    crypto_row.pack(anchor=tk.W, pady=pad_scale_xy5)
-    ttk.Label(crypto_row, text="行情交易对:").pack(side=tk.LEFT)
-    crypto_symbols_var = tk.StringVar(net_frame, config_obj.crypto_symbols)
-    ttk.Entry(crypto_row, textvariable=crypto_symbols_var, width=20).pack(side=tk.LEFT, padx=pad_scale_xy5)
-    crypto_symbols_var.trace_add("write", change_crypto_symbols)
-
-    def change_ping_host(*args):
-        global config_obj
-        _ui_set_active()  # 锁定到UI当前设备（避免多屏设置冲突）
-        config_obj.ping_host = ping_host_var.get() or "223.5.5.5"
-        save_config()
-        # 实时生效：若当前设备在延迟页，触发重绘（ping后台1秒内更新）
-        try:
-            dev = get_current_device()
-            if dev is not None and dev.config is not None and dev.config.state_machine == PING_PAGE_ID:
-                dev.state_change = 1
-        except Exception:
-            pass
-
-    ping_row = ttk.Frame(net_frame)
-    ping_row.pack(anchor=tk.W, pady=pad_scale_xy5)
-    ttk.Label(ping_row, text="延迟测试目标:").pack(side=tk.LEFT)
-    ping_host_var = tk.StringVar(net_frame, config_obj.ping_host)
-    ttk.Entry(ping_row, textvariable=ping_host_var, width=16).pack(side=tk.LEFT, padx=pad_scale_xy5)
-    ping_host_var.trace_add("write", change_ping_host)
-
-    # ==== 子子页：热搜 ====
-    hot_frame = ttk.Frame(content_notebook, padding=(pad_scale_xy5 * 2, pad_scale_xy5 * 2))
-    content_notebook.add(hot_frame, text="  热搜  ")
-
-    def change_hotsearch(*args):
-        global config_obj
-        _ui_set_active()  # 锁定到UI当前设备（避免多屏设置冲突）
-        try:
-            config_obj.hotsearch_count = int(hot_count_var.get())
-        except Exception:
-            pass
-        try:
-            config_obj.hotsearch_total = int(hot_total_var.get())
-        except Exception:
-            pass
-        try:
-            config_obj.hotsearch_font_auto = hot_font_auto_var.get()
-        except Exception:
-            pass
-        try:
-            config_obj.hotsearch_font_size = int(hot_font_size_var.get())
-        except Exception:
-            pass
-        try:
-            config_obj.hotsearch_scroll_enable = hot_scroll_var.get()
-        except Exception:
-            pass
-        try:
-            config_obj.hotsearch_scroll_speed = float(hot_scroll_speed_var.get())
-        except Exception:
-            pass
-        try:
-            config_obj.hotsearch_page_interval = float(hot_page_interval_var.get())
-        except Exception:
-            pass
-        save_config()
-        # 实时同步：若当前设备正显示热搜页，立即触发重绘，调整后所见即所得
-        try:
-            dev = get_current_device()
-            if dev is not None and dev.config is not None and dev.config.state_machine == HOTSEARCH_PAGE_ID:
-                dev.state_change = 1
-        except Exception:
-            pass
-
-    def change_hot_auto_refresh(*args):
-        global config_obj
-        _ui_set_active()  # 锁定到UI当前设备（避免多屏设置冲突）
-        config_obj.hotsearch_auto_refresh = hot_auto_refresh_var.get()
-        save_config()
-
-    def change_hot_interval(*args):
-        global config_obj
-        _ui_set_active()  # 锁定到UI当前设备（避免多屏设置冲突）
-        try:
-            config_obj.hotsearch_interval = int(hotsearch_interval_var.get())
-        except Exception:
-            return
-        save_config()
-
-    # 每页显示条数
-    hot_count_row = ttk.Frame(hot_frame)
-    hot_count_row.pack(anchor=tk.W, pady=pad_scale_xy5)
-    ttk.Label(hot_count_row, text="每页显示条数:").pack(side=tk.LEFT)
-    hot_count_var = tk.IntVar(hot_frame, config_obj.hotsearch_count)
-    ttk.Spinbox(hot_count_row, from_=1, to=10, textvariable=hot_count_var, width=5).pack(side=tk.LEFT, padx=pad_scale_xy5)
-
-    # 抓取总条数
-    hot_total_row = ttk.Frame(hot_frame)
-    hot_total_row.pack(anchor=tk.W, pady=pad_scale_xy5)
-    ttk.Label(hot_total_row, text="抓取总条数:").pack(side=tk.LEFT)
-    hot_total_var = tk.IntVar(hot_frame, config_obj.hotsearch_total)
-    ttk.Spinbox(hot_total_row, from_=1, to=20, textvariable=hot_total_var, width=5).pack(side=tk.LEFT, padx=pad_scale_xy5)
-    ttk.Label(hot_total_row, text="(多于每页条数时自动翻页播放)", foreground="gray").pack(side=tk.LEFT)
-
-    # 字体大小（自动适配屏幕开关 + 手动字号）
-    hot_font_row = ttk.Frame(hot_frame)
-    hot_font_row.pack(anchor=tk.W, pady=pad_scale_xy5)
-    hot_font_auto_var = tk.IntVar(hot_frame, config_obj.hotsearch_font_auto)
-    ttk.Checkbutton(hot_font_row, text="字体自动适配屏幕", variable=hot_font_auto_var).pack(side=tk.LEFT)
-    ttk.Label(hot_font_row, text="字号:").pack(side=tk.LEFT, padx=(pad_scale_xy5, 0))
-    hot_font_size_var = tk.IntVar(hot_frame, config_obj.hotsearch_font_size)
-    hot_font_size_spin = ttk.Spinbox(hot_font_row, from_=8, to=72, textvariable=hot_font_size_var, width=5)
-    hot_font_size_spin.pack(side=tk.LEFT, padx=pad_scale_xy5)
-
-    def _sync_hot_font_state(*args):
-        """自动适配开启时禁用手动字号输入（避免调整无效），并实时同步预览"""
-        try:
-            if hot_font_auto_var.get():
-                hot_font_size_spin.config(state="disabled")
-            else:
-                hot_font_size_spin.config(state="normal")
-        except Exception:
-            pass
-        try:
-            change_hotsearch()
-        except Exception:
-            pass
-    hot_font_auto_var.trace_add("write", _sync_hot_font_state)
-
-    # 长文本滚动字幕（文字太长一屏放不下时自动滚动）
-    hot_scroll_row = ttk.Frame(hot_frame)
-    hot_scroll_row.pack(anchor=tk.W, pady=pad_scale_xy5)
-    hot_scroll_var = tk.IntVar(hot_frame, config_obj.hotsearch_scroll_enable)
-    ttk.Checkbutton(hot_scroll_row, text="长文本自动滚动字幕", variable=hot_scroll_var).pack(side=tk.LEFT)
-    ttk.Label(hot_scroll_row, text="滚动速度:").pack(side=tk.LEFT, padx=(pad_scale_xy5, 0))
-    hot_scroll_speed_var = tk.DoubleVar(hot_frame, config_obj.hotsearch_scroll_speed)
-    ttk.Spinbox(hot_scroll_row, from_=1, to=20, increment=1, textvariable=hot_scroll_speed_var, width=5).pack(side=tk.LEFT, padx=pad_scale_xy5)
-    ttk.Label(hot_frame,
-              text="提示：开启“字体自动适配屏幕”时，字号会自动缩小到全部显示，无需滚动；滚动仅对手动字号的长文本生效。",
-              foreground="gray").pack(anchor=tk.W, pady=(0, pad_scale_xy5))
-
-    # 翻页间隔
-    hot_page_row = ttk.Frame(hot_frame)
-    hot_page_row.pack(anchor=tk.W, pady=pad_scale_xy5)
-    ttk.Label(hot_page_row, text="翻页间隔(秒):").pack(side=tk.LEFT)
-    hot_page_interval_var = tk.DoubleVar(hot_frame, config_obj.hotsearch_page_interval)
-    ttk.Spinbox(hot_page_row, from_=1, to=60, increment=1, textvariable=hot_page_interval_var, width=5).pack(side=tk.LEFT, padx=pad_scale_xy5)
-
-    # 自动刷新
-    hot_refresh_row = ttk.Frame(hot_frame)
-    hot_refresh_row.pack(anchor=tk.W, pady=pad_scale_xy5)
-    hot_auto_refresh_var = tk.IntVar(hot_frame, config_obj.hotsearch_auto_refresh)
-    ttk.Checkbutton(hot_refresh_row, text="自动刷新", variable=hot_auto_refresh_var).pack(side=tk.LEFT)
-    ttk.Label(hot_refresh_row, text="刷新间隔(秒):").pack(side=tk.LEFT, padx=(pad_scale_xy5, 0))
-    hotsearch_interval_var = tk.IntVar(hot_frame, config_obj.hotsearch_interval)
-    ttk.Spinbox(hot_refresh_row, from_=10, to=3600, textvariable=hotsearch_interval_var, width=6).pack(side=tk.LEFT, padx=pad_scale_xy5)
-
-    hot_count_var.trace_add("write", change_hotsearch)
-    hot_total_var.trace_add("write", change_hotsearch)
-    hot_font_auto_var.trace_add("write", change_hotsearch)
-    hot_font_size_var.trace_add("write", change_hotsearch)
-    hot_scroll_var.trace_add("write", change_hotsearch)
-    hot_scroll_speed_var.trace_add("write", change_hotsearch)
-    hot_page_interval_var.trace_add("write", change_hotsearch)
-    hot_auto_refresh_var.trace_add("write", change_hot_auto_refresh)
-    hotsearch_interval_var.trace_add("write", change_hot_interval)
-    # 初始化字号输入框状态（所有变量已定义后调用）
-    _sync_hot_font_state()
-
-    # ==== 子子页：时间 ====
-    time_frame = ttk.Frame(content_notebook, padding=(pad_scale_xy5 * 2, pad_scale_xy5 * 2))
-    content_notebook.add(time_frame, text="  时间  ")
-
-    def change_timer_minutes(*args):
-        global config_obj
-        _ui_set_active()  # 锁定到UI当前设备（避免多屏设置冲突）
-        try:
-            config_obj.timer_minutes = int(timer_minutes_var.get())
-        except Exception:
-            return
-        save_config()
-
-    timer_row = ttk.Frame(time_frame)
-    timer_row.pack(anchor=tk.W, pady=pad_scale_xy5)
-    ttk.Label(timer_row, text="番茄钟时长(分钟):").pack(side=tk.LEFT)
-    timer_minutes_var = tk.IntVar(time_frame, 0)
-    timer_minutes_var.set(config_obj.timer_minutes)
-    ttk.Spinbox(timer_row, from_=1, to=180, textvariable=timer_minutes_var, width=6).pack(side=tk.LEFT, padx=pad_scale_xy5)
-    timer_minutes_var.trace_add("write", change_timer_minutes)
-
-    # 世界时钟时区（每项：名称|UTC偏移，逗号分隔）
-    def change_clock_zones(*args):
-        global config_obj
-        _ui_set_active()  # 锁定到UI当前设备（避免多屏设置冲突）
-        config_obj.clock_zones = clock_zones_var.get() or "北京|8"
-        save_config()
-
-    ttk.Label(time_frame, text="世界时钟时区（每项：名称|UTC偏移，逗号分隔）:").pack(anchor=tk.W)
-    clock_zones_var = tk.StringVar(time_frame, config_obj.clock_zones)
-    ttk.Entry(time_frame, textvariable=clock_zones_var, width=40).pack(anchor=tk.W, fill=tk.X, pady=pad_scale_xy5)
-    clock_zones_var.trace_add("write", change_clock_zones)
-    ttk.Label(time_frame, text="例：北京|8,伦敦|0,纽约|-5,东京|9", foreground="gray").pack(anchor=tk.W, pady=(0, pad_scale_xy5))
-
-    # ==== 子子页：纪念日与待办 ====
-    list_frame = ttk.Frame(content_notebook, padding=(pad_scale_xy5 * 2, pad_scale_xy5 * 2))
-    content_notebook.add(list_frame, text="  纪念日/待办  ")
-
-    # 纪念日（每行一项：名称|MM-DD）
-    ttk.Label(list_frame, text="纪念日（每行一项：名称|月-日，如 生日|01-01）:").pack(anchor=tk.W)
-    memo_text = tk.Text(list_frame, height=6, width=40)
-    memo_text.insert(tk.END, "\n".join(config_obj.memo_items))
-    memo_text.pack(anchor=tk.W, fill=tk.X, pady=pad_scale_xy5)
-
-    # 待办事项（每行一项）
-    ttk.Label(list_frame, text="待办事项（每行一项）:").pack(anchor=tk.W)
-    todo_text = tk.Text(list_frame, height=6, width=40)
-    todo_text.insert(tk.END, "\n".join(config_obj.todo_items))
-    todo_text.pack(anchor=tk.W, fill=tk.X, pady=pad_scale_xy5)
-
-    def save_text_config(*args):
-        global config_obj
-        _ui_set_active()  # 锁定到UI当前设备（避免多屏设置冲突）
-        config_obj.memo_items = [l for l in memo_text.get("1.0", tk.END).split("\n") if l.strip()]
-        config_obj.todo_items = [l for l in todo_text.get("1.0", tk.END).split("\n") if l.strip()]
-        save_config()
-
-    memo_text.bind("<KeyRelease>", save_text_config)
-    todo_text.bind("<KeyRelease>", save_text_config)
-
-    # ==================== 配色方案：通用套用组件 ====================
-    _scheme_combos = []          # 收集所有"配色方案"下拉框，自定义方案变化后统一刷新
-    _scheme_swatch_buttons = []  # 收集所有"色块选择按钮" [(Menubutton, var)]，方案变化后刷新候选色
-    _current_scheme_colors = []  # 当前选中方案的颜色列表（作为各位置色块下拉的候选色）
-
-    def _is_dark_hex(h):
-        """判断颜色深浅，用于色块上文字选黑/白"""
-        try:
-            h = (h or "#ffffff").lstrip('#')
-            r, g, b = (int(h[i:i + 2], 16) for i in (0, 2, 4))
-            return (r * 299 + g * 587 + b * 114) / 1000 < 140
-        except Exception:
-            return False
-
-    def _build_scheme_menu(anchor, var=None):
-        """构建色块菜单：每项=当前方案的一种颜色（色块显示），点击把颜色写入 var"""
-        menu = tk.Menu(anchor, tearoff=0)
-        colors = _current_scheme_colors or []
-        if not colors:
-            menu.add_command(label="（未选择配色方案）", state="disabled")
-        for c in colors:
-            try:
-                fg = "#ffffff" if _is_dark_hex(c) else "#000000"
-                menu.add_command(label="      ", background=c, foreground=fg,
-                                 command=(lambda col=c: var.set(col)) if var is not None else (lambda: None))
-            except Exception:
-                pass
-        return menu
-
-    def _make_swatch_button(parent, var):
-        """生成色块选择按钮：点击弹出当前方案的颜色色块菜单，选择后写入 var"""
-        mb = tk.Menubutton(parent, text="☰", relief="raised", width=2)
-        _scheme_swatch_buttons.append((mb, var))
-        mb.configure(menu=_build_scheme_menu(mb, var))
-        return mb
-
-    def _refresh_scheme_swatches():
-        """方案变化后刷新所有色块按钮的候选色菜单"""
-        for mb, var in _scheme_swatch_buttons:
-            try:
-                mb.configure(menu=_build_scheme_menu(mb, var))
-            except Exception:
-                pass
-
-    def _save_current_scheme(vars_):
-        """把当前各颜色位置的取值收集为新方案，弹窗命名保存（支持混搭配色）"""
-        colors = []
-        for v in vars_:
-            c = (v.get() or "").strip()
-            if not c:
-                continue
-            colors.append(c if c.startswith("#") else "#" + c)
-        parsed = parse_color_list(",".join(colors))
-        if not parsed:
-            insert_text_message("保存失败：当前没有有效的颜色值")
-            return
-        res = _scheme_dialog("保存当前配色为新方案", colors_text=",".join(parsed))
-        if not res or not res.get("name"):
-            return
-        _ui_set_active()
-        config_obj.custom_color_schemes = config_obj.custom_color_schemes or {}
-        config_obj.custom_color_schemes[res["name"]] = parsed
-        save_config()
-        _refresh_scheme_page()
-        _refresh_scheme_combos()
-        insert_text_message("已保存新配色方案：%s" % res["name"])
-
-    def _make_scheme_row(frame, vars_):
-        """配色方案选择行：选方案仅提供候选色板（各颜色行后的色块下拉可选该方案颜色），不自动套用；
-        并提供"存为新方案"按钮，把当前各位置颜色组合保存为新方案。"""
-        row = ttk.Frame(frame)
-        row.pack(anchor=tk.W, pady=(0, pad_scale_xy5))
-        ttk.Label(row, text="配色方案:").pack(side=tk.LEFT)
-        var = tk.StringVar(frame, "")
-        combo = ttk.Combobox(row, textvariable=var, width=18, state="readonly")
-        combo.pack(side=tk.LEFT, padx=pad_scale_xy5)
-        ttk.Label(row, text="选方案后，各颜色后的色块下拉可选该方案颜色", foreground="gray").pack(side=tk.LEFT)
-        ttk.Button(row, text="存为新方案", padding=pad_scale_xy,
-                   command=lambda: _save_current_scheme(vars_)).pack(side=tk.LEFT, padx=(pad_scale_xy5, 0))
-
-        def _on_select(event=None):
-            schemes = get_all_color_schemes(config_obj)
-            colors = schemes.get(var.get(), [])
-            _current_scheme_colors[:] = colors
-            _refresh_scheme_swatches()
-        combo.bind("<<ComboboxSelected>>", _on_select)
-        _scheme_combos.append(combo)
-        combo["values"] = list(get_all_color_schemes(config_obj).keys())
-        return combo
-
-    def _refresh_scheme_combos():
-        """自定义配色方案增删改后，刷新所有配色方案下拉框的选项"""
-        names = list(get_all_color_schemes(config_obj).keys())
-        for combo in _scheme_combos:
-            combo["values"] = names
-
-    # ---- 子页：配色方案（管理，独立标签） ----
-    scheme_frame = ttk.Frame(settings_notebook, padding=(pad_scale_xy5 * 2, pad_scale_xy5 * 2))
-    settings_notebook.add(scheme_frame, text="  配色方案  ")
-
-    ttk.Label(scheme_frame, text="选择配色方案预览；内置方案只读，可新增/编辑/删除自定义方案：").pack(anchor=tk.W, pady=(0, pad_scale_xy5))
-
-    scheme_row = ttk.Frame(scheme_frame)
-    scheme_row.pack(anchor=tk.W, pady=pad_scale_xy5)
-    ttk.Label(scheme_row, text="方案:").pack(side=tk.LEFT)
-    scheme_var = tk.StringVar(scheme_frame, "")
-    scheme_combo = ttk.Combobox(scheme_row, textvariable=scheme_var, width=24, state="readonly")
-    scheme_combo.pack(side=tk.LEFT, padx=pad_scale_xy5)
-    scheme_canvas = tk.Canvas(scheme_frame, height=28, bg="white", highlightthickness=1)
-    scheme_canvas.pack(fill=tk.X, pady=pad_scale_xy5)
-
-    def _draw_scheme_preview(event=None):
-        schemes = get_all_color_schemes(config_obj)
-        colors = schemes.get(scheme_var.get(), [])
-        scheme_canvas.delete("all")
-        w = scheme_canvas.winfo_width()
-        if w <= 1:
-            w = 380
-        n = max(1, len(colors))
-        cw = max(1, w // n)
-        for i, c in enumerate(colors):
-            scheme_canvas.create_rectangle(i * cw, 0, (i + 1) * cw, 28, fill=c, outline="")
-
-    def _refresh_scheme_page():
-        schemes = get_all_color_schemes(config_obj)
-        names = list(schemes.keys())
-        scheme_combo["values"] = names
-        if scheme_var.get() not in names:
-            scheme_var.set(names[0] if names else "")
-        _draw_scheme_preview()
-
-    scheme_combo.bind("<<ComboboxSelected>>", _draw_scheme_preview)
-
-    def _scheme_dialog(title, name="", colors_text=""):
-        """配色方案编辑对话框，返回 {'name':..,'colors':..} 或 None"""
-        dlg = tk.Toplevel(window)
-        dlg.title(title)
-        dlg.transient(window)
-        dlg.grab_set()
-        dlg.resizable(False, False)
-        frm = ttk.Frame(dlg, padding=(pad_scale_xy5 * 2, pad_scale_xy5 * 2))
-        frm.pack(fill=tk.BOTH, expand=True)
-        ttk.Label(frm, text="方案名称:").pack(anchor=tk.W)
-        name_var = tk.StringVar(frm, name)
-        ttk.Entry(frm, textvariable=name_var, width=30).pack(anchor=tk.W, pady=(pad_scale_xy5, 0))
-        ttk.Label(frm, text="颜色列表（#rrggbb，逗号分隔）:").pack(anchor=tk.W, pady=(pad_scale_xy5, 0))
-        colors_var = tk.StringVar(frm, colors_text)
-        ttk.Entry(frm, textvariable=colors_var, width=44).pack(anchor=tk.W, pady=(pad_scale_xy5, 0))
-        ttk.Label(frm, text="示例：#ffb3ba,#baffc9,#bae1ff,#ddbaff,#ffd6ba,#ffffba",
-                  foreground="gray").pack(anchor=tk.W, pady=(pad_scale_xy5, 0))
-        result = {}
-        def _ok():
-            result["name"] = name_var.get().strip()
-            result["colors"] = colors_var.get().strip()
-            dlg.destroy()
-        def _cancel():
-            dlg.destroy()
-        btn_row = ttk.Frame(frm)
-        btn_row.pack(anchor=tk.E, pady=(pad_scale_xy5, 0))
-        ttk.Button(btn_row, text="确定", padding=pad_scale_xy, command=_ok).pack(side=tk.LEFT, padx=(0, pad_scale_xy5))
-        ttk.Button(btn_row, text="取消", padding=pad_scale_xy, command=_cancel).pack(side=tk.LEFT)
-        dlg.wait_window()
-        return result if result else None
-
-    def add_custom_scheme():
-        res = _scheme_dialog("新增配色方案")
-        if not res or not res.get("name"):
-            return
-        colors = parse_color_list(res.get("colors", ""))
-        if not colors:
-            insert_text_message("新增失败：颜色列表为空或格式不正确")
-            return
-        _ui_set_active()
-        config_obj.custom_color_schemes = config_obj.custom_color_schemes or {}
-        config_obj.custom_color_schemes[res["name"]] = colors
-        save_config()
-        scheme_var.set(res["name"])
-        _refresh_scheme_page()
-        _refresh_scheme_combos()
-
-    def edit_custom_scheme():
-        name = scheme_var.get()
-        if name in BUILTIN_COLOR_SCHEMES:
-            insert_text_message("内置方案不可编辑")
-            return
-        custom = getattr(config_obj, "custom_color_schemes", {}) or {}
-        res = _scheme_dialog("编辑配色方案", name, ",".join(custom.get(name, [])))
-        if not res or not res.get("name"):
-            return
-        colors = parse_color_list(res.get("colors", ""))
-        if not colors:
-            insert_text_message("保存失败：颜色列表为空或格式不正确")
-            return
-        _ui_set_active()
-        config_obj.custom_color_schemes = config_obj.custom_color_schemes or {}
-        if res["name"] != name and name in config_obj.custom_color_schemes:
-            del config_obj.custom_color_schemes[name]
-        config_obj.custom_color_schemes[res["name"]] = colors
-        save_config()
-        scheme_var.set(res["name"])
-        _refresh_scheme_page()
-        _refresh_scheme_combos()
-
-    def del_custom_scheme():
-        name = scheme_var.get()
-        if name in BUILTIN_COLOR_SCHEMES:
-            insert_text_message("内置方案不可删除")
-            return
-        if not tk.messagebox.askyesno("删除配色方案", "确定删除「%s」？" % name, parent=window):
-            return
-        _ui_set_active()
-        config_obj.custom_color_schemes = config_obj.custom_color_schemes or {}
-        config_obj.custom_color_schemes.pop(name, None)
-        save_config()
-        _refresh_scheme_page()
-        _refresh_scheme_combos()
-
-    btn_row = ttk.Frame(scheme_frame)
-    btn_row.pack(anchor=tk.W, pady=pad_scale_xy5)
-    ttk.Button(btn_row, text="新增方案", padding=pad_scale_xy, command=add_custom_scheme).pack(side=tk.LEFT, padx=(0, pad_scale_xy5))
-    ttk.Button(btn_row, text="编辑当前", padding=pad_scale_xy, command=edit_custom_scheme).pack(side=tk.LEFT, padx=(0, pad_scale_xy5))
-    ttk.Button(btn_row, text="删除当前", padding=pad_scale_xy, command=del_custom_scheme).pack(side=tk.LEFT)
-    ttk.Label(btn_row, text="（内置方案只读）", foreground="gray").pack(side=tk.LEFT, padx=pad_scale_xy5)
-    _refresh_scheme_page()
-
-    # ---- 子页4.5：监控显示 ----
-    monitor_frame = ttk.Frame(settings_notebook)
-    settings_notebook.add(monitor_frame, text="  监控显示  ")
-    # 监控显示内部再分子标签页，避免内容过多拥挤（后续新增监控项也便于扩展）
-    monitor_notebook = ttk.Notebook(monitor_frame)
-    monitor_notebook.pack(fill=tk.BOTH, expand=True)
-
-    # ==== 子子页：进程 ====
-    proc_frame = ttk.Frame(monitor_notebook, padding=(pad_scale_xy5 * 2, pad_scale_xy5 * 2))
-    monitor_notebook.add(proc_frame, text="  进程  ")
-
-    def change_proc_count(*args):
-        global config_obj
-        _ui_set_active()  # 锁定到UI当前设备（避免多屏设置冲突）
-        try:
-            config_obj.proc_count = int(proc_count_var.get())
-        except Exception:
-            return
-        save_config()
-
-    proc_row = ttk.Frame(proc_frame)
-    proc_row.pack(anchor=tk.W, pady=pad_scale_xy5)
-    ttk.Label(proc_row, text="进程TOP显示数量:").pack(side=tk.LEFT)
-    proc_count_var = tk.IntVar(proc_frame, 0)
-    proc_count_var.set(config_obj.proc_count)
-    ttk.Spinbox(proc_row, from_=1, to=30, textvariable=proc_count_var, width=5).pack(side=tk.LEFT, padx=pad_scale_xy5)
-    proc_count_var.trace_add("write", change_proc_count)
-
-    # ==== 子子页：硬件详情 ====
-    hw_frame = ttk.Frame(monitor_notebook, padding=(pad_scale_xy5 * 2, pad_scale_xy5 * 2))
-    monitor_notebook.add(hw_frame, text="  硬件详情  ")
-
-    def change_hwdetail_max(*args):
-        global config_obj
-        _ui_set_active()  # 锁定到UI当前设备（避免多屏设置冲突）
-        try:
-            config_obj.hwdetail_max = int(hwdetail_max_var.get())
-        except Exception:
-            return
-        save_config()
-
-    hw_row = ttk.Frame(hw_frame)
-    hw_row.pack(anchor=tk.W, pady=pad_scale_xy5)
-    ttk.Label(hw_row, text="硬件详情显示数量:").pack(side=tk.LEFT)
-    hwdetail_max_var = tk.IntVar(hw_frame, 0)
-    hwdetail_max_var.set(config_obj.hwdetail_max)
-    ttk.Spinbox(hw_row, from_=1, to=30, textvariable=hwdetail_max_var, width=5).pack(side=tk.LEFT, padx=pad_scale_xy5)
-    hwdetail_max_var.trace_add("write", change_hwdetail_max)
-
-    # 硬件详情监控类型（用户自选监控哪些硬件传感器类型）
-    def change_hwdetail_types(*args):
-        global config_obj
-        _ui_set_active()  # 锁定到UI当前设备（避免多屏设置冲突）
-        sel = [t for t, v in hwdetail_type_vars.items() if v.get()]
-        config_obj.hwdetail_types = ",".join(sel) or "Temperature"
-        save_config()
-
-    ttk.Label(hw_frame, text="硬件详情监控类型:").pack(anchor=tk.W, pady=(pad_scale_xy5, 0))
-    hwdetail_type_vars = {}
-    hw_type_row = ttk.Frame(hw_frame)
-    hw_type_row.pack(anchor=tk.W, pady=pad_scale_xy5)
-    for t in ("Temperature", "Fan", "Voltage", "Load", "Power"):
-        var = tk.IntVar(hw_frame, t in (config_obj.hwdetail_types or "").split(","))
-        hwdetail_type_vars[t] = var
-        ttk.Checkbutton(hw_type_row, text=t, variable=var, command=change_hwdetail_types).pack(side=tk.LEFT, padx=(0, pad_scale_xy5))
-
-    # 自由选择传感器（LibreHardwareMonitor 全部传感器可勾选，覆盖按类型自动选择）
-    if not windll.shell32.IsUserAnAdmin():
-        ttk.Label(hw_frame, text="⚠ 主板传感器(CPU温度/主板温度/风扇)需以管理员身份运行才能读取",
-                  foreground="#c00000").pack(anchor=tk.W, pady=(0, pad_scale_xy5))
-
-    sensor_sel_row = ttk.Frame(hw_frame)
-    sensor_sel_row.pack(anchor=tk.W, pady=pad_scale_xy5)
-    ttk.Label(sensor_sel_row, text="自由选择传感器:").pack(side=tk.LEFT)
-    ttk.Button(sensor_sel_row, text="选择传感器…", padding=pad_scale_xy,
-               command=lambda: _open_sensor_picker(
-                   window, "multi", "选择硬件详情传感器", "hwdetail_sensor_names", None,
-                   "勾选要显示的传感器（不勾选则按上方类型自动选择）",
-                   on_done=_refresh_hw_sensor_info)
-               ).pack(side=tk.LEFT, padx=pad_scale_xy5)
-    hw_sensor_info_var = tk.StringVar(hw_frame, value="")
-    ttk.Label(hw_frame, textvariable=hw_sensor_info_var, foreground="#808080").pack(anchor=tk.W)
-
-    def _refresh_hw_sensor_info():
-        names = [n.strip() for n in (config_obj.hwdetail_sensor_names or "").split(",") if n.strip()]
-        if names:
-            shown = "、".join(names[:3]) + ("…" if len(names) > 3 else "")
-            hw_sensor_info_var.set("已选 %d 个：%s" % (len(names), shown))
-        else:
-            hw_sensor_info_var.set("未选择（按上方类型自动选择）")
-    _refresh_hw_sensor_info()
-
-    # ==== 子子页：仪表盘 ====
-    gauge_frame = ttk.Frame(monitor_notebook, padding=(pad_scale_xy5 * 2, pad_scale_xy5 * 2))
-    monitor_notebook.add(gauge_frame, text="  仪表盘  ")
-
-    ttk.Label(gauge_frame, text="仪表盘显示项目与颜色（多于一页自动翻页）:").pack(anchor=tk.W, pady=(0, pad_scale_xy5))
-
-    def change_gauge(*args):
-        global config_obj
-        _ui_set_active()  # 锁定到UI当前设备（避免多屏设置冲突）
-        config_obj.gauge_show_cpu = gauge_cpu_var.get()
-        config_obj.gauge_show_mem = gauge_mem_var.get()
-        config_obj.gauge_show_disk = gauge_disk_var.get()
-        config_obj.gauge_show_cpu_temp = gauge_cpu_temp_var.get()
-        config_obj.gauge_show_gpu = gauge_gpu_var.get()
-        config_obj.gauge_show_gpu_temp = gauge_gpu_temp_var.get()
-        config_obj.gauge_show_fan = gauge_fan_var.get()
-        config_obj.gauge_show_upload = gauge_upload_var.get()
-        config_obj.gauge_show_download = gauge_download_var.get()
-        config_obj.gauge_cpu_color = gauge_cpu_color_var.get()
-        config_obj.gauge_mem_color = gauge_mem_color_var.get()
-        config_obj.gauge_disk_color = gauge_disk_color_var.get()
-        config_obj.gauge_cpu_temp_color = gauge_cpu_temp_color_var.get()
-        config_obj.gauge_gpu_color = gauge_gpu_color_var.get()
-        config_obj.gauge_gpu_temp_color = gauge_gpu_temp_color_var.get()
-        config_obj.gauge_fan_color = gauge_fan_color_var.get()
-        config_obj.gauge_upload_color = gauge_upload_color_var.get()
-        config_obj.gauge_download_color = gauge_download_color_var.get()
-        save_config()
-
-    gauge_cpu_var = tk.IntVar(gauge_frame, config_obj.gauge_show_cpu)
-    gauge_mem_var = tk.IntVar(gauge_frame, config_obj.gauge_show_mem)
-    gauge_disk_var = tk.IntVar(gauge_frame, config_obj.gauge_show_disk)
-    gauge_cpu_temp_var = tk.IntVar(gauge_frame, config_obj.gauge_show_cpu_temp)
-    gauge_gpu_var = tk.IntVar(gauge_frame, config_obj.gauge_show_gpu)
-    gauge_gpu_temp_var = tk.IntVar(gauge_frame, config_obj.gauge_show_gpu_temp)
-    gauge_fan_var = tk.IntVar(gauge_frame, config_obj.gauge_show_fan)
-    gauge_upload_var = tk.IntVar(gauge_frame, config_obj.gauge_show_upload)
-    gauge_download_var = tk.IntVar(gauge_frame, config_obj.gauge_show_download)
-
-    def _pick_gauge_color(var):
-        color = tkinter.colorchooser.askcolor(color=var.get(), parent=window)
-        if color and color[1]:
-            var.set(color[1])
-
-    def _make_gauge_row(label, var, color_var, sensor_key=None, sensor_filter=None):
-        row = ttk.Frame(gauge_frame)
-        row.pack(anchor=tk.W, pady=pad_scale_xy5)
-        ttk.Checkbutton(row, text=label, variable=var, command=change_gauge).pack(side=tk.LEFT)
-        ttk.Entry(row, textvariable=color_var, width=9).pack(side=tk.LEFT, padx=pad_scale_xy5)
-        ttk.Button(row, text="颜色", padding=pad_scale_xy, command=lambda: _pick_gauge_color(color_var)).pack(side=tk.LEFT)
-        _make_swatch_button(row, color_var).pack(side=tk.LEFT, padx=(pad_scale_xy5, 0))
-        if sensor_key:
-            ttk.Button(row, text="传感器", padding=pad_scale_xy,
-                       command=lambda: _open_sensor_picker(
-                           window, "single", "选择%s传感器" % label, sensor_key, sensor_filter,
-                           "选择用于 %s 的传感器（选“自动检测”则程序自动识别）" % label)
-                       ).pack(side=tk.LEFT, padx=(pad_scale_xy5, 0))
-        return color_var
-
-    gauge_cpu_color_var = _make_gauge_row("CPU", gauge_cpu_var, tk.StringVar(gauge_frame, config_obj.gauge_cpu_color))
-    gauge_mem_color_var = _make_gauge_row("内存", gauge_mem_var, tk.StringVar(gauge_frame, config_obj.gauge_mem_color))
-    gauge_disk_color_var = _make_gauge_row("磁盘", gauge_disk_var, tk.StringVar(gauge_frame, config_obj.gauge_disk_color))
-    gauge_cpu_temp_color_var = _make_gauge_row("CPU温度", gauge_cpu_temp_var, tk.StringVar(gauge_frame, config_obj.gauge_cpu_temp_color), "gauge_cpu_temp_sensor", "Temperature")
-    gauge_gpu_color_var = _make_gauge_row("GPU", gauge_gpu_var, tk.StringVar(gauge_frame, config_obj.gauge_gpu_color), "gauge_gpu_load_sensor", "Load")
-    gauge_gpu_temp_color_var = _make_gauge_row("GPU温度", gauge_gpu_temp_var, tk.StringVar(gauge_frame, config_obj.gauge_gpu_temp_color), "gauge_gpu_temp_sensor", "Temperature")
-    gauge_fan_color_var = _make_gauge_row("风扇", gauge_fan_var, tk.StringVar(gauge_frame, config_obj.gauge_fan_color), "gauge_fan_sensor", "Fan")
-    gauge_upload_color_var = _make_gauge_row("上传", gauge_upload_var, tk.StringVar(gauge_frame, config_obj.gauge_upload_color))
-    gauge_download_color_var = _make_gauge_row("下载", gauge_download_var, tk.StringVar(gauge_frame, config_obj.gauge_download_color))
-
-    for v in (gauge_cpu_color_var, gauge_mem_color_var, gauge_disk_color_var,
-              gauge_cpu_temp_color_var, gauge_gpu_color_var, gauge_gpu_temp_color_var,
-              gauge_fan_color_var, gauge_upload_color_var, gauge_download_color_var):
-        v.trace_add("write", change_gauge)
-    _make_scheme_row(gauge_frame, [gauge_cpu_color_var, gauge_mem_color_var, gauge_disk_color_var,
-                                   gauge_cpu_temp_color_var, gauge_gpu_color_var, gauge_gpu_temp_color_var,
-                                   gauge_fan_color_var, gauge_upload_color_var, gauge_download_color_var])
-
-    # ==== 子子页：磁盘读写 ====
-    disk_frame = ttk.Frame(monitor_notebook, padding=(pad_scale_xy5 * 2, pad_scale_xy5 * 2))
-    monitor_notebook.add(disk_frame, text="  磁盘读写  ")
-
-    def change_diskio(*args):
-        global config_obj
-        _ui_set_active()  # 锁定到UI当前设备（避免多屏设置冲突）
-        config_obj.diskio_mode = diskio_mode_var.get()
-        config_obj.diskio_show_title = diskio_show_title_var.get()
-        config_obj.diskio_font_auto = diskio_font_auto_var.get()
-        try:
-            config_obj.diskio_font_size = int(diskio_font_size_var.get())
-        except Exception:
-            pass
-        config_obj.diskio_title_color = diskio_title_color_var.get() or "#ffffff"
-        config_obj.diskio_read_color = diskio_read_color_var.get() or "#ff8000"
-        config_obj.diskio_write_color = diskio_write_color_var.get() or "#00ffff"
-        config_obj.diskio_label_color = diskio_label_color_var.get() or "#ffffff"
-        config_obj.diskio_value_read_color = diskio_value_read_color_var.get() or "#ff8000"
-        config_obj.diskio_value_write_color = diskio_value_write_color_var.get() or "#00ffff"
-        config_obj.diskio_value_auto = diskio_value_auto_var.get()
-        try:
-            config_obj.diskio_value_font_size = int(diskio_value_font_size_var.get())
-        except Exception:
-            pass
-        config_obj.diskio_bar1_color = diskio_bar1_color_var.get() or "#eb8b8b"
-        config_obj.diskio_bar2_color = diskio_bar2_color_var.get() or "#92d3d9"
-        save_config()
-        _sync_diskio_ui_state()
-
-    def _pick_diskio_color(var):
-        color = tkinter.colorchooser.askcolor(color=var.get(), parent=window)
-        if color and color[1]:
-            var.set(color[1])
-
-    def _make_diskio_color_row(frame, label, var):
-        row = ttk.Frame(frame)
-        row.pack(anchor=tk.W, pady=pad_scale_xy5)
-        ttk.Label(row, text=label).pack(side=tk.LEFT)
-        ttk.Entry(row, textvariable=var, width=9).pack(side=tk.LEFT, padx=pad_scale_xy5)
-        ttk.Button(row, text="颜色", padding=pad_scale_xy,
-                   command=lambda: _pick_diskio_color(var)).pack(side=tk.LEFT)
-        _make_swatch_button(row, var).pack(side=tk.LEFT, padx=(pad_scale_xy5, 0))
-        return row
-
-    # 显示模式（顶部，始终可见）
-    mode_row = ttk.Frame(disk_frame)
-    mode_row.pack(anchor=tk.W, pady=(0, pad_scale_xy5))
-    ttk.Label(mode_row, text="显示模式:").pack(side=tk.LEFT)
-    diskio_mode_var = tk.StringVar(disk_frame, config_obj.diskio_mode)
-    diskio_mode_cb = ttk.Combobox(mode_row, textvariable=diskio_mode_var,
-                                  values=["经典", "经典2", "网速样式"], width=10, state="readonly")
-    diskio_mode_cb.pack(side=tk.LEFT, padx=pad_scale_xy5)
-    diskio_mode_var.trace_add("write", change_diskio)
-    ttk.Label(mode_row, text="选中后自动跳转到对应样式标签", foreground="gray").pack(side=tk.LEFT)
-
-    # 磁盘读写内部按样式分标签页，避免单页内容过高
-    disk_notebook = ttk.Notebook(disk_frame)
-    disk_notebook.pack(fill=tk.BOTH, expand=True, pady=(pad_scale_xy5, 0))
-
-    # ---- 标签1：经典模式 ----
-    classic_tab = ttk.Frame(disk_notebook, padding=(pad_scale_xy5 * 2, pad_scale_xy5 * 2))
-    disk_notebook.add(classic_tab, text="  经典模式  ")
-
-    diskio_show_title_var = tk.IntVar(classic_tab, config_obj.diskio_show_title)
-    diskio_show_title_cb = ttk.Checkbutton(classic_tab, text="显示标题“磁盘读写”",
-                                           variable=diskio_show_title_var, command=change_diskio)
-    diskio_show_title_cb.pack(anchor=tk.W, pady=pad_scale_xy5)
-
-    font_auto_row = ttk.Frame(classic_tab)
-    font_auto_row.pack(anchor=tk.W, pady=pad_scale_xy5)
-    diskio_font_auto_var = tk.IntVar(classic_tab, config_obj.diskio_font_auto)
-    diskio_font_auto_cb = ttk.Checkbutton(font_auto_row, text="字号自适应屏幕",
-                                          variable=diskio_font_auto_var, command=change_diskio)
-    diskio_font_auto_cb.pack(side=tk.LEFT)
-    ttk.Label(font_auto_row, text="  手动字号:").pack(side=tk.LEFT)
-    diskio_font_size_var = tk.IntVar(classic_tab, config_obj.diskio_font_size)
-    diskio_font_size_spin = ttk.Spinbox(font_auto_row, from_=8, to=72, textvariable=diskio_font_size_var, width=5)
-    diskio_font_size_spin.pack(side=tk.LEFT, padx=pad_scale_xy5)
-    diskio_font_size_var.trace_add("write", change_diskio)
-
-    diskio_title_color_var = tk.StringVar(classic_tab, config_obj.diskio_title_color)
-    diskio_read_color_var = tk.StringVar(classic_tab, config_obj.diskio_read_color)
-    diskio_write_color_var = tk.StringVar(classic_tab, config_obj.diskio_write_color)
-    classic_color_rows = [
-        _make_diskio_color_row(classic_tab, "标题颜色:", diskio_title_color_var),
-        _make_diskio_color_row(classic_tab, "读 颜色:", diskio_read_color_var),
-        _make_diskio_color_row(classic_tab, "写 颜色:", diskio_write_color_var),
-    ]
-    _make_scheme_row(classic_tab, [diskio_title_color_var, diskio_read_color_var, diskio_write_color_var])
-
-    # ---- 标签2：经典2样式（仿网络流量布局） ----
-    classic2_tab = ttk.Frame(disk_notebook, padding=(pad_scale_xy5 * 2, pad_scale_xy5 * 2))
-    disk_notebook.add(classic2_tab, text="  经典2样式  ")
-
-    ttk.Label(classic2_tab, text="与网络流量页面的字体大小、布局、颜色完全一致（标签为读/写）",
-              wraplength=340, justify=tk.LEFT).pack(anchor=tk.W, pady=pad_scale_xy5)
-    ttk.Label(classic2_tab, text="颜色自动跟随「网络流量」页面的当前配色（经典=通用文字颜色+默认柱色；自定义=独立配色），无需单独配置。",
-              foreground="gray", wraplength=340, justify=tk.LEFT).pack(anchor=tk.W, pady=pad_scale_xy5)
-
-    # ---- 标签3：网速样式 ----
-    netspeed_tab = ttk.Frame(disk_notebook, padding=(pad_scale_xy5 * 2, pad_scale_xy5 * 2))
-    disk_notebook.add(netspeed_tab, text="  网速样式  ")
-
-    ttk.Label(netspeed_tab, text="带实时柱状图").pack(anchor=tk.W, pady=(0, pad_scale_xy5))
-    val_font_row = ttk.Frame(netspeed_tab)
-    val_font_row.pack(anchor=tk.W, pady=pad_scale_xy5)
-    diskio_value_auto_var = tk.IntVar(netspeed_tab, config_obj.diskio_value_auto)
-    diskio_value_auto_cb = ttk.Checkbutton(val_font_row, text="字号自适应屏幕",
-                                           variable=diskio_value_auto_var, command=change_diskio)
-    diskio_value_auto_cb.pack(side=tk.LEFT)
-    ttk.Label(val_font_row, text="  手动字号:").pack(side=tk.LEFT)
-    diskio_value_font_size_var = tk.IntVar(netspeed_tab, config_obj.diskio_value_font_size)
-    diskio_value_font_size_spin = ttk.Spinbox(val_font_row, from_=8, to=40, textvariable=diskio_value_font_size_var, width=5)
-    diskio_value_font_size_spin.pack(side=tk.LEFT, padx=pad_scale_xy5)
-    diskio_value_font_size_var.trace_add("write", change_diskio)
-
-    diskio_label_color_var = tk.StringVar(netspeed_tab, config_obj.diskio_label_color)
-    diskio_value_read_color_var = tk.StringVar(netspeed_tab, config_obj.diskio_value_read_color)
-    diskio_value_write_color_var = tk.StringVar(netspeed_tab, config_obj.diskio_value_write_color)
-    diskio_bar1_color_var = tk.StringVar(netspeed_tab, config_obj.diskio_bar1_color)
-    diskio_bar2_color_var = tk.StringVar(netspeed_tab, config_obj.diskio_bar2_color)
-    netspeed_color_rows = [
-        _make_diskio_color_row(netspeed_tab, "标签颜色:", diskio_label_color_var),
-        _make_diskio_color_row(netspeed_tab, "读数值颜色:", diskio_value_read_color_var),
-        _make_diskio_color_row(netspeed_tab, "写数值颜色:", diskio_value_write_color_var),
-        _make_diskio_color_row(netspeed_tab, "读柱颜色:", diskio_bar1_color_var),
-        _make_diskio_color_row(netspeed_tab, "写柱颜色:", diskio_bar2_color_var),
-    ]
-    _make_scheme_row(netspeed_tab, [diskio_label_color_var, diskio_value_read_color_var,
-                                    diskio_value_write_color_var, diskio_bar1_color_var, diskio_bar2_color_var])
-    for v in (diskio_title_color_var, diskio_read_color_var, diskio_write_color_var,
-              diskio_label_color_var, diskio_value_read_color_var, diskio_value_write_color_var,
-              diskio_bar1_color_var, diskio_bar2_color_var):
-        v.trace_add("write", change_diskio)
-
-    def _sync_diskio_ui_state():
-        """根据显示模式自动切到对应样式标签"""
-        mode = diskio_mode_var.get()
-        if mode == "经典2":
-            disk_notebook.select(classic2_tab)
-        elif mode == "网速样式":
-            disk_notebook.select(netspeed_tab)
-        else:
-            disk_notebook.select(classic_tab)
-    _sync_diskio_ui_state()
-
-    # ==== 子子页：网络流量 ====
-    net_frame = ttk.Frame(monitor_notebook, padding=(pad_scale_xy5 * 2, pad_scale_xy5 * 2))
-    monitor_notebook.add(net_frame, text="  网络流量  ")
-
-    def change_netspeed_color(*args):
-        global config_obj
-        _ui_set_active()  # 锁定到UI当前设备（避免多屏设置冲突）
-        config_obj.netspeed_mode = netspeed_mode_var.get()
-        config_obj.netspeed_up_color = netspeed_up_color_var.get() or "#ff8000"
-        config_obj.netspeed_down_color = netspeed_down_color_var.get() or "#00ffff"
-        config_obj.netspeed_bar1_color = netspeed_bar1_color_var.get() or "#eb8b8b"
-        config_obj.netspeed_bar2_color = netspeed_bar2_color_var.get() or "#92d3d9"
-        save_config()
-        _sync_netspeed_ui_state()
-
-    # 显示模式
-    net_mode_row = ttk.Frame(net_frame)
-    net_mode_row.pack(anchor=tk.W, pady=pad_scale_xy5)
-    ttk.Label(net_mode_row, text="显示模式:").pack(side=tk.LEFT)
-    netspeed_mode_var = tk.StringVar(net_frame, config_obj.netspeed_mode)
-    netspeed_mode_cb = ttk.Combobox(net_mode_row, textvariable=netspeed_mode_var,
-                                    values=["经典", "自定义"], width=10, state="readonly")
-    netspeed_mode_cb.pack(side=tk.LEFT, padx=pad_scale_xy5)
-    netspeed_mode_var.trace_add("write", change_netspeed_color)
-    ttk.Label(net_mode_row, text="经典=修改前样式，自定义=全部颜色独立", foreground="gray").pack(side=tk.LEFT)
-
-    netspeed_up_color_var = tk.StringVar(net_frame, config_obj.netspeed_up_color)
-    netspeed_down_color_var = tk.StringVar(net_frame, config_obj.netspeed_down_color)
-    netspeed_bar1_color_var = tk.StringVar(net_frame, config_obj.netspeed_bar1_color)
-    netspeed_bar2_color_var = tk.StringVar(net_frame, config_obj.netspeed_bar2_color)
-    netspeed_color_rows = [
-        _make_diskio_color_row(net_frame, "上传文字颜色:", netspeed_up_color_var),
-        _make_diskio_color_row(net_frame, "下载文字颜色:", netspeed_down_color_var),
-        _make_diskio_color_row(net_frame, "上传柱颜色:", netspeed_bar1_color_var),
-        _make_diskio_color_row(net_frame, "下载柱颜色:", netspeed_bar2_color_var),
-    ]
-    _make_scheme_row(net_frame, [netspeed_up_color_var, netspeed_down_color_var,
-                                 netspeed_bar1_color_var, netspeed_bar2_color_var])
-    for v in (netspeed_up_color_var, netspeed_down_color_var,
-              netspeed_bar1_color_var, netspeed_bar2_color_var):
-        v.trace_add("write", change_netspeed_color)
-
-    def _sync_netspeed_ui_state():
-        """经典模式禁用自定义颜色区，避免无关注释误导"""
-        custom_state = "normal" if netspeed_mode_var.get() == "自定义" else "disabled"
-        for row in netspeed_color_rows:
-            for child in row.winfo_children():
-                child.configure(state=custom_state)
-    _sync_netspeed_ui_state()
-
-    # ---- 子页5：屏幕镜像 ----
-    mirror_frame = ttk.Frame(settings_notebook, padding=(pad_scale_xy5 * 2, pad_scale_xy5 * 2))
-    settings_notebook.add(mirror_frame, text="  屏幕镜像  ")
-
-    def change_zoom(*args):
-        global config_obj
-        _ui_set_active()  # 锁定到UI当前设备（避免多屏设置冲突）
-        config_obj.zoom_enable = zoom_enable_var.get()
-        try:
-            config_obj.zoom_scale = int(zoom_scale_var.get())
-        except Exception:
-            config_obj.zoom_scale = 2
-        save_config()
-
-    zoom_enable_var = tk.IntVar(mirror_frame, 0)
-    zoom_enable_var.set(config_obj.zoom_enable)
-    ttk.Checkbutton(mirror_frame, text="镜像局部放大（跟随鼠标）", variable=zoom_enable_var,
-                    command=change_zoom).pack(anchor=tk.W, pady=pad_scale_xy5)
-    zoom_row = ttk.Frame(mirror_frame)
-    zoom_row.pack(anchor=tk.W, pady=pad_scale_xy5)
-    ttk.Label(zoom_row, text="放大倍数:").pack(side=tk.LEFT)
-    zoom_scale_var = tk.IntVar(mirror_frame, 0)
-    zoom_scale_var.set(config_obj.zoom_scale)
-    ttk.Spinbox(zoom_row, from_=1, to=8, textvariable=zoom_scale_var, width=5).pack(side=tk.LEFT, padx=pad_scale_xy5)
-    zoom_scale_var.trace_add("write", change_zoom)
-
-    # ==================== 设备切换联动：设置页控件刷新 ====================
-    def _apply_settings_ui_to_config():
-        """把当前设备配置刷新到设置页控件（切换设备时调用）"""
-        global config_obj
-        try:
-            # ---- 按页面导航 ----
-            guide_var.set(getattr(config_obj, "guide_last_page", ""))
-            # ---- 通用 ----
-            anti_burn_var.set(config_obj.anti_burn)
-            preview_var.set(config_obj.preview_enabled)
-            auto_start_var.set(config_obj.auto_start)
-            language_var.set(config_obj.language)
-            # ---- 自动化 ----
-            page_cycle_var.set(config_obj.page_cycle_enable)
-            page_cycle_interval_var.set(config_obj.page_cycle_interval)
-            screen_off_var.set(config_obj.screen_off_timeout)
-            # ---- 按键 ----
-            key_single_var.set(config_obj.key_single)
-            key_double_var.set(config_obj.key_double)
-            key_long_var.set(config_obj.key_long)
-            # ---- 跑马灯 ----
-            marquee_var.set(config_obj.marquee_text)
-            marquee_font_size_var.set(config_obj.marquee_font_size)
-            marquee_color_var.set(config_obj.marquee_color)
-            marquee_speed_var.set(config_obj.marquee_speed)
-            try:
-                update_marquee_preview()
-            except Exception:
-                pass
-            # ---- 天气与行情 ----
-            weather_city_var.set(config_obj.weather_city)
-            crypto_symbols_var.set(config_obj.crypto_symbols)
-            ping_host_var.set(config_obj.ping_host)
-            # ---- 热搜 ----
-            hot_count_var.set(config_obj.hotsearch_count)
-            hot_total_var.set(config_obj.hotsearch_total)
-            hot_font_auto_var.set(config_obj.hotsearch_font_auto)
-            hot_font_size_var.set(config_obj.hotsearch_font_size)
-            hot_scroll_var.set(config_obj.hotsearch_scroll_enable)
-            hot_scroll_speed_var.set(config_obj.hotsearch_scroll_speed)
-            hot_page_interval_var.set(config_obj.hotsearch_page_interval)
-            hot_auto_refresh_var.set(config_obj.hotsearch_auto_refresh)
-            hotsearch_interval_var.set(config_obj.hotsearch_interval)
-            # ---- 时间 ----
-            timer_minutes_var.set(config_obj.timer_minutes)
-            clock_zones_var.set(config_obj.clock_zones)
-            # ---- 纪念日/待办 ----
-            memo_text.delete("1.0", tk.END)
-            memo_text.insert(tk.END, "\n".join(config_obj.memo_items))
-            todo_text.delete("1.0", tk.END)
-            todo_text.insert(tk.END, "\n".join(config_obj.todo_items))
-            # ---- 进程 ----
-            proc_count_var.set(config_obj.proc_count)
-            # ---- 硬件详情 ----
-            hwdetail_max_var.set(config_obj.hwdetail_max)
-            for t, var in hwdetail_type_vars.items():
-                var.set(1 if t in (config_obj.hwdetail_types or "").split(",") else 0)
-            try:
-                _refresh_hw_sensor_info()
-            except Exception:
-                pass
-            # ---- 仪表盘 ----
-            gauge_cpu_var.set(config_obj.gauge_show_cpu)
-            gauge_mem_var.set(config_obj.gauge_show_mem)
-            gauge_disk_var.set(config_obj.gauge_show_disk)
-            gauge_cpu_temp_var.set(config_obj.gauge_show_cpu_temp)
-            gauge_gpu_var.set(config_obj.gauge_show_gpu)
-            gauge_gpu_temp_var.set(config_obj.gauge_show_gpu_temp)
-            gauge_fan_var.set(config_obj.gauge_show_fan)
-            gauge_upload_var.set(config_obj.gauge_show_upload)
-            gauge_download_var.set(config_obj.gauge_show_download)
-            gauge_cpu_color_var.set(config_obj.gauge_cpu_color)
-            gauge_mem_color_var.set(config_obj.gauge_mem_color)
-            gauge_disk_color_var.set(config_obj.gauge_disk_color)
-            gauge_cpu_temp_color_var.set(config_obj.gauge_cpu_temp_color)
-            gauge_gpu_color_var.set(config_obj.gauge_gpu_color)
-            gauge_gpu_temp_color_var.set(config_obj.gauge_gpu_temp_color)
-            gauge_fan_color_var.set(config_obj.gauge_fan_color)
-            gauge_upload_color_var.set(config_obj.gauge_upload_color)
-            gauge_download_color_var.set(config_obj.gauge_download_color)
-            # ---- 磁盘读写 ----
-            diskio_mode_var.set(config_obj.diskio_mode)
-            diskio_show_title_var.set(config_obj.diskio_show_title)
-            diskio_font_auto_var.set(config_obj.diskio_font_auto)
-            diskio_font_size_var.set(config_obj.diskio_font_size)
-            diskio_title_color_var.set(config_obj.diskio_title_color)
-            diskio_read_color_var.set(config_obj.diskio_read_color)
-            diskio_write_color_var.set(config_obj.diskio_write_color)
-            diskio_label_color_var.set(config_obj.diskio_label_color)
-            diskio_value_read_color_var.set(config_obj.diskio_value_read_color)
-            diskio_value_write_color_var.set(config_obj.diskio_value_write_color)
-            diskio_value_auto_var.set(config_obj.diskio_value_auto)
-            diskio_value_font_size_var.set(config_obj.diskio_value_font_size)
-            diskio_bar1_color_var.set(config_obj.diskio_bar1_color)
-            diskio_bar2_color_var.set(config_obj.diskio_bar2_color)
-            _sync_diskio_ui_state()
-            # ---- 网络流量 ----
-            netspeed_mode_var.set(config_obj.netspeed_mode)
-            netspeed_up_color_var.set(config_obj.netspeed_up_color)
-            netspeed_down_color_var.set(config_obj.netspeed_down_color)
-            netspeed_bar1_color_var.set(config_obj.netspeed_bar1_color)
-            netspeed_bar2_color_var.set(config_obj.netspeed_bar2_color)
-            _sync_netspeed_ui_state()
-            # ---- 配色方案 ----
-            try:
-                _refresh_scheme_page()
-                _refresh_scheme_combos()
-            except Exception:
-                pass
-            # ---- API 接入 ----
-            try:
-                api_enable_var.set(config_obj.api_enable)
-                api_port_var.set(config_obj.api_port)
-                api_token_var.set(config_obj.api_token)
-                api_overlay_var.set(getattr(config_obj, "api_overlay", 0))
-                screen_id_timeout_var.set(getattr(config_obj, "screen_id_timeout", 5))
-                _refresh_api_status()
-            except Exception:
-                pass
-            # ---- 屏幕镜像 ----
-            zoom_enable_var.set(config_obj.zoom_enable)
-            zoom_scale_var.set(config_obj.zoom_scale)
-        except Exception as e:
-            print("刷新设置页控件失败：%s" % e)
-
-    # ---- 子页6：API 接入 ----
-    api_frame = ttk.Frame(settings_notebook, padding=(pad_scale_xy5 * 2, pad_scale_xy5 * 2))
-    settings_notebook.add(api_frame, text="  API接入  ")
-
-    def change_api(*args):
-        global config_obj
-        _ui_set_active()  # 锁定到UI当前设备（避免多屏设置冲突）
-        config_obj.api_enable = api_enable_var.get()
-        try:
-            config_obj.api_port = int(api_port_var.get())
-        except Exception:
-            pass
-        config_obj.api_token = api_token_var.get().strip()
-        save_config()
-        try:
-            stop_api_server()
-            if config_obj.api_enable:
-                start_api_server()
-        except Exception as e:
-            print("API 服务器重启失败：%s" % e)
-        _refresh_api_status()
-
-    def _refresh_api_status():
-        try:
-            port = int(getattr(config_obj, "api_port", 8632))
-        except Exception:
-            port = 8632
-        if getattr(config_obj, "api_enable", 1):
-            api_status_var.set("运行中：http://127.0.0.1:%d" % port)
-        else:
-            api_status_var.set("已关闭")
-        api_ws_var.set("WebSocket：ws://127.0.0.1:%d/ws" % port)
-        try:
-            api_json_var.set("JSON 文档：http://127.0.0.1:%d/api/openapi.json　|　文件：%s"
-                             % (port, os.path.join(get_base_config_dir(), "api_openapi.json")))
-        except Exception:
-            pass
-        try:
-            api_proto_var.set("TCP: %d ｜ UDP: %d ｜ ZMQ: %d(需pyzmq) ｜ 管道: \\\.\\pipe\\MSU2_MINI_V2_api ｜ Unix: api_unix.sock"
-                              % (port + 1, port + 2, port + 3))
-        except Exception:
-            pass
-
-    def open_api_doc():
-        try:
-            port = int(getattr(config_obj, "api_port", 8632))
-        except Exception:
-            port = 8632
-        webbrowser.open("http://127.0.0.1:%d" % port)
-
-    api_enable_var = tk.IntVar(api_frame, config_obj.api_enable)
-    ttk.Checkbutton(api_frame, text="启用 API 投屏服务器（本地 127.0.0.1）", variable=api_enable_var,
-                    command=change_api).pack(anchor=tk.W, pady=pad_scale_xy5)
-
-    api_port_row = ttk.Frame(api_frame)
-    api_port_row.pack(anchor=tk.W, pady=pad_scale_xy5)
-    ttk.Label(api_port_row, text="端口:").pack(side=tk.LEFT)
-    api_port_var = tk.IntVar(api_frame, config_obj.api_port)
-    ttk.Spinbox(api_port_row, from_=1024, to=65535, textvariable=api_port_var, width=8).pack(side=tk.LEFT, padx=pad_scale_xy5)
-    api_port_var.trace_add("write", change_api)
-    ttk.Label(api_port_row, text="(修改后自动重启服务器生效)", foreground="gray").pack(side=tk.LEFT)
-
-    api_token_row = ttk.Frame(api_frame)
-    api_token_row.pack(anchor=tk.W, pady=pad_scale_xy5)
-    ttk.Label(api_token_row, text="访问令牌(可选):").pack(side=tk.LEFT)
-    api_token_var = tk.StringVar(api_frame, config_obj.api_token)
-    ttk.Entry(api_token_row, textvariable=api_token_var, width=24).pack(side=tk.LEFT, padx=pad_scale_xy5)
-    api_token_var.trace_add("write", change_api)
-    ttk.Label(api_token_row, text="留空=不校验；非空时需请求头 X-API-Token 或 ?token=", foreground="gray").pack(side=tk.LEFT)
-
-    def _change_api_overlay():
-        global config_obj
-        _ui_set_active()  # 锁定到UI当前设备（避免多屏设置冲突）
-        config_obj.api_overlay = api_overlay_var.get()
-        save_config()
-        insert_text_message("强制投屏已%s" % ("开启" if config_obj.api_overlay else "关闭"))
-
-    api_overlay_var = tk.IntVar(api_frame, getattr(config_obj, "api_overlay", 0))
-    ttk.Checkbutton(api_frame, text="强制投屏：未选择「API投屏」页也可投屏", variable=api_overlay_var,
-                    command=_change_api_overlay).pack(anchor=tk.W, pady=pad_scale_xy5)
-    ttk.Label(api_frame, text="开启后任何页面都会被投屏内容覆盖，停止投屏自动返回原页面（如 热搜）",
-              foreground="gray").pack(anchor=tk.W, pady=(0, pad_scale_xy5))
-
-    def _change_screen_id_timeout(*args):
-        global config_obj
-        _ui_set_active()  # 锁定到UI当前设备（避免多屏设置冲突）
-        try:
-            config_obj.screen_id_timeout = int(screen_id_timeout_var.get())
-        except Exception:
-            config_obj.screen_id_timeout = 5
-        save_config()
-
-    def do_screen_id_ui():
-        global config_obj
-        _ui_set_active()
-        try:
-            config_obj.screen_id_timeout = int(screen_id_timeout_var.get())
-        except Exception:
-            pass
-        save_config()
-        r = api_trigger_screen_id({})
-        insert_text_message("屏幕序号检测：%d 屏，持续 %s 秒" % (len(r.get("devices", [])), r.get("timeout", "")))
-
-    screen_id_row = ttk.Frame(api_frame)
-    screen_id_row.pack(anchor=tk.W, pady=pad_scale_xy5)
-    ttk.Label(screen_id_row, text="屏幕序号检测时长(秒):").pack(side=tk.LEFT)
-    screen_id_timeout_var = tk.IntVar(api_frame, getattr(config_obj, "screen_id_timeout", 5))
-    ttk.Spinbox(screen_id_row, from_=1, to=300, textvariable=screen_id_timeout_var, width=6).pack(side=tk.LEFT, padx=pad_scale_xy5)
-    screen_id_timeout_var.trace_add("write", _change_screen_id_timeout)
-    ttk.Button(screen_id_row, text="检测屏幕", padding=pad_scale_xy,
-               command=do_screen_id_ui).pack(side=tk.LEFT, padx=pad_scale_xy5)
-    ttk.Label(screen_id_row, text="所有屏幕显示各自屏号，超时后自动恢复", foreground="gray").pack(side=tk.LEFT)
-
-    api_status_var = tk.StringVar(api_frame, "")
-    ttk.Label(api_frame, textvariable=api_status_var, foreground="#2e86c1").pack(anchor=tk.W, pady=pad_scale_xy5)
-    api_ws_var = tk.StringVar(api_frame, "")
-    ttk.Label(api_frame, textvariable=api_ws_var, foreground="#2e86c1").pack(anchor=tk.W, pady=(0, pad_scale_xy5))
-    api_json_var = tk.StringVar(api_frame, "")
-    ttk.Label(api_frame, textvariable=api_json_var, foreground="gray").pack(anchor=tk.W, pady=(0, pad_scale_xy5))
-    api_proto_var = tk.StringVar(api_frame, "")
-    ttk.Label(api_frame, textvariable=api_proto_var, foreground="gray").pack(anchor=tk.W, pady=(0, pad_scale_xy5))
-
-    def export_api_json_ui():
-        try:
-            path = tkinter.filedialog.asksaveasfilename(
-                defaultextension=".json", initialfile="api_openapi.json",
-                filetypes=[("JSON", "*.json")], title="导出 API JSON 文档")
-            if not path:
-                return
-            saved = export_api_json(path)
-            insert_text_message("API JSON 文档已导出：%s" % (saved or path))
-        except Exception as e:
-            insert_text_message("导出失败：%s" % e)
-
-    api_btn_row = ttk.Frame(api_frame)
-    api_btn_row.pack(anchor=tk.W, pady=pad_scale_xy5)
-    ttk.Button(api_btn_row, text="打开 API 文档", padding=pad_scale_xy, command=open_api_doc).pack(side=tk.LEFT)
-    ttk.Button(api_btn_row, text="导出 JSON 文档", padding=pad_scale_xy, command=export_api_json_ui).pack(side=tk.LEFT, padx=(pad_scale_xy5, 0))
-    ttk.Label(api_btn_row, text="  其他程序可通过 REST / WebSocket 接入，自定义投屏内容", foreground="gray").pack(side=tk.LEFT, padx=(pad_scale_xy5, 0))
-    _refresh_api_status()
-
-    # ---- 子页7：数据管理 ----
-    data_frame = ttk.Frame(settings_notebook, padding=(pad_scale_xy5 * 2, pad_scale_xy5 * 2))
-    settings_notebook.add(data_frame, text="  数据管理  ")
-
-    cfg_row = ttk.Frame(data_frame)
-    cfg_row.pack(anchor=tk.W, pady=pad_scale_xy5)
-    ttk.Button(cfg_row, text="导出配置", width=12, padding=pad_scale_xy, command=export_config).pack(side=tk.LEFT, padx=(0, pad_scale_xy5))
-    ttk.Button(cfg_row, text="导入配置", width=12, padding=pad_scale_xy, command=import_config).pack(side=tk.LEFT, padx=(0, pad_scale_xy5))
-
-    def check_update_async():
-        threading.Thread(target=check_update, daemon=True).start()
-
-    ttk.Button(cfg_row, text="检查更新", width=12, padding=pad_scale_xy, command=check_update_async).pack(side=tk.LEFT)
-
-    # ==================== 设备信息标签页（设置与关于之间） ====================
-    hw_info_frame = ttk.Frame(notebook, padding=(pad_scale_xy5 * 3, pad_scale_xy5 * 3))
-    notebook.add(hw_info_frame, text="  设备信息  ")
-
-    hw_title_label = tk.Label(hw_info_frame, text="设备硬件信息",
-                              font=("TkDefaultFont", 14 * scale_factor // 100, "bold"))
-    hw_title_label.pack(pady=(0, 2))
-    hw_sub_label = tk.Label(hw_info_frame, text="固件 / 芯片 / USB / 本机系统信息（连接后点“刷新”）", fg="gray")
-    hw_sub_label.pack(pady=(0, pad_scale_xy5))
-
-    hw_notebook = ttk.Notebook(hw_info_frame)
-    hw_notebook.pack(fill=tk.BOTH, expand=True, pady=(0, pad_scale_xy5))
-
-    hw_conn_frame = ttk.Frame(hw_notebook, padding=(pad_scale_xy5 * 2, pad_scale_xy5 * 2))
-    hw_notebook.add(hw_conn_frame, text="  连接信息  ")
-    hw_sfr_frame = ttk.Frame(hw_notebook, padding=(pad_scale_xy5 * 2, pad_scale_xy5 * 2))
-    hw_notebook.add(hw_sfr_frame, text="  SFR寄存器  ")
-    hw_flash_frame = ttk.Frame(hw_notebook, padding=(pad_scale_xy5 * 2, pad_scale_xy5 * 2))
-    hw_notebook.add(hw_flash_frame, text="  Flash芯片  ")
-    hw_parts_frame = ttk.Frame(hw_notebook, padding=(pad_scale_xy5 * 2, pad_scale_xy5 * 2))
-    hw_notebook.add(hw_parts_frame, text="  Flash分区  ")
-    hw_sys_frame = ttk.Frame(hw_notebook, padding=(pad_scale_xy5 * 2, pad_scale_xy5 * 2))
-    hw_notebook.add(hw_sys_frame, text="  系统信息  ")
-
-    # Flash芯片信息（优先从 device_protocol.json 读取，失败时用内置默认）
-    _flash_default = {
-        "chip": "P25D80", "capacity": "1024KB", "page_size": "256B", "total_pages": 4096,
-        "allocations": {
-            "gif_frames": {"start_page": 0, "pages": 3600, "count": 36, "description": "36张动图, 每张100页"},
-            "demo_image": {"start_page": 3600, "pages": 29, "description": "240x240单色Demo1"},
-            "digit_font_48x66": {"start_page": 3629, "pages": 22, "description": "48x66数码管字体N48X66P"},
-            "clock_font_asc64": {"start_page": 3651, "pages": 128, "description": "32x64 ASCII字体ASC64"},
-            "logo": {"start_page": 3779, "pages": 12, "description": "240x102单色LOGO"},
-            "j1_image": {"start_page": 3791, "pages": 29, "description": "240x240单色J1"},
-            "mlogo": {"start_page": 3820, "pages": 6, "description": "160x68单色MLOGO"},
-            "clock_background": {"start_page": 3826, "pages": 100, "description": "160x80彩色时钟背景CLK_BG"},
-            "photo_album": {"start_page": 3926, "pages": 100, "description": "160x80彩色相册图像PH1"},
-            "state_font_24x33": {"start_page": 4026, "pages": 12, "description": "24x33状态页数码管字体N24X33P"},
-            "state_background": {"start_page": 4038, "pages": 7, "description": "160x80状态页背景MP1"},
-        },
-    }
-
-    def _load_flash_layout():
-        """从 device_protocol.json 读取 Flash 布局，失败时返回内置默认"""
-        try:
-            with open(_get_resource("device_protocol.json"), "r", encoding="utf-8") as f:
-                data = json.load(f)
-            return data.get("flash_layout") or _flash_default
-        except Exception:
-            return _flash_default
-
-    def _add_info_row(parent, label, value):
-        row_f = ttk.Frame(parent)
-        row_f.pack(fill=tk.X, pady=1)
-        tk.Label(row_f, text=label, width=16, anchor=tk.E, fg="gray").pack(side=tk.LEFT, padx=(0, 6))
-        tk.Label(row_f, text=value, anchor=tk.W, justify=tk.LEFT).pack(side=tk.LEFT)
-
-    _sfr_type_names = ["u8地址", "u16地址", "u32地址", "字符串", "数组"]
-
-    def _read_sfr_value(entry):
-        """读取单个 SFR 条目的当前值（Read_M_u8/u16 内部已加串口锁，线程安全）"""
-        try:
-            data_type = entry.family[0] // 32
-            if data_type == 0:  # u8, 2B地址
-                return Read_M_u8(entry.data[0] * 256 + entry.data[1])
-            elif data_type == 1:  # u16, 1B地址
-                return Read_M_u16(entry.data[0])
-            elif data_type == 2:  # u32, 2B地址
-                addr = entry.data[0] * 256 + entry.data[1]
-                val = 0
-                for n in range(entry.family[0] % 32):
-                    val = (val << 8) | Read_M_u8(addr + n)
-                return val
-            elif data_type == 3:  # 字符串
-                return entry.data.decode("utf-8", errors="replace")
-            elif data_type == 4:  # 数组
-                return " ".join("%02X" % b for b in entry.data)
-        except Exception:
-            return None
-        return None
-
-    def _sfr_addr_str(entry):
-        """生成 SFR 条目的地址描述字符串"""
-        try:
-            data_type = entry.family[0] // 32
-            length = entry.family[0] % 32
-            if data_type == 0:
-                return "0x%04X(%d字节)" % (entry.data[0] * 256 + entry.data[1], length)
-            elif data_type == 1:
-                return "0x%02X" % entry.data[0]
-            elif data_type == 2:
-                return "0x%04X(%d字节)" % (entry.data[0] * 256 + entry.data[1], length)
-        except Exception:
-            pass
-        return "-"
-
-    def refresh_hw_info():
-        """刷新设备信息（USB连接信息/固件版本 + SFR寄存器 + Flash布局 + 本机系统信息）"""
-        for f in (hw_conn_frame, hw_sfr_frame, hw_flash_frame, hw_parts_frame, hw_sys_frame):
-            for w in f.winfo_children():
-                w.destroy()
-        dev = get_current_device()
-        usb = getattr(dev, "usb_info", {}) if dev is not None else {}
-        fw = getattr(dev, "firmware_version", 0) if dev is not None else 0
-        connected = (dev is not None and dev.ser is not None and dev.ser.is_open)
-
-        # ---- 子页1：连接信息（USB描述符） ----
-        _add_info_row(hw_conn_frame, "连接状态", "已连接" if connected else "未连接")
-        _add_info_row(hw_conn_frame, "端口", usb.get("port") or "-")
-        _add_info_row(hw_conn_frame, "序列号(SN)", usb.get("serial_number") or "-")
-        _add_info_row(hw_conn_frame, "VID", usb.get("vid") or "-")
-        _add_info_row(hw_conn_frame, "PID", usb.get("pid") or "-")
-        _add_info_row(hw_conn_frame, "制造商", usb.get("manufacturer") or "-")
-        _add_info_row(hw_conn_frame, "产品", usb.get("product") or "-")
-        _add_info_row(hw_conn_frame, "名称", usb.get("name") or "-")
-        _add_info_row(hw_conn_frame, "描述", usb.get("description") or "-")
-        _add_info_row(hw_conn_frame, "接口", usb.get("interface") or "-")
-        _add_info_row(hw_conn_frame, "硬件ID", usb.get("hwid") or "-")
-        _add_info_row(hw_conn_frame, "位置", usb.get("location") or "-")
-        _add_info_row(hw_conn_frame, "固件版本", ("v%d" % fw) if fw else "-")
-
-        # ---- 子页2：SFR寄存器（设备固件变量，实时读值） ----
-        sfr = getattr(dev, "msn_data", None) if dev is not None else None
-        if sfr:
-            _add_info_row(hw_sfr_frame, "变量名", "类型 / 地址 / 当前值")
-            for entry in sfr:
-                try:
-                    name = entry.name.decode("utf-8", errors="replace")
-                except Exception:
-                    name = "?"
-                try:
-                    dtype = _sfr_type_names[entry.family[0] // 32]
-                except Exception:
-                    dtype = "?"
-                addr = _sfr_addr_str(entry)
-                val = _read_sfr_value(entry) if connected else None
-                val_str = "-" if val is None else str(val)
-                _add_info_row(hw_sfr_frame, name, "%s %s = %s" % (dtype, addr, val_str))
-        else:
-            _add_info_row(hw_sfr_frame, "SFR数据", "未获取（设备未连接）")
-
-        # ---- 子页3：Flash芯片 ----
-        flash = _load_flash_layout()
-        _add_info_row(hw_flash_frame, "Flash芯片", flash.get("chip") or "-")
-        _add_info_row(hw_flash_frame, "容量", flash.get("capacity") or "-")
-        _add_info_row(hw_flash_frame, "页大小", flash.get("page_size") or "-")
-        _add_info_row(hw_flash_frame, "总页数", str(flash.get("total_pages") or "-"))
-
-        # ---- 子页4：Flash分区 ----
-        allocs = flash.get("allocations") or {}
-        if allocs:
-            for name, info in allocs.items():
-                start = info.get("start_page", "?")
-                pages = info.get("pages", "?")
-                desc = info.get("description", "")
-                _add_info_row(hw_parts_frame, name, "页 %s（共%s页）%s" % (start, pages, desc))
-
-        # ---- 子页5：系统信息（本机） ----
-        import platform
-        _add_info_row(hw_sys_frame, "操作系统", platform.platform())
-        _add_info_row(hw_sys_frame, "电脑名", platform.node())
-        _add_info_row(hw_sys_frame, "架构", platform.machine())
-        _add_info_row(hw_sys_frame, "CPU型号", platform.processor() or "未知")
-        try:
-            _add_info_row(hw_sys_frame, "CPU核心",
-                          "%d物理 / %d逻辑" % (psutil.cpu_count(logical=False) or 0, psutil.cpu_count(logical=True) or 0))
-        except Exception:
-            pass
-        try:
-            freq = psutil.cpu_freq()
-            if freq and freq.current:
-                _add_info_row(hw_sys_frame, "CPU频率", "%.1f GHz" % (freq.current / 1000))
-        except Exception:
-            pass
-        try:
-            _add_info_row(hw_sys_frame, "内存", "%.1f GB" % (psutil.virtual_memory().total / (1024 ** 3)))
-        except Exception:
-            pass
-        try:
-            batt = psutil.sensors_battery()
-            if batt:
-                _add_info_row(hw_sys_frame, "电池", "%d%%" % batt.percent)
-        except Exception:
-            pass
-        _add_info_row(hw_sys_frame, "Python", sys.version.split()[0])
-
-    hw_btn_row = ttk.Frame(hw_info_frame)
-    hw_btn_row.pack(anchor=tk.W)
-    ttk.Button(hw_btn_row, text="刷新", width=12, padding=pad_scale_xy, command=refresh_hw_info).pack(side=tk.LEFT)
-    ttk.Label(hw_btn_row, text="连接信息在设备连接成功时采集；未连接或显示“-”属正常", foreground="gray").pack(side=tk.LEFT, padx=(pad_scale_xy5, 0))
-    refresh_hw_info()
-
-    # ==================== 关于标签页 ====================
-    about_frame = ttk.Frame(notebook, padding=(pad_scale_xy5 * 3, pad_scale_xy5 * 3))
-    notebook.add(about_frame, text="  关于  ")
-
-    # --- 关于页面标题 ---
-    about_title_label = tk.Label(about_frame, text=f"{PROGRAM_TITLE}",
-                                  font=("TkDefaultFont", 14 * scale_factor // 100, "bold"))
-    about_title_label.pack(pady=(0, 2))
-    about_ver_label = tk.Label(about_frame, text=f"v{PROGRAM_VERSION}",
-                                font=("TkDefaultFont", 11 * scale_factor // 100))
-    about_ver_label.pack(pady=(0, 2))
-    about_sub_label = tk.Label(about_frame, text=PROGRAM_SUBTITLE, fg="gray")
-    about_sub_label.pack(pady=(0, pad_scale_xy5))
-
-    ttk.Separator(about_frame, orient="horizontal").pack(fill=tk.X, pady=pad_scale_xy5)
-
-    # --- 基本信息 ---
-    info_frame = ttk.Frame(about_frame)
-    info_frame.pack(fill=tk.X, pady=pad_scale_xy5)
-    info_items = [
-        ("作者:", PROGRAM_AUTHOR),
-        ("许可证:", PROGRAM_LICENSE),
-        ("构建日期:", PROGRAM_BUILD_DATE),
-    ]
-    for label_text, value_text in info_items:
-        row_f = ttk.Frame(info_frame)
-        row_f.pack(fill=tk.X, pady=1)
-        tk.Label(row_f, text=label_text, width=10, anchor=tk.E, fg="gray").pack(side=tk.LEFT, padx=(0, 5))
-        tk.Label(row_f, text=value_text).pack(side=tk.LEFT)
-
-    # --- 项目地址 ---
-    url_frame = ttk.Frame(about_frame)
-    url_frame.pack(fill=tk.X, pady=(0, pad_scale_xy5))
-    tk.Label(url_frame, text="项目地址:", width=10, anchor=tk.E, fg="gray").pack(side=tk.LEFT, padx=(0, 5))
-    tk.Label(url_frame, text=PROGRAM_GITHUB, fg="#3366cc").pack(side=tk.LEFT)
-
-    ttk.Separator(about_frame, orient="horizontal").pack(fill=tk.X, pady=pad_scale_xy5)
-
-    # --- 整合源项目 ---
-    tk.Label(about_frame, text="整合自以下开源项目（均为MIT协议）:",
-             font=("TkDefaultFont", 9 * scale_factor // 100, "bold")).pack(anchor=tk.W, pady=(0, pad_scale_xy5))
-    for proj in PROGRAM_SOURCE_PROJECTS:
-        proj_line = f"  • {proj['author']}/{proj['name']}"
-        tk.Label(about_frame, text=proj_line, fg="#555555").pack(anchor=tk.W)
-        tk.Label(about_frame, text=f"    {proj['url']}", fg="#3366cc",
-                 font=("TkDefaultFont", 8 * scale_factor // 100)).pack(anchor=tk.W)
-
-    ttk.Separator(about_frame, orient="horizontal").pack(fill=tk.X, pady=pad_scale_xy5)
-
-    # --- 版本更新说明 ---
-    tk.Label(about_frame, text="版本更新说明:",
-             font=("TkDefaultFont", 9 * scale_factor // 100, "bold")).pack(anchor=tk.W, pady=(0, pad_scale_xy5))
-    changelog_text = tk.Text(about_frame, wrap=tk.WORD, height=6, padx=pad_scale_xy5, pady=pad_scale_xy5,
-                              state=tk.DISABLED, relief=tk.GROOVE, borderwidth=1)
-    changelog_text.pack(fill=tk.BOTH, expand=True, pady=(0, pad_scale_xy5))
-    # 手动插入文本（因为state=DISABLED）
-    changelog_text.config(state=tk.NORMAL)
-    changelog_text.insert(tk.END, PROGRAM_CHANGELOG.strip())
-    changelog_text.config(state=tk.DISABLED)
-
-    # root.grid_rowconfigure(0, weight=1)
-    # root.grid_rowconfigure(1, weight=1)
-    # root.grid_rowconfigure(2, weight=1)
-    # root.grid_rowconfigure(3, weight=1)
-    # root.grid_rowconfigure(4, weight=1)
-    # root.grid_rowconfigure(5, weight=1)
-    # root.grid_rowconfigure(6, weight=1)
-    # root.grid_rowconfigure(7, weight=1)
-    # root.grid_columnconfigure(0, weight=1)
-    # root.grid_columnconfigure(1, weight=1)
-    # root.grid_columnconfigure(2, weight=1)
-    # root.grid_columnconfigure(3, weight=1)
-    # root.grid_columnconfigure(4, weight=1)
-    # root.grid_columnconfigure(5, weight=1)
-
-    # 创建一个容纳帮助按钮和状态的框
-    state_frame = ttk.Frame(root, padding="0")
-    state_frame.grid(row=0, column=0, rowspan=1, columnspan=2, sticky=tk.NSEW, padx=0, pady=0)
-    state_frame.grid_columnconfigure(1, weight=1)  # 设置第2列自动调整宽度
-    # state_frame.grid_propagate(0)  # 禁止被内部控件撑大
-
-    # 设备连接状态标签
-    Label1 = tk.Label(state_frame, text="设备未连接", fg="white", bg="red", padx=0, pady=0,
-                      borderwidth=pad_scale_xy5 - 2)
-    Label1.grid(row=0, column=1, sticky=tk.W, padx=pad_scale_xy5, pady=pad_scale_xy5)
-
-    # 信息显示文本框
-    Text1 = tk.Text(root, state=tk.DISABLED, wrap=tk.CHAR, width=22, height=6, padx=pad_scale_xy5, pady=pad_scale_xy5)
-    Text1.grid(row=5, column=0, rowspan=3, columnspan=2, sticky=tk.NSEW, padx=pad_scale_xy5, pady=pad_scale_xy5)
-
-    # 这些后台线程尽早启动
-    daemon_thread.start()
-    load_thread.start()
-    if ping_thread is not None:
-        ping_thread.start()
-
-    def help_instruction():
-        help_msg = '\n'.join([
-            f"{PROGRAM_TITLE} v{PROGRAM_VERSION}",
-            f"作者: {PROGRAM_AUTHOR}  |  许可证: {PROGRAM_LICENSE}",
-            f"项目地址: {PROGRAM_GITHUB}",
-            "",
-            "整合自以下开源项目（均为MIT协议）:",
-            f"  {PROGRAM_SOURCE_PROJECTS[0]['author']}/{PROGRAM_SOURCE_PROJECTS[0]['name']}",
-            f"  {PROGRAM_SOURCE_PROJECTS[1]['author']}/{PROGRAM_SOURCE_PROJECTS[1]['name']}",
-            "",
-            "该工具配套USB小屏幕使用，功能主要分两部分：烧写和显示。",
-            "",
-            "“烧写”包括：",
-            "闪存固件：包括背景图像、相册图像、动图文件、LOGO、字体图像等。",
-            "\t不包括主控固件，主控固件烧写方法需联系商家",
-            "背景图像：时钟背景图像，支持大部分图像格式",
-            "相册图像：单个相册图像，支持大部分图像格式",
-            "动图文件：支持两种烧写方式：36张图片或者gif文件",
-            "\t36张图片需要自己设置“动图间隔”，设置大于1秒可作为相册",
-            "\tgif文件需要是动图文件，烧写后会自动更新“动图间隔”",
-            "",
-            "“显示”包含如下页面，使用“上翻页”、“下翻页”切换。",
-            "动图：使用“动图间隔”调整播放速度，“动图间隔”设置较大时可作为相册",
-            "\t“动图间隔”最小支持0.02秒，最大无限制。默认是0.1秒",
-            "时间：显示实时时间，背景使用烧写的背景图像，用“文字颜色”调整颜色",
-            "单个相册图片：显示烧写的相册图像",
-            "屏幕镜像：使用“屏幕镜像窗口”选择窗口，使用“最大FPS”设置刷新率",
-            "\t对于最小化窗口和部分游戏窗口，镜像失败会只显示黑色",
-            "相机视频：使用“相机名称”选择摄像头，使用“最大FPS”设置刷新率",
-            "\t没有摄像头不显示该页面。最大FPS支持1-50，再大没有意义",
-            "电脑CPU/内存/磁盘/电池使用率监控：每秒刷新，用“文字颜色”调整颜色",
-            "网络流量监控：图表显示网络速度，单位Byte/s，用“文字颜色”调整颜色",
-            "自定义显示两项图表：使用“自定义内容”按钮来修改，详情见“说明”按钮",
-            "自定义显示多项数值：使用“自定义内容”按钮来修改，详情见“说明”按钮",
-            "",
-            "屏幕镜像、相机视频处理方式：",
-            "填充：裁剪掉多余部分以使图像填充满屏幕，部分图像会被裁剪掉",
-            "适应：保持图像完整显示时适应屏幕，图像可能不会占满整个屏幕",
-            "",
-            "板载触摸按键：",
-            "单击：下翻页，双击：上翻页，长按：切换显示方向",
-            "",
-            "启动时隐藏：",
-            "支持启动既隐藏，可在快捷方式中或启动命令后增加参数-h或-hide"
-        ])
-        tk.messagebox.showinfo(title="帮助", message=help_msg, parent=root, icon='question')
-
-    # 帮助按钮
-    helpimage = MiniMark.load_image("resource/ios-8-Help-icon.ico")
-    # linespace是行高，2是边框，10是因为pady设置为0，两边各空出5
-    help_image_height = tkfont.nametofont(str(Label1.cget('font'))).metrics("linespace") + 12 * scale_factor // 100
-    helpimage = helpimage.resize((help_image_height, help_image_height), Image.Resampling.LANCZOS)
-    helpicon = ImageTk.PhotoImage(helpimage)
-    help_instruction_btn = tk.Button(state_frame, image=helpicon, relief=tk.FLAT, command=help_instruction)
-    help_instruction_btn.grid(row=0, column=0, sticky=tk.NSEW, padx=0, pady=0)
-
-    # 隐藏按钮
-
-    def quit_window(icon, item):
-        icon.stop()
-        # 使用新线程退出，否则就是在托盘图标中退出，会导致托盘图标不消失
-        threading.Thread(target=on_closing, daemon=True).start()
-
-    def show_window(icon, item):
-        icon.stop()
-        window.deiconify()  # 恢复窗口
-        hide_btn.focus_set()  # 恢复后设置默认焦点
-
-    def hide_to_tray(event=None):
-        try:
-            menu = (
-                pystray.MenuItem("显示", show_window, default=True),
-                pystray.MenuItem("退出", quit_window)
-            )
-            icon = pystray.Icon(PROGRAM_TITLE, iconimage, PROGRAM_TITLE, menu)
-            # 使用新线程启用图标，防止阻塞进入事件循环，如显示桌面。不设置daemon会导致从托盘退出时该线程不结束
-            threading.Thread(target=icon.run, daemon=True).start()
-
-            window.withdraw()  # 隐藏主窗口
-        except Exception as e:
-            insert_text_message("Failed to use pystray to hide to tray, %s" % e)
-
-    hide_btn = ttk.Button(root, text="隐藏", width=12, padding=pad_scale_xy, command=hide_to_tray)
-    hide_btn.grid(row=0, column=2, sticky=tk.NSEW, padx=pad_scale_xy5, pady=pad_scale_xy5)
-
-    # 选择和烧写按钮（半宽，左：选择+烧写，右：预留新功能）
-
-    Label3 = tk.Text(root, state=tk.DISABLED, wrap=tk.NONE, width=22, height=1, padx=pad_scale_xy5, pady=pad_scale_xy5)
-    Label3.grid(row=1, column=0, rowspan=1, columnspan=2, sticky=tk.NSEW, padx=pad_scale_xy5, pady=pad_scale_xy5)
-    insert_text_message("选择闪存固件", item=Label3)
-    burn_frame1 = ttk.Frame(root)
-    burn_frame1.grid(row=1, column=2, sticky=tk.NSEW, padx=pad_scale_xy5, pady=pad_scale_xy5)
-    ttk.Button(burn_frame1, text="选择", width=6, padding=pad_scale_xy,
-               command=lambda: Get_Photo_Path(1)).pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-    ttk.Button(burn_frame1, text="烧写", width=6, padding=pad_scale_xy,
-               command=lambda: Start_Write_Photo_Path(1)).pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-    Label5 = tk.Text(root, state=tk.DISABLED, wrap=tk.NONE, width=22, height=1, padx=pad_scale_xy5, pady=pad_scale_xy5)
-    Label5.grid(row=2, column=0, rowspan=1, columnspan=2, sticky=tk.NSEW, padx=pad_scale_xy5, pady=pad_scale_xy5)
-    insert_text_message("选择相册图像", item=Label5)
-    burn_frame2 = ttk.Frame(root)
-    burn_frame2.grid(row=2, column=2, sticky=tk.NSEW, padx=pad_scale_xy5, pady=pad_scale_xy5)
-    ttk.Button(burn_frame2, text="选择", width=6, padding=pad_scale_xy,
-               command=lambda: Get_Photo_Path(3)).pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-    ttk.Button(burn_frame2, text="烧写", width=6, padding=pad_scale_xy,
-               command=lambda: Start_Write_Photo_Path(3)).pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-    Label4 = tk.Text(root, state=tk.DISABLED, wrap=tk.NONE, width=22, height=1, padx=pad_scale_xy5, pady=pad_scale_xy5)
-    Label4.grid(row=3, column=0, rowspan=1, columnspan=2, sticky=tk.NSEW, padx=pad_scale_xy5, pady=pad_scale_xy5)
-    insert_text_message("选择背景图像", item=Label4)
-    burn_frame3 = ttk.Frame(root)
-    burn_frame3.grid(row=3, column=2, sticky=tk.NSEW, padx=pad_scale_xy5, pady=pad_scale_xy5)
-    ttk.Button(burn_frame3, text="选择", width=6, padding=pad_scale_xy,
-               command=lambda: Get_Photo_Path(2)).pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-    ttk.Button(burn_frame3, text="烧写", width=6, padding=pad_scale_xy,
-               command=lambda: Start_Write_Photo_Path(2)).pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-    Label6 = tk.Text(root, state=tk.DISABLED, wrap=tk.NONE, width=22, height=1, padx=pad_scale_xy5, pady=pad_scale_xy5)
-    Label6.grid(row=4, column=0, rowspan=1, columnspan=2, sticky=tk.NSEW, padx=pad_scale_xy5, pady=pad_scale_xy5)
-    insert_text_message("选择动图文件", item=Label6)
-    burn_frame4 = ttk.Frame(root)
-    burn_frame4.grid(row=4, column=2, sticky=tk.NSEW, padx=pad_scale_xy5, pady=pad_scale_xy5)
-    ttk.Button(burn_frame4, text="选择", width=6, padding=pad_scale_xy,
-               command=lambda: Get_Photo_Path(4)).pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-    ttk.Button(burn_frame4, text="烧写", width=6, padding=pad_scale_xy,
-               command=lambda: Start_Write_Photo_Path(4)).pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-    # 自定义显示内容
-
-    def change_netspeed_font():
-        global config_obj, netspeed_font, netspeed_font_size
-        name0 = config_obj.custom_selected_displayname[0][:8]
-        name1 = config_obj.custom_selected_displayname[1][:8]
-        if netspeed_font.getlength(name0) > netspeed_font.getlength(name1):
-            longer = name0
-        else:
-            longer = name1
-        if not_english(name0 + name1):
-            netspeed_font = default_font  # 因Orbitron不支持汉字，有汉字使用默认字体
-        else:
-            for index in range(4, 14, 2):
-                netspeed_font = MiniMark.load_font("resource/Orbitron-Bold.ttf", netspeed_font_size - index)
-                if netspeed_font.getlength(longer) < SHOW_WIDTH // 2:
-                    break
-
-    change_netspeed_font()
-
-    def show_custom():
-        global config_obj, sub_window
         if hardware_monitor_manager == 1:
             insert_text_message("Libre Hardware Monitor 加载失败，自定义内容功能不可用")
             return
@@ -9415,367 +7703,220 @@ def UI_Page():  # 进行图像界面显示
             insert_text_message("Libre Hardware Monitor 正在加载，请稍候……", cleanNext=False)
             return
 
-        def sub_on_closing():
-            window.attributes("-disabled", False)  # 启用主窗口
-            sub_window.destroy()  # 关闭并销毁子窗口
+        dlg = QDialog(window)
+        dlg.setWindowTitle("自定义显示内容")
+        dlg.setMinimumSize(760, 620)
+        main_lay = QVBoxLayout(dlg)
+        nb = QTabWidget()
+        main_lay.addWidget(nb)
 
-        # 不销毁子窗口虽然会加快下次打开的速度，但是会多占用内存。考虑到这个窗口使用频率不高，下次重新创建即可
-        #     # 点击关闭时仅隐藏子窗口，不真正关闭
-        #     sub_window.withdraw()
-        #
-        # if sub_window is not None:
-        #     sub_window.deiconify()  # 如果已经创建过子窗口直接显示
-        #     window.attributes("-disabled", True)  # 禁用主窗口
-        #     return
+        sensor_keys = []
+        try:
+            if hardware_monitor_manager is not None and hardware_monitor_manager != 1:
+                sensor_keys = list(hardware_monitor_manager.sensors.keys())
+        except Exception:
+            pass
 
-        sub_window = tk.Toplevel(window)  # 创建一个子窗口
-        sub_window.geometry("+%d+%d" % (window.winfo_x(), window.winfo_y()))  # 移到主窗口所在位置
-        sub_window.title("自定义显示内容")
-        sub_window.resizable(0, 0)  # 锁定窗口大小不能改变
-        sub_window.protocol("WM_DELETE_WINDOW", sub_on_closing)
-        sub_window.bind("<Escape>", lambda event: sub_on_closing())  # 按Esc按钮关闭
-        sub_window.transient(window)  # 置于主窗口前面
-        window.attributes("-disabled", True)  # 禁用主窗口
+        def _save_state():
+            _ui_set_active()
+            save_config()
 
-        sensor_vars = []
-        sensor_displayname_vars = []
-        sensor_vars_tech = []
-        sensor_displayname_vars_tech = []
+        # ========== 显示多项数值（tech） ==========
+        tech = QWidget()
+        nb.addTab(tech, "  显示多项数值  ")
+        tl = QVBoxLayout(tech)
 
-        # 创建一个选项卡
-        notebook = ttk.Notebook(sub_window)
-        notebook.grid(row=0, column=0, columnspan=2, sticky=tk.NSEW, padx=pad_scale_xy5 * 2, pady=pad_scale_xy5 * 2)
+        grid = QGridLayout()
+        tl.addLayout(grid)
+        grid.addWidget(QLabel("名称"), 0, 0)
+        grid.addWidget(QLabel("项目"), 0, 1)
 
-        # 添加“自定义多项”标签页
+        names_tech = list(config_obj.custom_selected_names_tech) + [""] * 6
+        dnames_tech = list(config_obj.custom_selected_displayname_tech) + [""] * 6
+        for i in range(6):
+            ne = QLineEdit(dnames_tech[i] if i < len(dnames_tech) else "")
+            ne.setFixedWidth(80)
+            grid.addWidget(ne, i + 1, 0)
+            sc = QComboBox()
+            sc.addItems([""] + sensor_keys)
+            sc.setCurrentText(names_tech[i] if i < len(names_tech) and names_tech[i] in sensor_keys else "")
+            sc.setMinimumWidth(220)
+            grid.addWidget(sc, i + 1, 1)
 
-        tech_frame = tk.Frame(master=sub_window)
-        notebook.add(tech_frame, text="  显示多项数值  ")
-        tech_frame.focus_set()  # 设置默认焦点
+            def _save_name(ii=i, nne=ne):
+                while len(config_obj.custom_selected_displayname_tech) <= ii:
+                    config_obj.custom_selected_displayname_tech.append("")
+                config_obj.custom_selected_displayname_tech[ii] = nne.text()
+                _save_state()
 
-        desc_label = tk.Label(tech_frame, text="名称")
-        desc_label.grid(row=1, column=0, sticky=tk.NSEW, padx=pad_scale_xy5, pady=pad_scale_xy5)
-        desc_label = tk.Label(tech_frame, text="项目")
-        desc_label.grid(row=1, column=1, sticky=tk.NSEW, padx=pad_scale_xy5, pady=pad_scale_xy5)
+            def _save_sensor(ii=i, ssc=sc):
+                while len(config_obj.custom_selected_names_tech) <= ii:
+                    config_obj.custom_selected_names_tech.append("")
+                config_obj.custom_selected_names_tech[ii] = ssc.currentText()
+                _save_state()
 
-        def update_sensor_value_tech(event, tvars, i):
-            global config_obj
-            event.widget.selection_clear()
-            if config_obj.custom_selected_names_tech[i] != tvars[i].get():
-                config_obj.custom_selected_names_tech[i] = tvars[i].get()
-                save_config()
+            ne.editingFinished.connect(_save_name)
+            sc.currentIndexChanged.connect(_save_sensor)
+        grid.setColumnStretch(1, 1)
 
-        def change_sensor_displayname_tech(dvars, i):
-            global config_obj
-            if config_obj.custom_selected_displayname_tech[i] != dvars[i].get():
-                config_obj.custom_selected_displayname_tech[i] = dvars[i].get()
-                save_config()
+        tl.addWidget(QLabel("完全自定义模板代码："))
+        text_area = QPlainTextEdit()
+        text_area.setPlainText(config_obj.full_custom_template)
+        tl.addWidget(text_area, 1)
 
-        row = 6  # 设置自定义项目数
-        for row1 in range(row):
-            if row1 >= len(config_obj.custom_selected_names_tech):
-                config_obj.custom_selected_names_tech = config_obj.custom_selected_names_tech + [""]
-                save_config()
-            if row1 >= len(config_obj.custom_selected_displayname_tech):
-                config_obj.custom_selected_displayname_tech = config_obj.custom_selected_displayname_tech + [""]
-                save_config()
+        # 命令插入行
+        cmd_row = QHBoxLayout()
+        tl.addLayout(cmd_row)
+        cmd_type_list = ["p 文本", "a 锚点", "m 移动到", "t 相对移动", "f 字体", "c 颜色",
+                         "i 图片", "v 数值", "r 矩形", "l 线条", "o 圆", "g 动图"]
+        cmd_type_combo = QComboBox()
+        cmd_type_combo.addItems(cmd_type_list)
+        cmd_row.addWidget(cmd_type_combo)
+        cmd_arg = QLineEdit()
+        cmd_arg.setPlaceholderText("参数，如 p:文字 / c:#ff0000 / m:8 8 / v:1 {:.1f}")
+        cmd_row.addWidget(cmd_arg, 1)
 
-            sensor_displayname_var = tk.StringVar(tech_frame, config_obj.custom_selected_displayname_tech[row1])
-            sensor_displayname_vars_tech.append(sensor_displayname_var)
-            sensor_entry = ttk.Entry(tech_frame, textvariable=sensor_displayname_var, width=10)
-            sensor_entry.bind("<KeyRelease>",
-                              lambda event, ii=row1: change_sensor_displayname_tech(sensor_displayname_vars_tech, ii))
-            sensor_entry.grid(row=row1 + 2, column=0, sticky=tk.NSEW, padx=pad_scale_xy5, pady=pad_scale_xy5)
+        def _insert_cmd():
+            letter = cmd_type_combo.currentText()[0]
+            arg = cmd_arg.text().strip()
+            text_area.insertPlainText(letter + (" " + arg if arg else "") + "\n")
+            _save_template()
+            cmd_arg.clear()
 
-            sensor_var = tk.StringVar(tech_frame, config_obj.custom_selected_names_tech[row1])
-            sensor_vars_tech.append(sensor_var)
-            sensor_combobox = ttk.Combobox(tech_frame, textvariable=sensor_var, width=60,
-                                           values=[""] + list(hardware_monitor_manager.sensors.keys()))
-            sensor_combobox.bind("<<ComboboxSelected>>",
-                                 lambda event, ii=row1: update_sensor_value_tech(event, sensor_vars_tech, ii))
-            sensor_combobox.grid(row=row1 + 2, column=1, sticky=tk.NSEW, padx=pad_scale_xy5, pady=pad_scale_xy5)
-            sensor_combobox.configure(state="readonly")  # 设置选择框不可编辑
+        insert_btn = QPushButton("插入")
+        insert_btn.clicked.connect(_insert_cmd)
+        cmd_row.addWidget(insert_btn)
 
-        row += 2
-        desc_label = tk.Label(tech_frame, text="完全自定义模板代码：", anchor=tk.W, justify=tk.LEFT)
-        desc_label.grid(row=row, column=0, columnspan=2, sticky=tk.NSEW, padx=pad_scale_xy5, pady=pad_scale_xy5)
+        # 实时预览
+        preview_lbl = QLabel()
+        pw = SHOW_WIDTH * 3
+        ph = SHOW_HEIGHT * 3
+        preview_lbl.setFixedSize(pw, ph)
+        preview_lbl.setStyleSheet("background:black; border:1px solid gray;")
+        preview_lbl.setScaledContents(True)
+        tl.addWidget(preview_lbl, 0, Qt.AlignHCenter)
 
-        # 可视化命令编辑器：无需记忆模板语法，逐条选择命令类型、填入参数即可插入模板
-        row += 1
-        cmd_frame = ttk.Frame(tech_frame, padding="5")
-        cmd_frame.grid(row=row, column=0, columnspan=2, sticky=tk.NSEW, padx=pad_scale_xy5, pady=0)
-        cmd_frame.grid_columnconfigure(1, weight=1)
+        def _update_preview():
+            try:
+                im = get_full_custom_im(update_sensors=False)
+                qimg = QImage(im.tobytes(), im.width, im.height, im.width * 3, QImage.Format_RGB888)
+                preview_lbl.setPixmap(QPixmap.fromImage(qimg))
+            except Exception:
+                pass
 
-        cmd_type_list = ["p 文本", "a 锚点", "m 移动到", "t 相对移动", "f 字体", "c 颜色", "i 图片", "v 数值", "r 矩形", "l 线条", "o 圆", "g 动图"]
-        cmd_hints = {
-            "p 文本": "输入要显示的文字，如 CPU 或 你好",
-            "a 锚点": "输入锚点，如 la / ra / ls / rs（参考Pillow锚点）",
-            "m 移动到": "输入 x y 绝对坐标，如 8 8",
-            "t 相对移动": "输入 dx dy 相对位移，如 8 0",
-            "f 字体": "输入 字体文件 字号，如 resource/Orbitron-Bold.ttf 20",
-            "c 颜色": "输入颜色 hex，如 #ff0000，或点“浏览…”选颜色",
-            "i 图片": "输入图片路径，如 resource/example_background.png，或点“浏览…”选文件",
-            "v 数值": "输入 序号 [格式]，如 1 或 1 {:.1f}（序号对应上方第1~6项）",
-            "r 矩形": "输入 x1 y1 x2 y2，如 10 10 150 70",
-            "l 线条": "输入 x1 y1 x2 y2，如 0 0 159 79",
-            "o 圆": "输入 x y 半径，如 80 40 20",
-            "g 动图": "输入 GIF 文件路径，如 resource/anim.gif，或点“浏览…”选文件",
-        }
-        cmd_type_var = tk.StringVar(tech_frame, cmd_type_list[0])
-        cmd_arg_var = tk.StringVar(tech_frame, "")
-        cmd_hint_var = tk.StringVar(tech_frame, cmd_hints[cmd_type_list[0]])
+        def _save_template():
+            _ui_set_active()
+            config_obj.full_custom_template = text_area.toPlainText()
+            save_config()
+            _update_preview()
 
-        def update_cmd_hint(event=None):
-            if event is not None:
-                event.widget.selection_clear()
-            cmd_hint_var.set(cmd_hints.get(cmd_type_var.get(), ""))
+        text_area.textChanged.connect(_save_template)
 
-        cmd_type_combobox = ttk.Combobox(cmd_frame, textvariable=cmd_type_var, values=cmd_type_list,
-                                         width=12, state="readonly")
-        cmd_type_combobox.grid(row=0, column=0, sticky=tk.NSEW, padx=(0, pad_scale_xy5))
-        cmd_type_combobox.bind("<<ComboboxSelected>>", update_cmd_hint)
+        btn_row = QHBoxLayout()
+        tl.addLayout(btn_row)
 
-        cmd_arg_entry = ttk.Entry(cmd_frame, textvariable=cmd_arg_var)
-        cmd_arg_entry.grid(row=0, column=1, sticky=tk.NSEW, padx=pad_scale_xy5)
-
-        def browse_resource():
-            """根据当前命令类型，智能选择颜色/字体/图片资源并填入参数框"""
-            letter = cmd_type_var.get()[0]
-            if letter == "c":
-                color = tkinter.colorchooser.askcolor(color="#3366cc", parent=sub_window)
-                if color and color[1]:
-                    cmd_arg_var.set(color[1])
-            elif letter == "f":
-                path = tkinter.filedialog.askopenfilename(parent=sub_window, title="选择字体",
-                                                          filetypes=[("字体文件", "*.ttf *.otf"), ("所有文件", "*.*")])
-                if path:
-                    cmd_arg_var.set(path + " 20")  # 默认字号20，可自行修改
-            elif letter == "i":
-                path = tkinter.filedialog.askopenfilename(parent=sub_window, title="选择图片",
-                                                          filetypes=IMAGE_FILE_TYPES)
-                if path:
-                    cmd_arg_var.set(path)
-
-        browse_btn = ttk.Button(cmd_frame, text="浏览…", width=8, padding=pad_scale_xy, command=browse_resource)
-        browse_btn.grid(row=0, column=2, sticky=tk.NSEW, padx=pad_scale_xy5)
-
-        def insert_command():
-            sel = cmd_type_var.get()
-            if not sel:
-                return
-            letter = sel[0]
-            arg = cmd_arg_var.get().strip()
-            line = letter + (" " + arg if arg else "")
-            text_area.insert(tk.INSERT, line + "\n")  # 插入到光标处
-            text_area.see(tk.INSERT)
-            update_global_text()
-            cmd_arg_entry.focus_set()
-            cmd_arg_entry.selection_range(0, tk.END)
-
-        insert_btn = ttk.Button(cmd_frame, text="插入", width=8, padding=pad_scale_xy, command=insert_command)
-        insert_btn.grid(row=0, column=3, sticky=tk.NSEW, padx=pad_scale_xy5)
-
-        cmd_hint_label = tk.Label(cmd_frame, textvariable=cmd_hint_var, anchor=tk.W, justify=tk.LEFT,
-                                  fg="gray", font=("", 9))
-        cmd_hint_label.grid(row=1, column=0, columnspan=4, sticky=tk.NSEW, padx=pad_scale_xy5,
-                            pady=(pad_scale_xy5, 0))
-
-        # 创建自定义内容输入框
-        row += 1
-        text_frame = ttk.Frame(tech_frame, padding="5")
-        text_frame.grid(row=row, column=0, columnspan=2, sticky=tk.NSEW, padx=pad_scale_xy5, pady=0)
-
-        def update_global_canvas():
-            # UI预览模式：跳过传感器更新，避免与daemon线程并发冲突
-            im = get_full_custom_im(update_sensors=False)
-            im = im.resize((SHOW_WIDTH * scale_factor // 100, SHOW_HEIGHT * scale_factor // 100),
-                           Image.Resampling.LANCZOS)
-            tk_im = ImageTk.PhotoImage(im)
-            canvas.create_image(0, 0, anchor=tk.NW, image=tk_im)
-            canvas.image = tk_im
-
-        def update_global_text(event=None):
-            global config_obj
-            # Get the current content of the text area and update the global variable
-            full_custom_template_tmp = text_area.get("1.0", tk.END).rstrip('\n')  # tk.END会多一个换行
-            if config_obj.full_custom_template != full_custom_template_tmp:
-                config_obj.full_custom_template = full_custom_template_tmp
-                save_config()
-                update_global_canvas()
-
-        # wrap: WORD 按空白符如空格换行，CHAR 按字符换行，NONE 不换行
-        text_area = tk.Text(text_frame, wrap=tk.CHAR, width=10, height=10, padx=0, pady=0)
-        text_area.insert(tk.END, config_obj.full_custom_template)
-        text_area.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=0, pady=0)
-
-        view_frame = ttk.Frame(text_frame, padding="0")
-        view_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=False, padx=0, pady=0)
-
-        desc_label = tk.Label(view_frame, width=1, text="效果预览：", anchor=tk.NW, justify=tk.LEFT, padx=0, pady=0)
-        desc_label.pack(side=tk.TOP, fill=tk.BOTH, expand=False, padx=0, pady=0)
-
-        canvas = tk.Canvas(view_frame, width=(SHOW_WIDTH * scale_factor // 100),
-                           height=(SHOW_HEIGHT * scale_factor // 100), borderwidth=0)
-        canvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=0, pady=0)
-
-        text_area.bind("<KeyRelease>", update_global_text)  # 按键弹起时触发
-        # text_area.bind("<FocusOut>", update_global_text)  # 当组件失去焦点触发
-        update_global_canvas()
-
-        scrollbar = ttk.Scrollbar(text_frame, orient=tk.VERTICAL, command=text_area.yview)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        text_area["yscrollcommand"] = scrollbar.set
-
-        row += 1
-        btn_frame = ttk.Frame(tech_frame, padding="5")
-        btn_frame.grid(row=row, column=0, columnspan=2, sticky=tk.NSEW, padx=0, pady=0)
-        btn_frame.grid_columnconfigure(0, weight=1)  # 设置第1列自动调整宽度
-        btn_frame.grid_columnconfigure(1, weight=1)  # 设置第2列自动调整宽度
-        btn_frame.grid_columnconfigure(2, weight=1)  # 设置第3列自动调整宽度
-        btn_frame.grid_columnconfigure(3, weight=1)  # 设置第4列自动调整宽度
-
-        def show_error():
-            update_global_canvas()
-            print(full_custom_error.rstrip('\n'))
-            if full_custom_error == "OK":
-                tk.messagebox.showinfo(title="提示", message=full_custom_error, parent=sub_window)
-            else:
-                tk.messagebox.showerror(title="错误", message=full_custom_error, parent=sub_window)
-
-        show_error_btn = ttk.Button(btn_frame, text="查看模板错误", width=15, padding=pad_scale_xy, command=show_error)
-        show_error_btn.grid(row=0, column=0, sticky=tk.NSEW, padx=pad_scale_xy5, pady=pad_scale_xy5)
-
-        def example(i):
-            global config_obj
-            if i == 1:
-                full_custom_template = '\n'.join([
+        def _example(n):
+            if n == 1:
+                t = '\n'.join([
                     "i resource/example_background.png", "c #ff3333", "f resource/Orbitron-Regular.ttf 22",
-                    "m 16 16", "v 1 {:.0f}", "p %",
-                    "m 96 16", "v 2 {:.0f}", "p %",
+                    "m 16 16", "v 1 {:.0f}", "p %", "m 96 16", "v 2 {:.0f}", "p %",
                     "m 96 44", "v 3 {:.0f}", "p %"
                 ])
-            elif i == 2:
-                full_custom_template = '\n'.join([
+            else:
+                t = '\n'.join([
                     "m 8 8", "f resource/Orbitron-Bold.ttf 20", "p CPU", "t 8 0", "c #3366cc", "v 1",
                     "m 8 28", "c #000000", "f resource/Orbitron-Bold.ttf 20", "p GPU", "t 8 0", "c #3366cc", "v 2",
                     "m 8 48", "c #000000", "f resource/Orbitron-Bold.ttf 20", "p RAM", "t 8 0", "c #3366cc", "v 3"
                 ])
-            if full_custom_template != config_obj.full_custom_template:
-                config_obj.full_custom_template = full_custom_template
-                save_config()
-            text_area.delete("1.0", tk.END)
-            text_area.insert(tk.END, config_obj.full_custom_template)
-            update_global_canvas()
+            text_area.setPlainText(t)
+            _save_template()
 
-        example_btn_1 = ttk.Button(btn_frame, text="科技", width=15, padding=pad_scale_xy, command=lambda: example(1))
-        example_btn_1.grid(row=0, column=1, sticky=tk.NSEW, padx=pad_scale_xy5, pady=pad_scale_xy5)
-        example_btn_2 = ttk.Button(btn_frame, text="简单", width=15, padding=pad_scale_xy, command=lambda: example(2))
-        example_btn_2.grid(row=0, column=2, sticky=tk.NSEW, padx=pad_scale_xy5, pady=pad_scale_xy5)
+        ex1 = QPushButton("科技")
+        ex1.clicked.connect(lambda: _example(1))
+        btn_row.addWidget(ex1)
+        ex2 = QPushButton("简单")
+        ex2.clicked.connect(lambda: _example(2))
+        btn_row.addWidget(ex2)
 
-        def show_instruction():
-            instruction = '\n'.join([
-                "自定义显示内容。一共有两个模式，第一个固定显示两行，有图表；第二个是完全自定义模式，可以自己加文本和图片。",
-                "模板代码在框中输入，结果可以在预览中看到，模板代码从前往后顺序执行，每行执行一个操作。",
-                "p [文本] \t\t绘制文本，会自动移动坐标",
-                "a [锚点] \t\t更改文本锚点，参考Pillow文档，如la,ra,ls,rs",
-                "m [x] [y] \t\t移动到坐标(x,y)",
-                "t [x] [y] \t\t相对当前位置移动(x,y)",
-                "f [文件名] [字号] \t更换字体，文件名如 arial.ttf",
-                "c [hex码] \t\t更改文字颜色，如 c #ffff00",
-                "i [文件名] \t\t绘制图片",
-                "v [序号] [格式] \t绘制选择项目的值，格式符可省略，如 v 1 {:.2f}",
-                "",
-                "* 部分项目需要以管理员身份运行本程序，否则可能显示为<*>或--，甚至可能不会在项目下拉列表中显示。"
-                "当选择没有权限的项目时，点击“查看模板错误”会给出错误提示。"
-            ])
-            tk.messagebox.showinfo(title="说明", message=instruction, parent=sub_window, icon='question')
+        def _show_error():
+            _update_preview()
+            print(full_custom_error.rstrip('\n'))
+            if full_custom_error == "OK":
+                QMessageBox.information(dlg, "提示", full_custom_error)
+            else:
+                QMessageBox.warning(dlg, "错误", full_custom_error)
 
-        show_instruction_btn = ttk.Button(btn_frame, text="说明", width=15, padding=pad_scale_xy,
-                                          command=show_instruction)
-        show_instruction_btn.grid(row=0, column=3, sticky=tk.NSEW, padx=pad_scale_xy5, pady=pad_scale_xy5)
+        err_btn = QPushButton("查看模板错误")
+        err_btn.clicked.connect(_show_error)
+        btn_row.addWidget(err_btn)
+        btn_row.addStretch(1)
 
-        # 添加“简单两项图表”标签页
+        # ========== 显示两项图表（simple） ==========
+        simple = QWidget()
+        nb.addTab(simple, "  显示两项图表  ")
+        sl = QVBoxLayout(simple)
+        sgrid = QGridLayout()
+        sl.addLayout(sgrid)
+        sgrid.addWidget(QLabel("名称"), 0, 0)
+        sgrid.addWidget(QLabel("项目"), 0, 1)
 
-        simple_frame = tk.Frame(master=sub_window)
-        notebook.add(simple_frame, text="  显示两项图表  ")
+        names2 = list(config_obj.custom_selected_names) + [""] * 2
+        dnames2 = list(config_obj.custom_selected_displayname) + [""] * 2
+        for i in range(2):
+            ne = QLineEdit(dnames2[i] if i < len(dnames2) else "")
+            ne.setFixedWidth(80)
+            sgrid.addWidget(ne, i + 1, 0)
+            sc = QComboBox()
+            sc.addItems([""] + sensor_keys)
+            sc.setCurrentText(names2[i] if i < len(names2) and names2[i] in sensor_keys else "")
+            sc.setMinimumWidth(220)
+            sgrid.addWidget(sc, i + 1, 1)
 
-        desc_label = tk.Label(simple_frame, text="名称")
-        desc_label.grid(row=1, column=0, sticky=tk.NSEW, padx=pad_scale_xy5, pady=pad_scale_xy5)
-        desc_label = tk.Label(simple_frame, text="项目")
-        desc_label.grid(row=1, column=1, sticky=tk.NSEW, padx=pad_scale_xy5, pady=pad_scale_xy5)
+            def _save_name2(ii=i, nne=ne):
+                while len(config_obj.custom_selected_displayname) <= ii:
+                    config_obj.custom_selected_displayname.append("")
+                config_obj.custom_selected_displayname[ii] = nne.text()
+                _save_state()
 
-        def update_sensor_value(event, vvars, i):
-            global config_obj, custom_plot_data
-            event.widget.selection_clear()
-            if config_obj.custom_selected_names[i] != vvars[i].get():
-                config_obj.custom_selected_names[i] = vvars[i].get()
-                save_config()
-
-                # 项目变更时清空旧项目数据
-                if i == 0:
+            def _save_sensor2(ii=i, ssc=sc):
+                while len(config_obj.custom_selected_names) <= ii:
+                    config_obj.custom_selected_names.append("")
+                config_obj.custom_selected_names[ii] = ssc.currentText()
+                _save_state()
+                if ii == 0 and custom_plot_data is not None:
                     custom_plot_data["sent"] = [0] * (SHOW_WIDTH // 2)
-                elif i == 1:
+                elif ii == 1 and custom_plot_data is not None:
                     custom_plot_data["recv"] = [0] * (SHOW_WIDTH // 2)
 
-        def change_sensor_displayname(dvars, i):
-            global config_obj
-            if config_obj.custom_selected_displayname[i] != dvars[i].get():
-                config_obj.custom_selected_displayname[i] = dvars[i].get()
-                save_config()
-                change_netspeed_font()
+            ne.editingFinished.connect(_save_name2)
+            sc.currentIndexChanged.connect(_save_sensor2)
+        sgrid.setColumnStretch(1, 1)
+        sl.addStretch(1)
 
-        # "简单"模式显示2项
-        for row in range(2):
-            sensor_displayname_var = tk.StringVar(simple_frame, config_obj.custom_selected_displayname[row])
-            sensor_displayname_vars.append(sensor_displayname_var)
-            sensor_entry = ttk.Entry(simple_frame, textvariable=sensor_displayname_var, width=8)
-            sensor_entry.bind("<KeyRelease>",
-                              lambda event, ii=row: change_sensor_displayname(sensor_displayname_vars, ii))
-            sensor_entry.grid(row=row + 2, column=0, sticky=tk.NSEW, padx=pad_scale_xy5, pady=pad_scale_xy5)
+        # ========== 图形化编辑（visual） ==========
+        visual = QWidget()
+        nb.addTab(visual, "  图形化编辑  ")
+        vl = QVBoxLayout(visual)
 
-            sensor_var = tk.StringVar(simple_frame, config_obj.custom_selected_names[row])
-            sensor_vars.append(sensor_var)
-            sensor_combobox = ttk.Combobox(simple_frame, textvariable=sensor_var, width=60,
-                                           values=[""] + list(hardware_monitor_manager.sensors.keys()))
-            sensor_combobox.bind("<<ComboboxSelected>>",
-                                 lambda event, ii=row: update_sensor_value(event, sensor_vars, ii))
-            sensor_combobox.grid(row=row + 2, column=1, sticky=tk.NSEW, padx=pad_scale_xy5, pady=pad_scale_xy5)
-            sensor_combobox.configure(state="readonly")  # 设置选择框不可编辑
-
-        # 添加“图形化编辑”标签页：把模板代码完全图像化，无需接触代码即可完整使用所有命令
-        visual_frame = tk.Frame(master=sub_window)
-        notebook.add(visual_frame, text="  图形化编辑  ")
-
-        CMD_NAMES = {"p": "文本", "a": "锚点", "m": "位置", "t": "偏移", "f": "字体", "c": "颜色", "i": "图片", "v": "数值",
-                     "r": "矩形", "l": "线条", "o": "圆", "g": "动图"}
+        CMD_NAMES = {"p": "文本", "a": "锚点", "m": "位置", "t": "偏移", "f": "字体", "c": "颜色",
+                     "i": "图片", "v": "数值", "r": "矩形", "l": "线条", "o": "圆", "g": "动图"}
 
         def cmd_to_line(cmd):
             letter = cmd[0]
             if letter == "raw":
                 return cmd[1]
-            if letter == "p":
-                return "p " + cmd[1]
-            if letter == "a":
-                return "a " + cmd[1]
-            if letter == "m":
-                return "m %s %s" % (cmd[1], cmd[2])
-            if letter == "t":
-                return "t %s %s" % (cmd[1], cmd[2])
+            if letter in ("p", "a", "c", "i", "g"):
+                return "%s %s" % (letter, cmd[1])
+            if letter in ("m", "t"):
+                return "%s %s %s" % (letter, cmd[1], cmd[2])
             if letter == "f":
                 return "f %s %s" % (cmd[1], cmd[2])
-            if letter == "c":
-                return "c " + cmd[1]
-            if letter == "i":
-                return "i " + cmd[1]
             if letter == "v":
                 return "v %s %s" % (cmd[1], cmd[2]) if cmd[2] else "v " + cmd[1]
-            if letter == "r":
-                return "r %s %s %s %s" % (cmd[1], cmd[2], cmd[3], cmd[4])
-            if letter == "l":
-                return "l %s %s %s %s" % (cmd[1], cmd[2], cmd[3], cmd[4])
+            if letter in ("r", "l"):
+                return "%s %s %s %s %s" % (letter, cmd[1], cmd[2], cmd[3], cmd[4])
             if letter == "o":
-                return "o %s %s %s" % (cmd[1], cmd[2], cmd[3])
-            if letter == "g":
-                return "g " + cmd[1]
+                return "o %s %s %s" % (letter, cmd[1], cmd[2], cmd[3])
             return ""
 
         def cmd_to_desc(cmd):
@@ -9850,928 +7991,2630 @@ def UI_Page():  # 进行图像界面显示
 
         visual_cmds = parse_template_to_cmds(config_obj.full_custom_template)
 
-        tip = tk.Label(visual_frame, text="双击列表项可编辑；下方按钮添加元素；右侧为实时预览。结果与“显示多项数值”页共享。",
-                       anchor=tk.W, justify=tk.LEFT, fg="gray")
-        tip.grid(row=0, column=0, columnspan=2, sticky=tk.NSEW, padx=pad_scale_xy5, pady=pad_scale_xy5)
+        tip = QLabel("双击列表项可编辑；下方按钮添加元素；右侧为实时预览。结果与“显示多项数值”页共享。")
+        tip.setStyleSheet("color:gray;")
+        vl.addWidget(tip)
 
-        list_frame = ttk.Frame(visual_frame)
-        list_frame.grid(row=1, column=0, sticky=tk.NSEW, padx=pad_scale_xy5, pady=pad_scale_xy5)
-
-        cmd_listbox = tk.Listbox(list_frame, width=46, height=14, exportselection=False)
-        scrollbar_v = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=cmd_listbox.yview)
-        cmd_listbox.configure(yscrollcommand=scrollbar_v.set)
-        cmd_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scrollbar_v.pack(side=tk.RIGHT, fill=tk.Y)
-
-        visual_canvas = tk.Canvas(visual_frame, width=(SHOW_WIDTH * scale_factor // 100),
-                                  height=(SHOW_HEIGHT * scale_factor // 100), borderwidth=0)
-        visual_canvas.grid(row=1, column=1, sticky=tk.NSEW, padx=pad_scale_xy5, pady=pad_scale_xy5)
+        vis_row = QHBoxLayout()
+        vl.addLayout(vis_row)
+        cmd_list = QListWidget()
+        cmd_list.setMinimumWidth(360)
+        vis_row.addWidget(cmd_list, 1)
+        vis_preview = QLabel()
+        vis_preview.setFixedSize(pw, ph)
+        vis_preview.setStyleSheet("background:black; border:1px solid gray;")
+        vis_preview.setScaledContents(True)
+        vis_row.addWidget(vis_preview)
 
         def refresh_cmd_list():
-            cmd_listbox.delete(0, tk.END)
+            cmd_list.clear()
             for cmd in visual_cmds:
-                cmd_listbox.insert(tk.END, cmd_to_desc(cmd))
+                cmd_list.addItem(cmd_to_desc(cmd))
 
         def update_visual_preview():
-            im = get_full_custom_im(update_sensors=False)
-            im = im.resize((SHOW_WIDTH * scale_factor // 100, SHOW_HEIGHT * scale_factor // 100),
-                           Image.Resampling.LANCZOS)
-            tk_im = ImageTk.PhotoImage(im)
-            visual_canvas.create_image(0, 0, anchor=tk.NW, image=tk_im)
-            visual_canvas.image = tk_im
+            try:
+                im = get_full_custom_im(update_sensors=False)
+                qimg = QImage(im.tobytes(), im.width, im.height, im.width * 3, QImage.Format_RGB888)
+                vis_preview.setPixmap(QPixmap.fromImage(qimg))
+            except Exception:
+                pass
 
         def rebuild_template_and_preview():
+            _ui_set_active()
             config_obj.full_custom_template = "\n".join(cmd_to_line(c) for c in visual_cmds)
             save_config()
             refresh_cmd_list()
             update_visual_preview()
-            # 同步“显示多项数值”页的模板文本框
-            text_area.delete("1.0", tk.END)
-            text_area.insert(tk.END, config_obj.full_custom_template)
+            text_area.setPlainText(config_obj.full_custom_template)
 
         def open_cmd_dialog(cmd_type, edit_index=None):
-            dialog = tk.Toplevel(sub_window)
-            dialog.title("添加" + CMD_NAMES.get(cmd_type, "") + ("" if edit_index is None else "（编辑）"))
-            dialog.transient(sub_window)
-            dialog.resizable(0, 0)
-
+            dlg2 = QDialog(dlg)
+            dlg2.setWindowTitle("添加" + CMD_NAMES.get(cmd_type, "") + ("" if edit_index is None else "（编辑）"))
+            v2 = QVBoxLayout(dlg2)
             existing = None
             if edit_index is not None and 0 <= edit_index < len(visual_cmds):
                 existing = visual_cmds[edit_index]
+            collect = {}
 
-            frm = ttk.Frame(dialog, padding=pad_scale_xy5 * 2)
-            frm.grid(row=0, column=0, sticky=tk.NSEW)
-            frm.grid_columnconfigure(1, weight=1)
+            def _entry_row(label, value, width=120):
+                row = QHBoxLayout()
+                v2.addLayout(row)
+                row.addWidget(QLabel(label))
+                e = QLineEdit(value)
+                e.setFixedWidth(width)
+                row.addWidget(e)
+                return e
 
-            collect = None
+            def _browse_row(callback):
+                row = QHBoxLayout()
+                v2.addLayout(row)
+                row.addStretch(1)
+                b = QPushButton("浏览…")
+                b.clicked.connect(callback)
+                row.addWidget(b)
 
             if cmd_type == "p":
-                ttk.Label(frm, text="文字：").grid(row=0, column=0, sticky=tk.W, padx=pad_scale_xy5, pady=pad_scale_xy5)
-                var = tk.StringVar(frm, existing[1] if existing else "")
-                ttk.Entry(frm, textvariable=var, width=32).grid(row=0, column=1, sticky=tk.EW, padx=pad_scale_xy5, pady=pad_scale_xy5)
-                collect = lambda: ("p", var.get())
-
+                e = _entry_row("文字：", existing[1] if existing else "", 220)
+                collect["data"] = lambda: ("p", e.text())
             elif cmd_type == "v":
-                ttk.Label(frm, text="数值项：").grid(row=0, column=0, sticky=tk.W, padx=pad_scale_xy5, pady=pad_scale_xy5)
-                idx_var = tk.StringVar(frm, existing[1] if existing else "1")
-                ttk.Combobox(frm, textvariable=idx_var, values=["1", "2", "3", "4", "5", "6"], width=8,
-                             state="readonly").grid(row=0, column=1, sticky=tk.W, padx=pad_scale_xy5, pady=pad_scale_xy5)
-                names_tip = "，".join("%d=%s" % (i + 1, (config_obj.custom_selected_displayname_tech[i]
-                                     if i < len(config_obj.custom_selected_displayname_tech) and config_obj.custom_selected_displayname_tech[i]
-                                     else "第%d项" % (i + 1))) for i in range(6))
-                ttk.Label(frm, text=names_tip, foreground="gray", wraplength=320, justify=tk.LEFT).grid(
-                    row=1, column=0, columnspan=2, sticky=tk.W, padx=pad_scale_xy5, pady=(0, pad_scale_xy5))
-                ttk.Label(frm, text="格式(可选)：").grid(row=2, column=0, sticky=tk.W, padx=pad_scale_xy5, pady=pad_scale_xy5)
-                fmt_var = tk.StringVar(frm, existing[2] if existing else "")
-                ttk.Entry(frm, textvariable=fmt_var, width=16).grid(row=2, column=1, sticky=tk.W, padx=pad_scale_xy5, pady=pad_scale_xy5)
-                ttk.Label(frm, text="例：{:.1f} 保留1位小数，留空则原样显示", foreground="gray").grid(
-                    row=3, column=0, columnspan=2, sticky=tk.W, padx=pad_scale_xy5, pady=(0, pad_scale_xy5))
-                collect = lambda: ("v", idx_var.get(), fmt_var.get().strip())
-
+                row = QHBoxLayout()
+                v2.addLayout(row)
+                row.addWidget(QLabel("数值项："))
+                idx_combo = QComboBox()
+                idx_combo.addItems(["1", "2", "3", "4", "5", "6"])
+                idx_combo.setCurrentText(existing[1] if existing else "1")
+                row.addWidget(idx_combo)
+                fmt_e = _entry_row("格式(可选)：", existing[2] if existing else "", 110)
+                v2.addWidget(QLabel("例：{:.1f} 保留1位小数，留空则原样显示"))
+                collect["data"] = lambda: ("v", idx_combo.currentText(), fmt_e.text().strip())
             elif cmd_type in ("m", "t"):
-                label = "坐标 x / y：" if cmd_type == "m" else "偏移 dx / dy："
-                ttk.Label(frm, text=label).grid(row=0, column=0, sticky=tk.W, padx=pad_scale_xy5, pady=pad_scale_xy5)
-                v1 = tk.StringVar(frm, existing[1] if existing else "0")
-                v2 = tk.StringVar(frm, existing[2] if existing else "0")
-                ttk.Entry(frm, textvariable=v1, width=8).grid(row=0, column=1, sticky=tk.W, padx=pad_scale_xy5, pady=pad_scale_xy5)
-                ttk.Entry(frm, textvariable=v2, width=8).grid(row=0, column=2, sticky=tk.W, padx=pad_scale_xy5, pady=pad_scale_xy5)
-                collect = lambda: (cmd_type, v1.get(), v2.get())
-
+                e1 = _entry_row("x：", existing[1] if existing else "0", 60)
+                e2 = _entry_row("y：", existing[2] if existing else "0", 60)
+                collect["data"] = lambda: (cmd_type, e1.text(), e2.text())
             elif cmd_type == "a":
                 anchors = ["la", "ma", "ra", "ls", "ms", "rs", "lt", "mt", "rt", "lm", "mm", "rm",
                            "lb", "mb", "rb", "ld", "md", "rd", "ct"]
-                ttk.Label(frm, text="锚点：").grid(row=0, column=0, sticky=tk.W, padx=pad_scale_xy5, pady=pad_scale_xy5)
-                a_var = tk.StringVar(frm, existing[1] if existing else "la")
-                ttk.Combobox(frm, textvariable=a_var, values=anchors, width=12).grid(
-                    row=0, column=1, sticky=tk.W, padx=pad_scale_xy5, pady=pad_scale_xy5)
-                ttk.Label(frm, text="la/ra/ma=左/右/中 顶对齐，ls/rs/ms=基线，lb/rb=底部，ct=居中",
-                          foreground="gray", wraplength=320, justify=tk.LEFT).grid(
-                    row=1, column=0, columnspan=2, sticky=tk.W, padx=pad_scale_xy5, pady=(0, pad_scale_xy5))
-                collect = lambda: ("a", a_var.get())
-
+                row = QHBoxLayout()
+                v2.addLayout(row)
+                row.addWidget(QLabel("锚点："))
+                a_combo = QComboBox()
+                a_combo.addItems(anchors)
+                a_combo.setCurrentText(existing[1] if existing else "la")
+                row.addWidget(a_combo)
+                v2.addWidget(QLabel("la/ra/ma=左/右/中 顶对齐，ls/rs/ms=基线，lb/rb=底部，ct=居中"))
+                collect["data"] = lambda: ("a", a_combo.currentText())
             elif cmd_type == "c":
-                ttk.Label(frm, text="颜色：").grid(row=0, column=0, sticky=tk.W, padx=pad_scale_xy5, pady=pad_scale_xy5)
-                c_var = tk.StringVar(frm, existing[1] if existing else "#ff0000")
-                ttk.Entry(frm, textvariable=c_var, width=12).grid(row=0, column=1, sticky=tk.W, padx=pad_scale_xy5, pady=pad_scale_xy5)
+                e = _entry_row("颜色：", existing[1] if existing else "#ff0000", 110)
 
-                def pick_color():
-                    color = tkinter.colorchooser.askcolor(color=c_var.get(), parent=dialog)
-                    if color and color[1]:
-                        c_var.set(color[1])
+                def _pick_cc():
+                    c = QColorDialog.getColor(QColor(e.text()), dlg2)
+                    if c.isValid():
+                        e.setText(c.name())
 
-                ttk.Button(frm, text="调色板", padding=pad_scale_xy, command=pick_color).grid(
-                    row=0, column=2, sticky=tk.W, padx=pad_scale_xy5, pady=pad_scale_xy5)
-                collect = lambda: ("c", c_var.get())
-
+                _browse_row(_pick_cc)
+                collect["data"] = lambda: ("c", e.text())
             elif cmd_type == "f":
-                ttk.Label(frm, text="字体文件：").grid(row=0, column=0, sticky=tk.W, padx=pad_scale_xy5, pady=pad_scale_xy5)
-                f_var = tk.StringVar(frm, existing[1] if existing else "")
-                ttk.Entry(frm, textvariable=f_var, width=28).grid(row=0, column=1, sticky=tk.EW, padx=pad_scale_xy5, pady=pad_scale_xy5)
+                e = _entry_row("字体文件：", existing[1] if existing else "", 220)
+                s_e = _entry_row("字号：", existing[2] if existing else "20", 60)
 
-                def pick_font():
-                    path = tkinter.filedialog.askopenfilename(parent=dialog, title="选择字体",
-                                                              filetypes=[("字体文件", "*.ttf *.otf"), ("所有文件", "*.*")])
+                def _pick_ff():
+                    path, _ = QFileDialog.getOpenFileName(dlg2, "选择字体", "", "字体文件 (*.ttf *.otf)")
                     if path:
-                        f_var.set(path)
+                        e.setText(path)
 
-                ttk.Button(frm, text="浏览…", padding=pad_scale_xy, command=pick_font).grid(
-                    row=0, column=2, sticky=tk.W, padx=pad_scale_xy5, pady=pad_scale_xy5)
-                ttk.Label(frm, text="字号：").grid(row=1, column=0, sticky=tk.W, padx=pad_scale_xy5, pady=pad_scale_xy5)
-                s_var = tk.StringVar(frm, existing[2] if existing else "20")
-                ttk.Entry(frm, textvariable=s_var, width=8).grid(row=1, column=1, sticky=tk.W, padx=pad_scale_xy5, pady=pad_scale_xy5)
-                collect = lambda: ("f", f_var.get(), s_var.get())
-
+                _browse_row(_pick_ff)
+                collect["data"] = lambda: ("f", e.text(), s_e.text())
             elif cmd_type == "i":
-                ttk.Label(frm, text="图片文件：").grid(row=0, column=0, sticky=tk.W, padx=pad_scale_xy5, pady=pad_scale_xy5)
-                i_var = tk.StringVar(frm, existing[1] if existing else "")
-                ttk.Entry(frm, textvariable=i_var, width=28).grid(row=0, column=1, sticky=tk.EW, padx=pad_scale_xy5, pady=pad_scale_xy5)
+                e = _entry_row("图片文件：", existing[1] if existing else "", 220)
 
-                def pick_image():
-                    path = tkinter.filedialog.askopenfilename(parent=dialog, title="选择图片", filetypes=IMAGE_FILE_TYPES)
+                def _pick_ii():
+                    path, _ = QFileDialog.getOpenFileName(dlg2, "选择图片", "", "图片文件 (*.png *.jpg *.bmp)")
                     if path:
-                        i_var.set(path)
+                        e.setText(path)
 
-                ttk.Button(frm, text="浏览…", padding=pad_scale_xy, command=pick_image).grid(
-                    row=0, column=2, sticky=tk.W, padx=pad_scale_xy5, pady=pad_scale_xy5)
-                collect = lambda: ("i", i_var.get())
-
+                _browse_row(_pick_ii)
+                collect["data"] = lambda: ("i", e.text())
             elif cmd_type in ("r", "l"):
-                ttk.Label(frm, text="x1 y1 x2 y2：").grid(row=0, column=0, sticky=tk.W, padx=pad_scale_xy5, pady=pad_scale_xy5)
-                vals = []
+                es = []
+                row = QHBoxLayout()
+                v2.addLayout(row)
+                row.addWidget(QLabel("x1 y1 x2 y2："))
                 for k in range(4):
-                    v = tk.StringVar(frm, existing[k + 1] if existing else "0")
-                    vals.append(v)
-                    ttk.Entry(frm, textvariable=v, width=6).grid(row=0, column=1 + k, sticky=tk.W, padx=pad_scale_xy5, pady=pad_scale_xy5)
-                collect = lambda: (cmd_type, vals[0].get(), vals[1].get(), vals[2].get(), vals[3].get())
-
+                    e = QLineEdit(existing[k + 1] if existing else "0")
+                    e.setFixedWidth(50)
+                    row.addWidget(e)
+                    es.append(e)
+                collect["data"] = lambda: (cmd_type, es[0].text(), es[1].text(), es[2].text(), es[3].text())
             elif cmd_type == "o":
-                ttk.Label(frm, text="x y 半径：").grid(row=0, column=0, sticky=tk.W, padx=pad_scale_xy5, pady=pad_scale_xy5)
-                vals = []
+                es = []
+                row = QHBoxLayout()
+                v2.addLayout(row)
+                row.addWidget(QLabel("x y 半径："))
                 for k in range(3):
-                    v = tk.StringVar(frm, existing[k + 1] if existing else "0")
-                    vals.append(v)
-                    ttk.Entry(frm, textvariable=v, width=6).grid(row=0, column=1 + k, sticky=tk.W, padx=pad_scale_xy5, pady=pad_scale_xy5)
-                collect = lambda: ("o", vals[0].get(), vals[1].get(), vals[2].get())
-
+                    e = QLineEdit(existing[k + 1] if existing else "0")
+                    e.setFixedWidth(50)
+                    row.addWidget(e)
+                    es.append(e)
+                collect["data"] = lambda: (cmd_type, es[0].text(), es[1].text(), es[2].text())
             elif cmd_type == "g":
-                ttk.Label(frm, text="GIF文件：").grid(row=0, column=0, sticky=tk.W, padx=pad_scale_xy5, pady=pad_scale_xy5)
-                g_var = tk.StringVar(frm, existing[1] if existing else "")
-                ttk.Entry(frm, textvariable=g_var, width=28).grid(row=0, column=1, sticky=tk.EW, padx=pad_scale_xy5, pady=pad_scale_xy5)
+                e = _entry_row("GIF文件：", existing[1] if existing else "", 220)
 
-                def pick_gif():
-                    path = tkinter.filedialog.askopenfilename(parent=dialog, title="选择动图",
-                                                              filetypes=[("GIF", "*.gif"), ("所有文件", "*.*")])
+                def _pick_gg():
+                    path, _ = QFileDialog.getOpenFileName(dlg2, "选择动图", "", "GIF (*.gif)")
                     if path:
-                        g_var.set(path)
+                        e.setText(path)
 
-                ttk.Button(frm, text="浏览…", padding=pad_scale_xy, command=pick_gif).grid(
-                    row=0, column=2, sticky=tk.W, padx=pad_scale_xy5, pady=pad_scale_xy5)
-                collect = lambda: ("g", g_var.get())
+                _browse_row(_pick_gg)
+                collect["data"] = lambda: ("g", e.text())
 
-            btn_row = ttk.Frame(frm)
-            btn_row.grid(row=50, column=0, columnspan=3, sticky=tk.EW, pady=(pad_scale_xy5 * 2, 0))
+            btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+            v2.addWidget(btns)
 
-            def on_ok():
-                if collect is not None:
-                    data = collect()
+            def _on_ok():
+                data = collect["data"]()
+                if data:
                     if edit_index is None:
                         visual_cmds.append(data)
                     else:
                         visual_cmds[edit_index] = data
                     rebuild_template_and_preview()
-                dialog.destroy()
+                dlg2.accept()
 
-            ttk.Button(btn_row, text="确定", padding=pad_scale_xy, command=on_ok).pack(side=tk.RIGHT, padx=pad_scale_xy5)
-            ttk.Button(btn_row, text="取消", padding=pad_scale_xy, command=dialog.destroy).pack(side=tk.RIGHT, padx=pad_scale_xy5)
-            dialog.grab_set()
+            btns.accepted.connect(_on_ok)
+            btns.rejected.connect(dlg2.reject)
+            dlg2.exec()
 
-        def edit_selected():
-            sel = cmd_listbox.curselection()
-            if not sel:
+        # 添加/编辑/删除/移动按钮
+        add_row = QHBoxLayout()
+        vl.addLayout(add_row)
+        add_row.addWidget(QLabel("添加命令:"))
+        add_type = QComboBox()
+        add_type.addItems([CMD_NAMES[k] + " (" + k + ")" for k in CMD_NAMES])
+        add_row.addWidget(add_type)
+
+        def _on_add():
+            letter = list(CMD_NAMES.keys())[add_type.currentIndex()]
+            open_cmd_dialog(letter)
+
+        add_btn = QPushButton("添加")
+        add_btn.clicked.connect(_on_add)
+        add_row.addWidget(add_btn)
+        add_row.addStretch(1)
+
+        ed_row = QHBoxLayout()
+        vl.addLayout(ed_row)
+
+        def _edit_sel():
+            row = cmd_list.currentRow()
+            if row < 0:
                 return
-            idx = sel[0]
-            cmd = visual_cmds[idx]
+            cmd = visual_cmds[row]
             if cmd[0] == "raw":
-                tk.messagebox.showinfo("提示", "该行无法识别，请在“显示多项数值”页手动修改，或删除后重新添加。", parent=sub_window)
+                QMessageBox.information(dlg, "提示", "该行无法识别，请在“显示多项数值”页手动修改，或删除后重新添加。")
                 return
-            open_cmd_dialog(cmd[0], idx)
+            open_cmd_dialog(cmd[0], row)
 
-        def delete_selected():
-            sel = cmd_listbox.curselection()
-            if not sel:
-                return
-            del visual_cmds[sel[0]]
-            rebuild_template_and_preview()
-
-        def move_selected(delta):
-            sel = cmd_listbox.curselection()
-            if not sel:
-                return
-            idx = sel[0]
-            new_idx = idx + delta
-            if 0 <= new_idx < len(visual_cmds):
-                visual_cmds[idx], visual_cmds[new_idx] = visual_cmds[new_idx], visual_cmds[idx]
-                rebuild_template_and_preview()
-                cmd_listbox.selection_set(new_idx)
-
-        def clear_all():
-            if not visual_cmds:
-                return
-            if tk.messagebox.askyesno("确认", "确定清空所有元素吗？", parent=sub_window):
-                visual_cmds[:] = []
+        def _del_sel():
+            row = cmd_list.currentRow()
+            if row >= 0:
+                del visual_cmds[row]
                 rebuild_template_and_preview()
 
-        cmd_listbox.bind("<Double-Button-1>", lambda event: edit_selected())
-
-        # 添加元素按钮
-        btn_frame1 = ttk.Frame(visual_frame)
-        btn_frame1.grid(row=2, column=0, columnspan=2, sticky=tk.NSEW, padx=pad_scale_xy5, pady=(0, pad_scale_xy5))
-        for i in range(8):
-            btn_frame1.grid_columnconfigure(i, weight=1)
-        add_buttons = [
-            ("添加文本", "p"), ("添加数值", "v"), ("添加图片", "i"), ("添加位置", "m"),
-            ("添加偏移", "t"), ("添加锚点", "a"), ("添加颜色", "c"), ("添加字体", "f"),
-            ("添加矩形", "r"), ("添加线条", "l"), ("添加圆", "o"), ("添加动图", "g"),
-        ]
-        for idx, (label, letter) in enumerate(add_buttons):
-            ttk.Button(btn_frame1, text=label, padding=pad_scale_xy,
-                       command=lambda l=letter: open_cmd_dialog(l)).grid(
-                row=idx // 8, column=idx % 8, sticky=tk.NSEW, padx=pad_scale_xy5, pady=pad_scale_xy5)
-
-        # 编辑操作按钮
-        btn_frame2 = ttk.Frame(visual_frame)
-        btn_frame2.grid(row=3, column=0, columnspan=2, sticky=tk.NSEW, padx=pad_scale_xy5, pady=pad_scale_xy5)
-        for i in range(5):
-            btn_frame2.grid_columnconfigure(i, weight=1)
-        ttk.Button(btn_frame2, text="编辑", padding=pad_scale_xy, command=edit_selected).grid(
-            row=0, column=0, sticky=tk.NSEW, padx=pad_scale_xy5, pady=pad_scale_xy5)
-        ttk.Button(btn_frame2, text="删除", padding=pad_scale_xy, command=delete_selected).grid(
-            row=0, column=1, sticky=tk.NSEW, padx=pad_scale_xy5, pady=pad_scale_xy5)
-        ttk.Button(btn_frame2, text="上移", padding=pad_scale_xy, command=lambda: move_selected(-1)).grid(
-            row=0, column=2, sticky=tk.NSEW, padx=pad_scale_xy5, pady=pad_scale_xy5)
-        ttk.Button(btn_frame2, text="下移", padding=pad_scale_xy, command=lambda: move_selected(1)).grid(
-            row=0, column=3, sticky=tk.NSEW, padx=pad_scale_xy5, pady=pad_scale_xy5)
-        ttk.Button(btn_frame2, text="清空", padding=pad_scale_xy, command=clear_all).grid(
-            row=0, column=4, sticky=tk.NSEW, padx=pad_scale_xy5, pady=pad_scale_xy5)
-
-        # 预设/导入/导出
-        btn_frame3 = ttk.Frame(visual_frame)
-        btn_frame3.grid(row=4, column=0, columnspan=2, sticky=tk.NSEW, padx=pad_scale_xy5, pady=pad_scale_xy5)
-        for i in range(3):
-            btn_frame3.grid_columnconfigure(i, weight=1)
-
-        PRESET_TEMPLATES = {
-            "大字时钟": ["c #00ccff", "f resource/Orbitron-Bold.ttf 40", "m 20 20", "p 12:00"],
-            "监控面板": ["c #ffffff", "f resource/Orbitron-Bold.ttf 16", "m 4 4", "p CPU", "t 8 0", "v 1",
-                       "m 4 30", "p RAM", "t 8 0", "v 2"],
-            "简约问候": ["c #ffcc00", "f resource/Orbitron-Bold.ttf 20", "m 8 28", "p Hello"],
-        }
-
-        def apply_preset():
-            win = tk.Toplevel(sub_window)
-            win.title("选择预设模板")
-            win.transient(sub_window)
-            win.resizable(0, 0)
-
-            def choose(name):
-                visual_cmds[:] = parse_template_to_cmds("\n".join(PRESET_TEMPLATES[name]))
-                rebuild_template_and_preview()
-                win.destroy()
-
-            for name in PRESET_TEMPLATES.keys():
-                ttk.Button(win, text=name, padding=pad_scale_xy, command=lambda n=name: choose(n)).pack(
-                    fill=tk.X, padx=pad_scale_xy5, pady=pad_scale_xy5)
-            win.grab_set()
-
-        def export_template():
-            path = tkinter.filedialog.asksaveasfilename(defaultextension=".txt",
-                                                        filetypes=[("模板文件", "*.txt")], title="导出模板")
-            if not path:
+        def _move(delta):
+            row = cmd_list.currentRow()
+            if row < 0:
                 return
-            try:
-                with open(path, "w", encoding="utf-8") as f:
-                    f.write(config_obj.full_custom_template)
-                insert_text_message("模板已导出到：%s" % path)
-            except Exception as e:
-                insert_text_message("导出模板失败：%s" % e)
-
-        def import_template():
-            path = tkinter.filedialog.askopenfilename(filetypes=[("模板文件", "*.txt")], title="导入模板")
-            if not path:
-                return
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    content = f.read()
-                visual_cmds[:] = parse_template_to_cmds(content)
+            nrow = row + delta
+            if 0 <= nrow < len(visual_cmds):
+                visual_cmds[row], visual_cmds[nrow] = visual_cmds[nrow], visual_cmds[row]
                 rebuild_template_and_preview()
-                insert_text_message("模板已导入")
-            except Exception as e:
-                insert_text_message("导入模板失败：%s" % e)
+                cmd_list.setCurrentRow(nrow)
 
-        ttk.Button(btn_frame3, text="预设模板", padding=pad_scale_xy, command=apply_preset).grid(
-            row=0, column=0, sticky=tk.NSEW, padx=pad_scale_xy5, pady=pad_scale_xy5)
-        ttk.Button(btn_frame3, text="导入模板", padding=pad_scale_xy, command=import_template).grid(
-            row=0, column=1, sticky=tk.NSEW, padx=pad_scale_xy5, pady=pad_scale_xy5)
-        ttk.Button(btn_frame3, text="导出模板", padding=pad_scale_xy, command=export_template).grid(
-            row=0, column=2, sticky=tk.NSEW, padx=pad_scale_xy5, pady=pad_scale_xy5)
+        edit_btn = QPushButton("编辑")
+        edit_btn.clicked.connect(_edit_sel)
+        ed_row.addWidget(edit_btn)
+        del_btn = QPushButton("删除")
+        del_btn.clicked.connect(_del_sel)
+        ed_row.addWidget(del_btn)
+        up_btn = QPushButton("上移")
+        up_btn.clicked.connect(lambda: _move(-1))
+        ed_row.addWidget(up_btn)
+        dn_btn = QPushButton("下移")
+        dn_btn.clicked.connect(lambda: _move(1))
+        ed_row.addWidget(dn_btn)
+        ed_row.addStretch(1)
 
+        cmd_list.itemDoubleClicked.connect(lambda _: _edit_sel())
         refresh_cmd_list()
         update_visual_preview()
 
-    show_custom_btn = ttk.Button(root, text="自定义内容", width=12, padding=pad_scale_xy, command=show_custom)
-    show_custom_btn.grid(row=5, column=2, sticky=tk.NSEW, padx=pad_scale_xy5, pady=pad_scale_xy5)
+        _update_preview()
+        dlg.exec()
+# -*- coding: UTF-8 -*-
+# 临时文件：新的 _build_main_tab 函数体（完整函数定义，含 def 行），替换进 _qt_ui_page_body.py
+# 布局精确复刻老版 4.7.1 主控页：左列烧写区/控制区，右列颜色/填充/间隔/FPS/相机，底部实时预览
+# -*- coding: UTF-8 -*-
+# 临时文件：新的 _build_main_tab 函数体（完整函数定义，含 def 行），替换进 _qt_ui_page_body.py
+# 布局精确复刻老版 4.7.1 主控页：左列烧写区/控制区，右列颜色/填充/间隔/FPS/相机，底部实时预览
+# -*- coding: UTF-8 -*-
+# 临时文件：新的 _build_main_tab 函数体（完整函数定义，含 def 行），替换进 _qt_ui_page_body.py
+# 布局精确复刻老版 4.7.1 主控页：左列烧写区/控制区，右列颜色/填充/间隔/FPS/相机，底部实时预览
+# -*- coding: UTF-8 -*-
+# 临时文件：新的 _build_main_tab 函数体（完整函数定义，含 def 行），替换进 _qt_ui_page_body.py
+# 布局精确复刻老版 4.7.1 主控页：左列烧写区/控制区，右列颜色/填充/间隔/FPS/相机，底部实时预览
+# -*- coding: UTF-8 -*-
+# 临时文件：新的 _build_main_tab 函数体（完整函数定义，含 def 行），替换进 _qt_ui_page_body.py
+# 布局精确复刻老版 4.7.1 主控页：左列烧写区/控制区，右列颜色/填充/间隔/FPS/相机，底部实时预览
+# -*- coding: UTF-8 -*-
+# 临时文件：新的 _build_main_tab 函数体（完整函数定义，含 def 行），替换进 _qt_ui_page_body.py
+# 布局精确复刻老版 4.7.1 主控页：左列烧写区/控制区，右列颜色/填充/间隔/FPS/相机，底部实时预览
+# -*- coding: UTF-8 -*-
+# 临时文件：新的 _build_main_tab 函数体（完整函数定义，含 def 行），替换进 _qt_ui_page_body.py
+# 布局精确复刻老版 4.7.1 主控页：左列烧写区/控制区，右列颜色/填充/间隔/FPS/相机，底部实时预览
+# -*- coding: UTF-8 -*-
+# 临时文件：新的 _build_main_tab 函数体（完整函数定义，含 def 行），替换进 _qt_ui_page_body.py
+# 布局精确复刻老版 4.7.1 主控页：左列烧写区/控制区，右列颜色/填充/间隔/FPS/相机，底部实时预览
+# -*- coding: UTF-8 -*-
+# 临时文件：新的 _build_main_tab 函数体（完整函数定义，含 def 行），替换进 _qt_ui_page_body.py
+# 布局精确复刻老版 4.7.1 主控页：左列烧写区/控制区，右列颜色/填充/间隔/FPS/相机，底部实时预览
 
-    # 显示方向选择
-    global lcd_direction_combobox
-    lcd_direction_combobox = ttk.Combobox(root, values=LCD_STATE_MESSAGE, state="readonly", width=14)
-    lcd_direction_combobox.grid(row=6, column=2, sticky=tk.NSEW, padx=pad_scale_xy5, pady=pad_scale_xy5)
-    lcd_direction_combobox.bind("<<ComboboxSelected>>", on_lcd_direction_select)
-    sync_lcd_combobox()
+    def _build_main_tab(parent, dev):
+        """为一块屏创建第三层「主控」子页，布局参照老版 4.7.1"""
+        global all_cameras, all_windows, config_obj
+        if all_cameras is None:
+            all_cameras = {}
+        if all_windows is None:
+            all_windows = {}
 
-    # 上翻/下翻 并排（各半宽）
-    page_btn_frame = ttk.Frame(root)
-    page_btn_frame.grid(row=5, column=3, sticky=tk.NSEW, padx=pad_scale_xy5, pady=pad_scale_xy5)
-    btn1 = ttk.Button(page_btn_frame, text="▲上翻", width=5, padding=pad_scale_xy, command=Page_UP)
-    btn1.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-    btn2 = ttk.Button(page_btn_frame, text="▼下翻", width=5, padding=pad_scale_xy, command=Page_Down)
-    btn2.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        outer = QVBoxLayout(parent)
+        outer.setContentsMargins(6, 6, 6, 6)
+        outer.setSpacing(6)
 
-    # 页面下拉选择列表
-    global page_combobox
-    page_combobox = ttk.Combobox(root, values=list(PAGE_ID.values()), state="readonly", width=14)
-    page_combobox.grid(row=6, column=3, sticky=tk.NSEW, padx=pad_scale_xy5, pady=pad_scale_xy5)
-    page_combobox.bind("<<ComboboxSelected>>", on_page_combobox_select)
-    sync_page_combobox()  # 初始化当前页面显示
+        def _cfg():
+            return dev.config if dev.config is not None else config_obj
 
-    # 创建颜色滑块
+        def _lock_screen():
+            set_active_device_config(dev)
 
-    def update_label_color(r1, g1, b1):
-        global config_obj
-        dev = get_current_device()
-        if Label2:
-            color_La = "#{:02x}{:02x}{:02x}".format(r1, g1, b1)
-            Label2.config(bg=color_La)
-        dev_color = ((r1 & 0xF8) << 8) | ((g1 & 0xFC) << 3) | ((b1 & 0xF8) >> 3)
-        if dev is not None:
-            dev.color_use = dev_color
-        save_config()
-        if dev is not None and config_obj.state_machine in [PCTIME_PAGE_ID, STATE_PAGE_ID]:
-            dev.state_change = 1
+        # 事件过滤器：点击下拉框时刷新列表（约等于原版 ButtonPress 刷新）
+        _popup_filters = []
 
-    def update_label_color_red():
-        global config_obj
-        _ui_set_active()  # 锁定到UI当前设备（避免多屏设置冲突）
-        config_obj.text_color_r = int(text_color_red_scale.get())
-        update_label_color(config_obj.text_color_r, config_obj.text_color_g, config_obj.text_color_b)
+        def _install_popup_refresh(combo, refresh):
+            class _Filter(QObject):
+                def eventFilter(self, obj, ev):
+                    if ev.type() == QEvent.MouseButtonPress:
+                        try:
+                            refresh()
+                        except Exception:
+                            pass
+                    return False
+            f = _Filter(combo)
+            combo.installEventFilter(f)
+            _popup_filters.append(f)
 
-    def update_label_color_green():
-        global config_obj
-        _ui_set_active()  # 锁定到UI当前设备（避免多屏设置冲突）
-        config_obj.text_color_g = int(text_color_green_scale.get())
-        update_label_color(config_obj.text_color_r, config_obj.text_color_g, config_obj.text_color_b)
+        # 跨线程 UI 更新桥：后台线程经信号回主线程填充下拉框。
+        # 注意：在后台线程里直接调用 QTimer.singleShot(0, _done) 不会触发
+        # （定时器属于调用线程，而 worker 线程没有事件循环），导致下拉框一直为空。
+        class _ComboBridge(QObject):
+            camera_ready = Signal(object)
+            windows_ready = Signal(object)
 
-    def update_label_color_blue():
-        global config_obj
-        _ui_set_active()  # 锁定到UI当前设备（避免多屏设置冲突）
-        config_obj.text_color_b = int(text_color_blue_scale.get())
-        update_label_color(config_obj.text_color_r, config_obj.text_color_g, config_obj.text_color_b)
+        _combo_bridge = _ComboBridge()
+        _popup_filters.append(_combo_bridge)  # 防 GC
 
-    scale_desc = tk.Label(root, text="文字颜色")
-    scale_desc.grid(row=0, column=3, columnspan=1, sticky=tk.W, padx=pad_scale_xy5, pady=pad_scale_xy5)
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(6)
+        grid.setVerticalSpacing(4)
+        outer.addLayout(grid)
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 2)
+        grid.setColumnStretch(2, 0)
+        grid.setColumnStretch(3, 0)
+        grid.setColumnStretch(4, 1)
+        grid.setColumnStretch(5, 1)
 
-    Label2 = tk.Label(root, width=2, borderwidth=pad_scale_xy)  # 颜色预览框
-    Label2.grid(row=0, column=3, columnspan=1, sticky=tk.E, padx=pad_scale_xy5, pady=pad_scale_xy5)
+        # ===== 右列：文字颜色（row0-2，col3-5） =====
+        color_head = QHBoxLayout()
+        grid.addLayout(color_head, 0, 3)
+        color_head.addWidget(QLabel("文字颜色:"))
+        color_swatch = QLabel()
+        color_swatch.setFixedSize(40, 20)
+        color_swatch.setStyleSheet("border:1px solid gray; background:#808080;")
+        color_head.addWidget(color_swatch)
+        color_head.addStretch(1)
 
-    update_label_color(config_obj.text_color_r, config_obj.text_color_g, config_obj.text_color_b)
+        color_frame = QWidget()
+        color_lay = QVBoxLayout(color_frame)
+        color_lay.setContentsMargins(0, 0, 0, 0)
+        color_lay.setSpacing(2)
+        sliders = {}
 
-    # 预设颜色下拉列表（常用色 + 马卡龙色 + 丰富色卡）
-    color_presets = {
-        # === 基础色 ===
-        "⚪ 纯白":       (255, 255, 255),
-        "⚫ 纯黑":       (0, 0, 0),
-        "🔴 大红":       (255, 0, 0),
-        "🟢 翠绿":       (0, 255, 0),
-        "🔵 宝蓝":       (0, 0, 255),
-        "🟡 明黄":       (255, 255, 0),
-        "🟣 紫罗兰":     (255, 0, 255),
-        "🩵 天青":       (0, 255, 255),
-        "🟠 橙色":       (255, 128, 0),
-        "🩶 中灰":       (128, 128, 128),
-        "🤎 棕色":       (139, 69, 19),
-        "💗 粉色":       (255, 192, 203),
-        # === 马卡龙色系 ===
-        "—— 马卡龙色系 ——": None,
-        "💗 马卡龙粉":   (255, 179, 186),
-        "💚 马卡龙绿":   (186, 255, 201),
-        "💙 马卡龙蓝":   (186, 225, 255),
-        "💜 马卡龙紫":   (221, 186, 255),
-        "🧡 马卡龙橘":   (255, 214, 186),
-        "💛 马卡龙柠檬": (255, 255, 186),
-        "🤍 马卡龙灰":   (210, 210, 210),
-        "🤎 马卡龙棕":   (210, 180, 160),
-        "💝 马卡龙红":   (255, 150, 150),
-        "🩵 马卡龙青":   (180, 240, 240),
-        # === Material Design 色系 ===
-        "—— Material 色系 ——": None,
-        "🔴 Red 500":    (244, 67, 54),
-        "💗 Pink 300":   (240, 98, 146),
-        "💜 DeepPurple": (103, 58, 183),
-        "💙 Indigo":     (63, 81, 181),
-        "🔵 Blue 500":   (33, 150, 243),
-        "🩵 Cyan 500":   (0, 188, 212),
-        "🟢 Teal 500":   (0, 150, 136),
-        "🍏 LightGreen": (139, 195, 74),
-        "🟡 Amber 500":  (255, 193, 7),
-        "🟠 Orange 500": (255, 152, 0),
-        "🤎 Brown 400":  (141, 110, 99),
-        "🩶 BlueGrey":   (96, 125, 139),
-        # === 暖色系 ===
-        "—— 暖色系 ——": None,
-        "🔥 暖橙":       (255, 140, 50),
-        "🌅 夕阳橙":     (255, 180, 100),
-        "🌹 玫瑰红":     (220, 50, 80),
-        "🍑 蜜桃":       (255, 200, 170),
-        "🍫 巧克力":     (139, 90, 43),
-        "🍊 珊瑚":       (255, 127, 80),
-        "🍓 草莓":       (255, 60, 80),
-        "🥭 芒果":       (255, 180, 50),
-        "🥕 胡萝卜":     (255, 140, 60),
-        # === 冷色系 ===
-        "—— 冷色系 ——": None,
-        "❄ 冰蓝":       (135, 206, 235),
-        "🌊 深海蓝":     (30, 80, 180),
-        "🌿 薄荷绿":     (152, 255, 152),
-        "🍀 森林绿":     (50, 150, 80),
-        "💧 水滴蓝":     (100, 180, 255),
-        "🫒 橄榄绿":     (107, 142, 35),
-        "🌌 星空紫":     (75, 0, 130),
-        "🐬 海豚灰":     (160, 190, 210),
-        # === 暗色系 ===
-        "—— 暗色系 ——": None,
-        "⬛ 炭灰":       (60, 60, 60),
-        "⬜ 银白":       (200, 200, 200),
-        "🟤 暗金":       (200, 160, 60),
-        "💎 午夜蓝":     (20, 30, 80),
-        "🖤 深灰":       (40, 40, 40),
-        "🤍 象牙白":     (240, 230, 210),
-        "💜 暗紫":       (80, 40, 120),
-        "💚 暗绿":       (30, 80, 40),
-        # === 霓虹/荧光 ===
-        "—— 霓虹色系 ——": None,
-        "💚 霓虹绿":     (57, 255, 20),
-        "💗 霓虹粉":     (255, 20, 147),
-        "💛 霓虹黄":     (255, 255, 50),
-        "💙 霓虹蓝":     (50, 200, 255),
-        "🧡 霓虹橙":     (255, 100, 20),
-        "💜 霓虹紫":     (180, 50, 255),
-    }
+        def _add_slider_row(lay, label, key):
+            row = QHBoxLayout()
+            lay.addLayout(row)
+            lbl = QLabel(label)
+            lbl.setFixedWidth(16)
+            row.addWidget(lbl)
+            sl = QSlider(Qt.Horizontal)
+            sl.setRange(0, 255)
+            sl.setValue(int(getattr(_cfg(), "text_color_" + key, 128)))
+            row.addWidget(sl, 1)
+            vl = QLabel(str(int(getattr(_cfg(), "text_color_" + key, 128))))
+            vl.setFixedWidth(30)
+            vl.setAlignment(Qt.AlignCenter)
+            row.addWidget(vl)
+            sliders[key] = sl
 
-    def apply_color_preset(event=None):
-        name = color_combo.get()
-        rgb = color_presets.get(name)
-        if rgb is None:
-            return
-        r, g, b = rgb
-        text_color_red_scale.set(r)
-        text_color_green_scale.set(g)
-        text_color_blue_scale.set(b)
-        update_label_color(r, g, b)
-
-    color_combo = ttk.Combobox(root, values=list(color_presets.keys()), state="readonly", width=14)
-    color_combo.grid(row=1, column=3, sticky=tk.NSEW, padx=pad_scale_xy5, pady=pad_scale_xy5)
-    color_combo.bind("<<ComboboxSelected>>", apply_color_preset)
-    # 初始显示当前颜色匹配
-    current_rgb = (config_obj.text_color_r, config_obj.text_color_g, config_obj.text_color_b)
-    for name, rgb in color_presets.items():
-        if rgb == current_rgb:
-            color_combo.set(name)
-            break
-
-    color_frame = ttk.Frame(root, padding="0")
-    color_frame.grid(row=0, column=4, rowspan=3, columnspan=2, sticky=tk.NSEW, padx=pad_scale_xy5, pady=pad_scale_xy5)
-    color_frame.grid_columnconfigure(1, weight=1)  # 设置第2列自动调整宽度
-    color_frame.grid_propagate(0)  # 禁止被内部控件撑大
-
-    scale_ind_r = tk.Label(color_frame, text="R")
-    scale_ind_r.grid(row=0, column=0, sticky=tk.NSEW, padx=0, pady=pad_scale_xy5)
-
-    text_color_red_scale = tk.Scale(color_frame, from_=0, to=255, orient=tk.HORIZONTAL, borderwidth=0,
-                                    width=scale_factor // 10, sliderlength=scale_factor // 8,
-                                    takefocus=1, resolution=1, troughcolor="red", font=("TkDefaultFont", 9))
-    text_color_red_scale.grid(row=0, column=1, sticky=tk.NSEW, padx=0, pady=0)
-    text_color_red_scale.set(config_obj.text_color_r)
-    text_color_red_scale.config(command=lambda x: update_label_color_red())
-
-    scale_ind_g = tk.Label(color_frame, text="G")
-    scale_ind_g.grid(row=1, column=0, sticky=tk.NSEW, padx=0, pady=pad_scale_xy5)
-
-    text_color_green_scale = tk.Scale(color_frame, from_=0, to=255, orient=tk.HORIZONTAL, borderwidth=0,
-                                      width=scale_factor // 10, sliderlength=scale_factor // 8,
-                                      takefocus=1, resolution=1, troughcolor="green", font=("TkDefaultFont", 9))
-    text_color_green_scale.grid(row=1, column=1, sticky=tk.NSEW, padx=0, pady=0)
-    text_color_green_scale.set(config_obj.text_color_g)
-    text_color_green_scale.config(command=lambda x: update_label_color_green())
-
-    scale_ind_b = tk.Label(color_frame, text="B")
-    scale_ind_b.grid(row=2, column=0, sticky=tk.NSEW, padx=0, pady=pad_scale_xy5)
-
-    text_color_blue_scale = tk.Scale(color_frame, from_=0, to=255, orient=tk.HORIZONTAL, borderwidth=0,
-                                     width=scale_factor // 10, sliderlength=scale_factor // 8,
-                                     takefocus=1, resolution=1, troughcolor="blue", font=("TkDefaultFont", 9))
-    text_color_blue_scale.grid(row=2, column=1, sticky=tk.NSEW, padx=0, pady=0)
-    text_color_blue_scale.set(config_obj.text_color_b)
-    text_color_blue_scale.config(command=lambda x: update_label_color_blue())
-
-    # 镜像视频填充方式：裁剪/适应
-
-    def change_shrink_type(value):
-        global config_obj
-        _ui_set_active()  # 锁定到UI当前设备（避免多屏设置冲突）
-        if value != config_obj.shrink_type:
-            config_obj.shrink_type = value
-            save_config()
-
-    shrink_type = tk.IntVar(root, config_obj.shrink_type)
-    shrink_type_button1 = tk.Radiobutton(root, text=" 填充", anchor="center", value=1, variable=shrink_type,
-                                         command=lambda: change_shrink_type(shrink_type.get()))
-    shrink_type_button1.grid(row=3, column=4, sticky=tk.NSEW, padx=pad_scale_xy5, pady=pad_scale_xy5)
-    shrink_type_button2 = tk.Radiobutton(root, text=" 适应", anchor="center", value=2, variable=shrink_type,
-                                         command=lambda: change_shrink_type(shrink_type.get()))
-    shrink_type_button2.grid(row=3, column=5, sticky=tk.NSEW, padx=pad_scale_xy5, pady=pad_scale_xy5)
-
-    # 创建自定义单选圆圈，因为默认圆圈在高分屏下不能自动调整大小，导致圆圈太小
-    font_size = 12 * scale_factor // 100
-    select_img = Image.new('RGBA', (24, 24), (255, 255, 255, 0))
-    draw = ImageDraw.Draw(select_img)
-    draw.ellipse([2, 2, 22, 22], outline='#0078d7', width=1)
-    draw.ellipse([8, 8, 16, 16], fill='#0078d7')
-    select_img = select_img.resize((font_size, font_size), Image.Resampling.LANCZOS)
-    select_tk = ImageTk.PhotoImage(select_img)
-    unselect_img = Image.new('RGBA', (24, 24), (255, 255, 255, 0))
-    draw = ImageDraw.Draw(unselect_img)
-    draw.ellipse([2, 2, 22, 22], outline='#888888', width=1)
-    unselect_img = unselect_img.resize((font_size, font_size), Image.Resampling.LANCZOS)
-    unselect_tk = ImageTk.PhotoImage(unselect_img)
-    # 使用自定义单选圆圈
-    shrink_type_button1.config(image=unselect_tk, selectimage=select_tk, indicatoron=0, compound=tk.LEFT, bd=0,
-                               relief=tk.FLAT, overrelief=tk.FLAT, highlightthickness=0, selectcolor='#f0f0f0')
-    shrink_type_button2.config(image=unselect_tk, selectimage=select_tk, indicatoron=0, compound=tk.LEFT, bd=0,
-                               relief=tk.FLAT, overrelief=tk.FLAT, highlightthickness=0, selectcolor='#f0f0f0')
-
-    # 动图间隔
-
-    def change_photo_interval(*args):
-        global config_obj
-        _ui_set_active()  # 锁定到UI当前设备（避免多屏设置冲突）
-        try:
-            photo_interval_tmp = float(interval_var.get())
-        except ValueError as e:
-            if len(interval_var.get()) > 0:
-                insert_text_message("Invalid number entered: %s" % e)
-            return
-        if (photo_interval_tmp >= 0 and config_obj.photo_interval_var + config_obj.second_times !=
-                photo_interval_tmp):
-            config_obj.second_times = int(photo_interval_tmp)  # 舍去小数部分
-            config_obj.photo_interval_var = photo_interval_tmp - config_obj.second_times
-            if config_obj.second_times > 0 and config_obj.photo_interval_var < 0.2:
-                config_obj.photo_interval_var += 1
-                config_obj.second_times -= 1
-            if config_obj.state_machine == GIF_PAGE_ID:
-                state_change_set()
-            else:
+            def _on_color(v, k=key, vlabel=vl):
+                cc = _cfg()
+                setattr(cc, "text_color_" + k, int(v))
+                _lock_screen()
                 save_config()
+                vlabel.setText(str(int(v)))
+                rr = cc.text_color_r; gg = cc.text_color_g; bb = cc.text_color_b
+                color_swatch.setStyleSheet(
+                    "border:1px solid gray; background:rgb(%d,%d,%d);" % (rr, gg, bb))
+                if cc.state_machine in (PCTIME_PAGE_ID, STATE_PAGE_ID):
+                    dev.state_change = 1
 
-    interval_var = tk.StringVar(root, "0.1")
-    interval_var.trace_add("write", change_photo_interval)
-    interval_var.set(config_obj.photo_interval_var + config_obj.second_times)
+            sl.valueChanged.connect(_on_color)
 
-    label_screen_number = ttk.Label(root, text="动图间隔")
-    label_screen_number.grid(row=4, column=4, sticky=tk.NSEW, padx=pad_scale_xy5, pady=pad_scale_xy5)
+        _add_slider_row(color_lay, "R", "r")
+        _add_slider_row(color_lay, "G", "g")
+        _add_slider_row(color_lay, "B", "b")
+        grid.addWidget(color_frame, 0, 4, 3, 2)
 
-    number_entry = ttk.Entry(root, textvariable=interval_var, width=4)
-    number_entry.grid(row=4, column=5, sticky=tk.NSEW, padx=pad_scale_xy5, pady=pad_scale_xy5)
-
-    # fps
-
-    def change_fps(*args):
-        global config_obj
-        _ui_set_active()  # 锁定到UI当前设备（避免多屏设置冲突）
-        screenshot_limit_fps_tmp = 0
+        # ===== 预设颜色下拉（row1，col3） =====
+        color_presets = {
+            "⚪ 纯白": (255, 255, 255), "⚫ 纯黑": (0, 0, 0), "🔴 大红": (255, 0, 0),
+            "🟢 翠绿": (0, 255, 0), "🔵 宝蓝": (0, 0, 255), "🟡 明黄": (255, 255, 0),
+            "🟣 紫罗兰": (255, 0, 255), "🩵 天青": (0, 255, 255), "🟠 橙色": (255, 128, 0),
+            "🩶 中灰": (128, 128, 128), "🤎 棕色": (139, 69, 19), "💗 粉色": (255, 192, 203),
+            "💗 马卡龙粉": (255, 179, 186), "💚 马卡龙绿": (186, 255, 201),
+            "💙 马卡龙蓝": (186, 225, 255), "💜 马卡龙紫": (221, 186, 255),
+            "🧡 马卡龙橘": (255, 214, 186), "💛 马卡龙柠檬": (255, 255, 186),
+            "🔴 Red 500": (244, 67, 54), "💗 Pink 300": (240, 98, 146),
+            "💜 DeepPurple": (103, 58, 183), "💙 Indigo": (63, 81, 181),
+            "🔵 Blue 500": (33, 150, 243), "🩵 Cyan 500": (0, 188, 212),
+            "🟢 Teal 500": (0, 150, 136), "🟡 Amber 500": (255, 193, 7),
+            "🟠 Orange 500": (255, 152, 0), "🤎 Brown 400": (141, 110, 99),
+            "🔥 暖橙": (255, 140, 50), "🌅 夕阳橙": (255, 180, 100),
+            "🌹 玫瑰红": (220, 50, 80), "🍑 蜜桃": (255, 200, 170),
+            "🍊 珊瑚": (255, 127, 80), "🍓 草莓": (255, 60, 80),
+            "❄ 冰蓝": (135, 206, 235), "🌊 深海蓝": (30, 80, 180),
+            "🌿 薄荷绿": (152, 255, 152), "🍀 森林绿": (50, 150, 80),
+            "⬛ 炭灰": (60, 60, 60), "⬜ 银白": (200, 200, 200),
+            "🟤 暗金": (200, 160, 60), "💎 午夜蓝": (20, 30, 80),
+            "💚 霓虹绿": (57, 255, 20), "💗 霓虹粉": (255, 20, 147),
+            "💛 霓虹黄": (255, 255, 50), "💙 霓虹蓝": (50, 200, 255),
+            "🧡 霓虹橙": (255, 100, 20), "💜 霓虹紫": (180, 50, 255),
+        }
+        color_combo = QComboBox()
+        color_combo.addItems(list(color_presets.keys()))
         try:
-            screenshot_limit_fps_tmp = int(fps_var.get())
-        except ValueError as e:
-            if len(fps_var.get()) > 0:
-                insert_text_message("Invalid number entered: %s" % e)
-            return
-        if 0 < screenshot_limit_fps_tmp != config_obj.fps_var:
-            config_obj.fps_var = screenshot_limit_fps_tmp
-            save_config()
-
-    fps_var = tk.StringVar(root, "5")
-    fps_var.trace_add("write", change_fps)
-    fps_var.set(config_obj.fps_var)
-
-    label = ttk.Label(root, text="最大 FPS")
-    label.grid(row=5, column=4, sticky=tk.NSEW, padx=pad_scale_xy5, pady=pad_scale_xy5)
-
-    fps_entry = ttk.Entry(root, textvariable=fps_var, width=4)
-    fps_entry.grid(row=5, column=5, sticky=tk.NSEW, padx=pad_scale_xy5, pady=pad_scale_xy5)
-
-    # 相机编号
-
-    def combo_configure(event):
-        combo = event.widget
-        values = combo.cget('values')
-        if len(values) == 0:
-            return
-
-        font = tkfont.nametofont(str(combo.cget('font')))
-        maxWidth = combo.winfo_width()
-        for value in values:
-            fontw = font.measure(value)
-            if maxWidth < fontw:
-                maxWidth = fontw
-
-        if len(values) > 10:
-            maxWidth += font.measure('000') - combo.winfo_width()
-        else:
-            maxWidth += font.measure('0') - combo.winfo_width()
-        width = combo.winfo_screenwidth() - combo.winfo_rootx() - combo.winfo_width()
-        if width < 0 or width > maxWidth:
-            width = maxWidth
-
-        # create an unique style name using widget's id
-        style_name = combo.cget('style') or "TCombobox"
-        # the new style must inherit from curret widget style (unless it's our custom style!)
-        if str(combo.winfo_id()) not in style_name:
-            style_name = "Combobox%s.%s" % (combo.winfo_id(), style_name)
-        style = ttk.Style()
-        style.configure(style_name, postoffset=(0, 0, width, 0))
-        combo.configure(style=style_name)
-
-    def update_camera_list(event):
-        global config_obj, all_cameras
-        all_cameras = get_all_cameras()
-        event.widget["value"] = list(all_cameras.keys())
-        if config_obj.camera_var not in all_cameras.keys():
-            config_obj.camera_var = list(all_cameras.keys())[0]
-            event.widget.set(config_obj.camera_var)
-        combo_configure(event)
-
-    def update_select_camera(event):
-        global config_obj, all_cameras
-        _ui_set_active()  # 锁定到UI当前设备（避免多屏设置冲突）
-        dev = get_current_device()
-        event.widget.selection_clear()
-        camera_id = event.widget.get()
-        if camera_id != config_obj.camera_var:
-            config_obj.camera_var = camera_id
-            if config_obj.state_machine == CAMERA_VIDEO_ID and dev:
-                clear_queue(dev.screen_shot_queue)
-                clear_queue(dev.screen_process_queue)
-                state_change_set()
-            else:
-                save_config()
-
-    label_camera_number = ttk.Label(root, text="相机名称")
-    label_camera_number.grid(row=6, column=4, sticky=tk.NSEW, padx=pad_scale_xy5, pady=pad_scale_xy5)
-
-    all_cameras = get_all_cameras()
-    if len(all_cameras) > 1:
-        PAGE_ID[CAMERA_VIDEO_ID] = PAGE_ID_EN[CAMERA_VIDEO_ID] if config_obj.language == "English" else PAGE_ID_CN[CAMERA_VIDEO_ID]
-        # 用于保持页面的顺序
-        new_PAGE_ID = sorted(PAGE_ID.items(), key=lambda a: a[0])
-        PAGE_ID.clear()
-        PAGE_ID.update(new_PAGE_ID)
-    if not config_obj.camera_var or config_obj.camera_var not in all_cameras.keys():
-        config_obj.camera_var = list(all_cameras.keys())[0]
-    camera_var = tk.StringVar(root, config_obj.camera_var)
-    # camera_var.trace_add("write", change_screenshot_monitor)
-
-    camera_combobox = ttk.Combobox(root, textvariable=camera_var, width=4, values=list(all_cameras.keys()))
-    camera_combobox.bind('<Configure>', combo_configure)
-    camera_combobox.bind('<ButtonPress>', update_camera_list)
-    camera_combobox.bind("<KeyPress>", update_camera_list)
-    camera_combobox.bind("<<ComboboxSelected>>", update_select_camera)
-    camera_combobox.grid(row=6, column=5, columnspan=1, sticky=tk.NSEW, padx=pad_scale_xy5, pady=pad_scale_xy5)
-    camera_combobox.configure(state="readonly")  # 设置选择框不可编辑
-
-    def update_windows_list(event):
-        global config_obj, all_windows
-        if isWindows:
-            all_windows = get_all_windows()  # 带缓存刷新，避免每次点击都全量枚举造成卡顿
-        desc = get_hwnd_desc(config_obj.select_window_hwnd)
-        if desc:
-            event.widget.set(desc)
-        event.widget["values"] = sorted(all_windows.keys(), key=str.lower)
-        combo_configure(event)
-
-    def update_select_hwnd(event):
-        global config_obj, all_windows
-        _ui_set_active()  # 锁定到UI当前设备（避免多屏设置冲突）
-        dev = get_current_device()
-        event.widget.selection_clear()
-        select_str = event.widget.get()
-        select_window_hwnd, _ = all_windows.get(select_str)
-        if select_window_hwnd != config_obj.select_window_hwnd:
-            config_obj.select_window_hwnd = select_window_hwnd
-            if config_obj.state_machine == SCREEN_PAGE_ID and dev:
-                dev.screen_frame_generation += 1
-                clear_queue(dev.screen_shot_queue)
-                clear_queue(dev.screen_process_queue)
-                time.sleep(0.05)
-                clear_queue(dev.screen_shot_queue)
-                clear_queue(dev.screen_process_queue)
-                state_change_set()
-            else:
-                save_config()
-
-    label = ttk.Label(root, text="屏幕镜像窗口:")
-    label.grid(row=7, column=2, columnspan=1, sticky=tk.E, padx=pad_scale_xy5, pady=pad_scale_xy5)
-
-    # 先用桌面占位初始化下拉框，窗口列表在后台线程枚举完成后刷新，避免启动时同步枚举所有窗口造成卡顿
-    global desktop_hwnd
-    if desktop_hwnd == 0:
-        desktop_hwnd = win32gui.GetDesktopWindow()
-    if not all_windows:
-        all_windows = {"[%s] - 桌面" % desktop_hwnd: (desktop_hwnd, 0)}
-
-    select_windows = get_hwnd_desc(config_obj.select_window_hwnd)
-    if select_windows is None:
-        select_windows = list(all_windows.keys())[0]
-        config_obj.select_window_hwnd, _ = all_windows.get(select_windows)
-    win32_windows_var = tk.StringVar(root, select_windows)
-
-    windows_combobox = ttk.Combobox(root, textvariable=win32_windows_var, width=10,
-                                    values=sorted(all_windows.keys(), key=str.lower))
-    windows_combobox.bind('<Configure>', combo_configure)
-    windows_combobox.bind('<ButtonPress>', update_windows_list)
-    windows_combobox.bind("<KeyPress>", update_windows_list)
-    windows_combobox.bind("<<ComboboxSelected>>", update_select_hwnd)
-    windows_combobox.grid(row=7, column=3, columnspan=3, sticky=tk.NSEW, padx=pad_scale_xy5, pady=pad_scale_xy5)
-    windows_combobox.configure(state="readonly")  # 设置选择框不可编辑
-
-    # 后台线程枚举窗口列表，完成后刷新下拉框
-    def load_windows_async():
-        global all_windows
-        wins = None
-        try:
-            wins = get_all_windows()
-        except Exception:
-            wins = None
-        if wins:
-            def apply_windows():
-                global all_windows
-                all_windows = wins
-                try:
-                    windows_combobox["values"] = sorted(wins.keys(), key=str.lower)
-                    desc = get_hwnd_desc(config_obj.select_window_hwnd)
-                    if desc:
-                        win32_windows_var.set(desc)
-                        windows_combobox.set(desc)
-                except Exception:
-                    pass
-            window.after(0, apply_windows)
-
-    threading.Thread(target=load_windows_async, daemon=True).start()
-
-    # ==================== LCD 屏幕分辨率设置 ====================
-    label_lcd_size = ttk.Label(root, text="屏幕分辨率:")
-    label_lcd_size.grid(row=8, column=2, columnspan=1, sticky=tk.E, padx=pad_scale_xy5, pady=pad_scale_xy5)
-
-    global lcd_size_var
-    lcd_size_var = tk.StringVar(root)
-    current_size = str(LCD_MAX_X) + 'x' + str(LCD_MAX_Y) + ' (默认)'
-    lcd_size_options = ['160x80 (默认)', '128x64 (0.96寸OLED)', '240x240 (1.54寸)',
-                        '320x240 (2.4寸)', '240x320 (竖屏)']
-    if current_size not in lcd_size_options:
-        lcd_size_options.insert(0, current_size)
-    lcd_size_var.set(current_size)
-    lcd_size_menu = ttk.OptionMenu(root, lcd_size_var, current_size, *lcd_size_options,
-                                   command=Set_LCD_Size_Manual)
-    lcd_size_menu.grid(row=8, column=3, sticky=tk.NSEW, padx=pad_scale_xy5, pady=pad_scale_xy5)
-    lcd_size_menu.configure(width=18)
-
-    btn_detect_lcd = ttk.Button(root, text="检测屏幕", width=9, command=ReDetect_LCD_Size)
-    btn_detect_lcd.grid(row=8, column=4, sticky=tk.NSEW, padx=pad_scale_xy5, pady=pad_scale_xy5)
-
-    # ==================== 设备切换联动：主控页控件刷新 ====================
-    def _apply_main_ui_to_config():
-        """把当前设备配置刷新到主控页控件（切换设备时调用）"""
-        global config_obj, lcd_size_var
-        try:
-            # 文字颜色滑块 + 颜色预览
-            text_color_red_scale.set(config_obj.text_color_r)
-            text_color_green_scale.set(config_obj.text_color_g)
-            text_color_blue_scale.set(config_obj.text_color_b)
-            update_label_color(config_obj.text_color_r, config_obj.text_color_g, config_obj.text_color_b)
-            # 预设颜色匹配
             cur_rgb = (config_obj.text_color_r, config_obj.text_color_g, config_obj.text_color_b)
-            matched = None
             for name, rgb in color_presets.items():
                 if rgb == cur_rgb:
-                    matched = name
+                    color_combo.setCurrentText(name)
                     break
-            color_combo.set(matched or "")
-            # 动图间隔 / FPS
-            interval_var.set(config_obj.photo_interval_var + config_obj.second_times)
-            fps_var.set(config_obj.fps_var)
-            # 相机
-            if config_obj.camera_var in all_cameras:
-                camera_var.set(config_obj.camera_var)
-            # 填充/适应
-            shrink_type.set(config_obj.shrink_type)
-            # 分辨率下拉
-            cur_size = "%dx%d (默认)" % (LCD_MAX_X, LCD_MAX_Y)
-            if cur_size not in lcd_size_options:
-                lcd_size_options.insert(0, cur_size)
-            lcd_size_var.set(cur_size)
-            # 镜像窗口
-            desc = get_hwnd_desc(config_obj.select_window_hwnd)
-            if desc:
-                win32_windows_var.set(desc)
-            # 页面/方向下拉
-            sync_page_combobox()
-            sync_lcd_combobox()
-        except Exception as e:
-            print("刷新主控页控件失败：%s" % e)
+        except Exception:
+            pass
 
-    # ==================== 实时预览 ====================
-    preview_label = ttk.Label(root, text="实时预览:")
-    preview_label.grid(row=9, column=0, columnspan=6, sticky=tk.W, padx=pad_scale_xy5, pady=(pad_scale_xy5, 0))
-    
-    # 预览画布：宽度自适应（最大480），高度按比例，居中显示
-    preview_max_w = 480
-    preview_max_h = int(preview_max_w * SHOW_HEIGHT / SHOW_WIDTH)  # 2:1 → 240
-    preview_canvas = tk.Canvas(root, width=preview_max_w, height=preview_max_h,
-                               bg='black', highlightthickness=1, 
-                               highlightbackground='gray')
-    preview_canvas.grid(row=10, column=0, columnspan=6, sticky=tk.NSEW, 
-                        padx=pad_scale_xy5, pady=pad_scale_xy5)
-    # 配置行/列权重使canvas居中
-    root.grid_rowconfigure(10, weight=0)
-    
-    def update_preview():
-        """定时刷新预览画面（自动缩放居中）"""
-        if config_obj and config_obj.preview_enabled:
-            dev = get_current_device()
-            if dev:
-                with dev._preview_lock:
-                    img = dev.last_preview_rgb
-            else:
-                img = None
-            if img is not None and img.size > 0:
+        def _apply_color_preset():
+            name = color_combo.currentText()
+            rgb = color_presets.get(name)
+            if rgb is None:
+                return
+            r, g, b = rgb
+            _lock_screen()
+            config_obj.text_color_r, config_obj.text_color_g, config_obj.text_color_b = r, g, b
+            save_config()
+            color_swatch.setStyleSheet("border:1px solid gray; background:rgb(%d,%d,%d);" % (r, g, b))
+            for k, sl in sliders.items():
+                sl.blockSignals(True)
+                sl.setValue(getattr(config_obj, "text_color_" + k))
+                sl.blockSignals(False)
+            if config_obj.state_machine in (PCTIME_PAGE_ID, STATE_PAGE_ID):
+                dev.state_change = 1
+
+        color_combo.currentIndexChanged.connect(lambda _: _apply_color_preset())
+        grid.addWidget(color_combo, 1, 3)
+
+        # ===== 烧写区（row1-4，col0-2） =====
+        burn_labels = {1: None, 2: None, 3: None, 4: None}
+        burn_items = [
+            (1, "选择闪存固件", Get_Photo_Path, Start_Write_Photo_Path),
+            (3, "选择相册图像", Get_Photo_Path, Start_Write_Photo_Path),
+            (2, "选择背景图像", Get_Photo_Path, Start_Write_Photo_Path),
+            (4, "选择动图文件", Get_Photo_Path, Start_Write_Photo_Path),
+        ]
+        for i, (idx, text, get_fn, write_fn) in enumerate(burn_items):
+            r = i + 1
+            le = QLineEdit()
+            le.setReadOnly(True)
+            le.setText(text)
+            grid.addWidget(le, r, 0, 1, 2)
+            burn_labels[idx] = le
+            btn_frame = QWidget()
+            bl = QHBoxLayout(btn_frame)
+            bl.setContentsMargins(0, 0, 0, 0)
+            bl.setSpacing(2)
+            b_sel = QPushButton("选择")
+            b_sel.setFixedWidth(48)
+            b_sel.clicked.connect(lambda _=False, ii=idx, gf=get_fn: gf(ii))
+            bl.addWidget(b_sel)
+            b_burn = QPushButton("烧写")
+            b_burn.setFixedWidth(48)
+            b_burn.clicked.connect(lambda _=False, ii=idx, wf=write_fn: wf(ii))
+            bl.addWidget(b_burn)
+            grid.addWidget(btn_frame, r, 2)
+        Label3 = burn_labels[1]; Label5 = burn_labels[3]
+        Label4 = burn_labels[2]; Label6 = burn_labels[4]
+
+        # ===== 填充/适应（row3，col4-5） =====
+        radio_fill = QRadioButton(" 填充")
+        radio_fit = QRadioButton(" 适应")
+        radio_fill.setChecked(_cfg().shrink_type == 1)
+        radio_fit.setChecked(_cfg().shrink_type == 2)
+
+        def _chg_shrink():
+            cc = _cfg()
+            val = 1 if radio_fill.isChecked() else 2
+            if val != cc.shrink_type:
+                cc.shrink_type = val
+                _lock_screen()
+                save_config()
+
+        radio_fill.toggled.connect(_chg_shrink)
+        radio_fit.toggled.connect(_chg_shrink)
+        grid.addWidget(radio_fill, 3, 4)
+        grid.addWidget(radio_fit, 3, 5)
+
+        # ===== 动图间隔（row4，col4-5） =====
+        grid.addWidget(QLabel("动图间隔"), 4, 4)
+        interval_edit = QLineEdit(str(_cfg().photo_interval_var + _cfg().second_times))
+        interval_edit.setFixedWidth(44)
+        grid.addWidget(interval_edit, 4, 5)
+
+        def _chg_interval():
+            cc = _cfg()
+            try:
+                tmp = float(interval_edit.text())
+            except ValueError:
+                return
+            if tmp >= 0 and cc.photo_interval_var + cc.second_times != tmp:
+                cc.second_times = int(tmp)
+                cc.photo_interval_var = tmp - cc.second_times
+                if cc.second_times > 0 and cc.photo_interval_var < 0.2:
+                    cc.photo_interval_var += 1
+                    cc.second_times -= 1
+                _lock_screen()
+                if cc.state_machine == GIF_PAGE_ID:
+                    state_change_set()
+                else:
+                    save_config()
+
+        interval_edit.editingFinished.connect(_chg_interval)
+
+        # ===== 自定义内容 + 上翻/下翻（row5，col2-3） + 最大FPS（col4-5） =====
+        custom_btn = QPushButton("自定义内容")
+        custom_btn.setFixedWidth(84)
+        custom_btn.clicked.connect(_show_custom_dialog)
+        grid.addWidget(custom_btn, 5, 2)
+
+        page_btn = QWidget()
+        pbl = QHBoxLayout(page_btn)
+        pbl.setContentsMargins(0, 0, 0, 0)
+        pbl.setSpacing(2)
+        up_btn = QPushButton("▲上翻")
+        up_btn.clicked.connect(Page_UP)
+        pbl.addWidget(up_btn)
+        dn_btn = QPushButton("▼下翻")
+        dn_btn.clicked.connect(Page_Down)
+        pbl.addWidget(dn_btn)
+        grid.addWidget(page_btn, 5, 3)
+
+        grid.addWidget(QLabel("最大 FPS"), 5, 4)
+        fps_edit = QLineEdit(str(_cfg().fps_var))
+        fps_edit.setFixedWidth(44)
+        grid.addWidget(fps_edit, 5, 5)
+
+        def _chg_fps():
+            cc = _cfg()
+            try:
+                val = int(fps_edit.text())
+            except ValueError:
+                return
+            if 0 < val != cc.fps_var:
+                cc.fps_var = val
+                _lock_screen()
+                save_config()
+
+        fps_edit.editingFinished.connect(_chg_fps)
+
+        # ===== 方向/页面/相机（row6） =====
+        grid.addWidget(QLabel("方向:"), 6, 2)
+        lcd_direction_combobox = QComboBox()
+        lcd_direction_combobox.addItems(list(LCD_STATE_MESSAGE))
+        lcd_direction_combobox.setMinimumWidth(90)
+        lcd_direction_combobox.activated.connect(on_lcd_direction_select)
+        grid.addWidget(lcd_direction_combobox, 6, 3)
+
+        grid.addWidget(QLabel("页面:"), 6, 0)
+        page_combobox = QComboBox()
+        page_combobox.addItems(list(PAGE_ID.values()))
+        page_combobox.setMinimumWidth(140)
+        page_combobox.activated.connect(on_page_combobox_select)
+        grid.addWidget(page_combobox, 6, 1)
+
+        grid.addWidget(QLabel("相机名称"), 6, 4)
+        camera_combobox = QComboBox()
+        camera_combobox.setMinimumWidth(120)
+        grid.addWidget(camera_combobox, 6, 5)
+
+        def _update_camera_list():
+            def _worker():
                 try:
-                    cw = preview_canvas.winfo_width()
-                    ch = preview_canvas.winfo_height()
-                    if cw > 10 and ch > 10:
-                        # 计算缩放比例，保持2:1宽高比，取较小维度适应
-                        scale_w = cw / SHOW_WIDTH
-                        scale_h = ch / SHOW_HEIGHT
-                        scale = min(scale_w, scale_h)
-                        new_w = int(SHOW_WIDTH * scale)
-                        new_h = int(SHOW_HEIGHT * scale)
-                        # 居中偏移
-                        ox = (cw - new_w) // 2
-                        oy = (ch - new_h) // 2
-                        
-                        pil_img = Image.fromarray(img, 'RGB')
-                        pil_img = pil_img.resize((new_w, new_h), Image.Resampling.NEAREST)
-                        tk_img = ImageTk.PhotoImage(pil_img)
-                        preview_canvas.delete("all")
-                        preview_canvas.create_image(ox, oy, anchor=tk.NW, image=tk_img)
-                        preview_canvas.image = tk_img
+                    cams = get_all_cameras()
+                except Exception:
+                    cams = all_cameras
+                _combo_bridge.camera_ready.emit(cams)
+            threading.Thread(target=_worker, daemon=True).start()
+
+        def _fill_camera(cams):
+            camera_combobox.blockSignals(True)
+            camera_combobox.clear()
+            camera_combobox.addItems(list(cams.keys()))
+            cc = _cfg()
+            if cc.camera_var in list(cams.keys()):
+                camera_combobox.setCurrentText(cc.camera_var)
+            elif cams:
+                camera_combobox.setCurrentText(list(cams.keys())[0])
+            camera_combobox.blockSignals(False)
+
+        _combo_bridge.camera_ready.connect(_fill_camera)
+
+        def _update_select_camera(idx=-1):
+            cc = _cfg()
+            cid = camera_combobox.currentText()
+            if cid != cc.camera_var:
+                cc.camera_var = cid
+                _lock_screen()
+                if cc.state_machine == CAMERA_VIDEO_ID and dev:
+                    clear_queue(dev.screen_shot_queue)
+                    clear_queue(dev.screen_process_queue)
+                    state_change_set()
+                else:
+                    save_config()
+
+        camera_combobox.activated.connect(_update_select_camera)
+        _install_popup_refresh(camera_combobox, _update_camera_list)
+        QTimer.singleShot(0, _update_camera_list)
+
+        # ===== 屏幕镜像窗口（row7，col2-5） =====
+        grid.addWidget(QLabel("屏幕镜像窗口:"), 7, 2)
+        windows_combobox = QComboBox()
+        windows_combobox.setMinimumWidth(150)
+        grid.addWidget(windows_combobox, 7, 3, 1, 3)
+
+        def _update_windows_list():
+            def _worker():
+                wins = get_all_windows() if isWindows else {}
+                _combo_bridge.windows_ready.emit(wins)
+            threading.Thread(target=_worker, daemon=True).start()
+
+        def _fill_windows(wins):
+            global all_windows
+            # 关键：把本次枚举结果同步到全局 all_windows，保证下拉框显示、
+            # get_hwnd_desc 回显、_update_select_hwnd 选择查找用同一份窗口列表。
+            # 否则 all_windows 是旧快照，用户选的窗口找不到会回退成桌面(0)。
+            all_windows = wins
+            desc = get_hwnd_desc(_cfg().select_window_hwnd)
+            windows_combobox.blockSignals(True)
+            windows_combobox.clear()
+            windows_combobox.addItems(sorted(wins.keys(), key=str.lower))
+            if desc:
+                windows_combobox.setCurrentText(desc)
+            windows_combobox.blockSignals(False)
+
+        _combo_bridge.windows_ready.connect(_fill_windows)
+
+        def _update_select_hwnd(idx=-1):
+            cc = _cfg()
+            sel = windows_combobox.currentText()
+            hwnd, _ = all_windows.get(sel, (0, None))
+            if hwnd != cc.select_window_hwnd:
+                cc.select_window_hwnd = hwnd
+                _lock_screen()
+                if cc.state_machine == SCREEN_PAGE_ID and dev:
+                    dev.screen_frame_generation += 1
+                    clear_queue(dev.screen_shot_queue)
+                    clear_queue(dev.screen_process_queue)
+                    state_change_set()
+                else:
+                    save_config()
+
+        windows_combobox.activated.connect(_update_select_hwnd)
+        _install_popup_refresh(windows_combobox, _update_windows_list)
+        QTimer.singleShot(0, _update_windows_list)
+
+        # ===== 屏幕分辨率 + 检测屏幕（row8，col2-4） =====
+        grid.addWidget(QLabel("屏幕分辨率:"), 8, 2)
+        lcd_size_var = QComboBox()
+        lcd_size_options = ['160x80 (默认)', '128x64 (0.96寸OLED)', '240x240 (1.54寸)',
+                            '320x240 (2.4寸)', '240x320 (竖屏)']
+        cur_size = "%dx%d (默认)" % (LCD_MAX_X, LCD_MAX_Y)
+        if cur_size not in lcd_size_options:
+            lcd_size_options.insert(0, cur_size)
+        lcd_size_var.addItems(lcd_size_options)
+        lcd_size_var.setCurrentText(cur_size)
+        lcd_size_var.currentIndexChanged.connect(lambda _=0: Set_LCD_Size_Manual())
+        grid.addWidget(lcd_size_var, 8, 3)
+        detect_btn = QPushButton("检测屏幕")
+        detect_btn.setFixedWidth(80)
+        detect_btn.clicked.connect(ReDetect_LCD_Size)
+        grid.addWidget(detect_btn, 8, 4)
+
+        # ===== 实时预览（row9-10，col0-5） =====
+        grid.addWidget(QLabel("实时预览:"), 9, 0, 1, 6)
+        preview_w = 480
+        preview_h = int(preview_w * SHOW_HEIGHT / SHOW_WIDTH)
+        preview_label = QLabel()
+        preview_label.setMinimumSize(preview_w, preview_h)
+        preview_label.setAutoFillBackground(True)
+        preview_label.setStyleSheet("background-color:#000000; border:1px solid gray;")
+        preview_label.setAlignment(Qt.AlignCenter)
+        preview_label.setScaledContents(False)  # 手动按小屏宽高比等比缩放，避免拉伸变形
+        grid.addWidget(preview_label, 10, 0, 1, 6)
+        grid.setRowStretch(10, 1)
+
+        # 每屏上下文（模块级 _main_ctxs 使用）
+        ctx = {
+            'dev': dev,
+            'page_combobox': page_combobox,
+            'lcd_direction_combobox': lcd_direction_combobox,
+            'camera_combobox': camera_combobox,
+            'windows_combobox': windows_combobox,
+            'lcd_size_var': lcd_size_var,
+            'interval_var': interval_edit,
+            'fps_var': fps_edit,
+            'label3': Label3, 'label4': Label4, 'label5': Label5, 'label6': Label6,
+            'preview_label': preview_label,
+            '_preview_img': None,
+        }
+
+        def _update_preview():
+            d = ctx['dev']
+            cc = d.config if d.config is not None else config_obj
+            if cc.preview_enabled:
+                try:
+                    with d._preview_lock:
+                        img = d.last_preview_rgb
+                    if img is not None and img.size > 0:
+                        # 直接由 numpy 构造 QImage（跳过 PIL Image.fromarray+tobytes 复制），
+                        # 实测 1600x900 全尺寸约 44ms→19ms，显著降低主线程负担，避免界面卡顿"点不开"
+                        h, w = img.shape[:2]
+                        img_c = np.ascontiguousarray(img)
+                        qimg = QImage(img_c.data, w, h, img_c.strides[0],
+                                      QImage.Format_RGB888).copy()
+                        pix = QPixmap.fromImage(qimg)
+                        # 按小屏宽高比等比缩放显示（不再拉伸变形），
+                        # 使填充/适应效果与真实屏幕一致
+                        try:
+                            tw = preview_label.width() if preview_label.width() > 10 else preview_w
+                            th = preview_label.height() if preview_label.height() > 10 else preview_h
+                            pix = pix.scaled(tw, th, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                        except Exception:
+                            pass
+                        ctx['preview_label'].setPixmap(pix)
+                        ctx['_preview_img'] = pix
                 except Exception:
                     pass
-        window.after(200, update_preview)
-    
-    update_preview()
+            QTimer.singleShot(500, _update_preview)  # 200→500ms 降频，减轻主线程负担
 
+        ctx['_update_preview'] = _update_preview
+        _update_preview()
+
+        # 初始化当前屏的页面/方向显示
+        try:
+            cfg = _cfg()
+            page_combobox.setCurrentText(PAGE_ID.get(cfg.state_machine, ""))
+            lcd_direction_combobox.setCurrentText(LCD_STATE_MESSAGE[cfg.lcd_change % len(LCD_STATE_MESSAGE)])
+        except Exception:
+            pass
+
+        _main_ctxs[dev.index] = ctx
+        return ctx
+
+    def _build_settings_tab(parent, dev):
+        """为一块屏创建第三层「设置」子页（值绑定该屏配置，保存时锁定本屏）。
+        包含：通用 / 自动化 / 按键 / API接入 / 数据管理。"""
+        outer = QVBoxLayout(parent)
+        outer.setContentsMargins(6, 6, 6, 6)
+        sb = QTabWidget()
+        outer.addWidget(sb)
+
+        def _cfg():
+            return dev.config if dev.config is not None else config_obj
+
+        def _lock():
+            """把全局 config_obj 锁定到本屏配置，保证 save_config 保存本屏"""
+            set_active_device_config(dev)
+
+        # ---------- 通用 ----------
+        common = QWidget()
+        sb.addTab(common, "  通用  ")
+        common_lay = QVBoxLayout(common)
+
+        anti_burn_cb = QCheckBox("防烧屏（每30秒微调像素位置，延缓OLED烧屏）")
+        anti_burn_cb.setChecked(bool(getattr(_cfg(), "anti_burn", 0)))
+
+        def _chg_anti_burn():
+            _lock()
+            config_obj.anti_burn = 1 if anti_burn_cb.isChecked() else 0
+            if config_obj.anti_burn == 0:
+                dev.burn_offset_x = 0
+                dev.burn_offset_y = 0
+            save_config()
+
+        anti_burn_cb.toggled.connect(_chg_anti_burn)
+        common_lay.addWidget(anti_burn_cb)
+
+        preview_cb = QCheckBox("开启实时预览（显示小屏当前内容）")
+        preview_cb.setChecked(bool(getattr(_cfg(), "preview_enabled", 1)))
+
+        def _chg_preview():
+            _lock()
+            config_obj.preview_enabled = 1 if preview_cb.isChecked() else 0
+            save_config()
+
+        preview_cb.toggled.connect(_chg_preview)
+        common_lay.addWidget(preview_cb)
+
+        auto_start_cb = QCheckBox("开机自启动（随Windows启动）")
+        auto_start_cb.setChecked(bool(getattr(_cfg(), "auto_start", 0)))
+
+        def _chg_auto_start():
+            _lock()
+            config_obj.auto_start = 1 if auto_start_cb.isChecked() else 0
+            if not set_auto_start(config_obj.auto_start):
+                auto_start_cb.blockSignals(True)
+                auto_start_cb.setChecked(False)
+                auto_start_cb.blockSignals(False)
+                config_obj.auto_start = 0
+            save_config()
+
+        auto_start_cb.toggled.connect(_chg_auto_start)
+        common_lay.addWidget(auto_start_cb)
+
+        lang_row = QHBoxLayout()
+        common_lay.addLayout(lang_row)
+        lang_row.addWidget(QLabel("界面语言:"))
+        lang_combo = QComboBox()
+        lang_combo.addItems(["中文", "English"])
+        lang_combo.setCurrentText(getattr(_cfg(), "language", "中文"))
+
+        def _chg_lang(idx=-1):
+            _lock()
+            config_obj.language = lang_combo.currentText()
+            save_config()
+            apply_language()
+
+        lang_combo.currentIndexChanged.connect(_chg_lang)
+        lang_row.addWidget(lang_combo)
+        lang_row.addStretch(1)
+        common_lay.addStretch(1)
+
+        # ---------- 自动化 ----------
+        auto = QWidget()
+        sb.addTab(auto, "  自动化  ")
+        auto_lay = QVBoxLayout(auto)
+
+        cycle_cb = QCheckBox("自动翻页轮播")
+        cycle_cb.setChecked(bool(getattr(_cfg(), "page_cycle_enable", 0)))
+
+        def _chg_cycle():
+            _lock()
+            config_obj.page_cycle_enable = 1 if cycle_cb.isChecked() else 0
+            save_config()
+
+        cycle_cb.toggled.connect(_chg_cycle)
+        auto_lay.addWidget(cycle_cb)
+
+        cycle_row = QHBoxLayout()
+        auto_lay.addLayout(cycle_row)
+        cycle_row.addWidget(QLabel("轮播间隔(秒):"))
+        cycle_edit = QLineEdit(str(getattr(_cfg(), "page_cycle_interval", 10)))
+        cycle_edit.setFixedWidth(60)
+        cycle_row.addWidget(cycle_edit)
+
+        def _chg_cycle_interval():
+            _lock()
+            try:
+                config_obj.page_cycle_interval = int(cycle_edit.text())
+            except ValueError:
+                return
+            save_config()
+
+        cycle_edit.editingFinished.connect(_chg_cycle_interval)
+        cycle_row.addStretch(1)
+
+        off_row = QHBoxLayout()
+        auto_lay.addLayout(off_row)
+        off_row.addWidget(QLabel("无操作息屏超时(秒, 0=禁用):"))
+        off_edit = QLineEdit(str(getattr(_cfg(), "screen_off_timeout", 0)))
+        off_edit.setFixedWidth(60)
+        off_row.addWidget(off_edit)
+
+        def _chg_off():
+            _lock()
+            try:
+                config_obj.screen_off_timeout = int(off_edit.text())
+            except ValueError:
+                return
+            save_config()
+
+        off_edit.editingFinished.connect(_chg_off)
+        off_row.addStretch(1)
+        auto_lay.addStretch(1)
+
+        # ---------- 按键 ----------
+        key = QWidget()
+        sb.addTab(key, "  按键  ")
+        key_lay = QVBoxLayout(key)
+        key_lay.addWidget(QLabel("按键动作映射（单击 / 双击 / 长按）:"))
+
+        def _make_key_row(text, cfg_key):
+            row = QHBoxLayout()
+            key_lay.addLayout(row)
+            row.addWidget(QLabel(text))
+            combo = QComboBox()
+            combo.addItems(["下翻页", "上翻页", "切换方向", "无"])
+            combo.setCurrentText(getattr(_cfg(), cfg_key, "下翻页"))
+
+            def _chg(idx=-1, k=cfg_key):
+                _lock()
+                setattr(config_obj, k, combo.currentText())
+                save_config()
+
+            combo.currentIndexChanged.connect(_chg)
+            row.addWidget(combo)
+            row.addStretch(1)
+
+        _make_key_row("单击:", "key_single")
+        _make_key_row("双击:", "key_double")
+        _make_key_row("长按:", "key_long")
+        key_lay.addStretch(1)
+
+        # ---------- 页面内容 ----------
+        content_page = QWidget()
+        sb.addTab(content_page, "  页面内容  ")
+        _build_content_settings(content_page, dev)
+
+        # ---------- 配色方案 ----------
+        scheme_page = QWidget()
+        sb.addTab(scheme_page, "  配色方案  ")
+        _build_scheme_settings(scheme_page, dev)
+
+        # ---------- 监控显示 ----------
+        monitor_page = QWidget()
+        sb.addTab(monitor_page, "  监控显示  ")
+        _build_monitor_settings(monitor_page, dev)
+
+        # ---------- 屏幕镜像 ----------
+        mirror_page = QWidget()
+        sb.addTab(mirror_page, "  屏幕镜像  ")
+        _build_mirror_settings(mirror_page, dev)
+
+        # ---------- API接入 ----------
+        api = QWidget()
+        sb.addTab(api, "  API接入  ")
+        api_lay = QVBoxLayout(api)
+
+        api_enable_cb = QCheckBox("启用 API 投屏服务器")
+        api_enable_cb.setChecked(bool(getattr(_cfg(), "api_enable", 1)))
+        api_lay.addWidget(api_enable_cb)
+
+        api_port_row = QHBoxLayout()
+        api_lay.addLayout(api_port_row)
+        api_port_row.addWidget(QLabel("端口:"))
+        api_port_edit = QLineEdit(str(getattr(_cfg(), "api_port", 8632)))
+        api_port_edit.setFixedWidth(70)
+        api_port_row.addWidget(api_port_edit)
+        api_port_row.addStretch(1)
+
+        api_token_row = QHBoxLayout()
+        api_lay.addLayout(api_token_row)
+        api_token_row.addWidget(QLabel("访问令牌(留空=无):"))
+        api_token_edit = QLineEdit(getattr(_cfg(), "api_token", ""))
+        api_token_edit.setFixedWidth(160)
+        api_token_row.addWidget(api_token_edit)
+        api_token_row.addStretch(1)
+
+        overlay_cb = QCheckBox("强制投屏（未选择「API投屏」页也投屏）")
+        overlay_cb.setChecked(bool(getattr(_cfg(), "api_overlay", 0)))
+        api_lay.addWidget(overlay_cb)
+
+        def _restart_api():
+            _lock()
+            config_obj.api_enable = 1 if api_enable_cb.isChecked() else 0
+            try:
+                config_obj.api_port = int(api_port_edit.text())
+            except ValueError:
+                config_obj.api_port = 8632
+            config_obj.api_token = api_token_edit.text().strip()
+            config_obj.api_overlay = 1 if overlay_cb.isChecked() else 0
+            save_config()
+            try:
+                stop_api_server()
+            except Exception:
+                pass
+            try:
+                if config_obj.api_enable:
+                    start_api_server()
+                    insert_text_message("API 服务器已重启（端口 %d）" % config_obj.api_port)
+                else:
+                    insert_text_message("API 服务器已停止")
+            except Exception as e:
+                insert_text_message("API 服务器启动失败: %s" % e)
+
+        restart_btn = QPushButton("应用并重启 API 服务器")
+        restart_btn.clicked.connect(_restart_api)
+        api_lay.addWidget(restart_btn)
+        api_lay.addWidget(QLabel("API 端口/令牌修改后点上方按钮生效。"))
+        api_lay.addStretch(1)
+
+        # ---------- 数据管理 ----------
+        data = QWidget()
+        sb.addTab(data, "  数据管理  ")
+        data_lay = QVBoxLayout(data)
+        export_btn = QPushButton("导出配置…")
+        export_btn.clicked.connect(export_config)
+        data_lay.addWidget(export_btn)
+        import_btn = QPushButton("导入配置…")
+        import_btn.clicked.connect(import_config)
+        data_lay.addWidget(import_btn)
+        data_lay.addWidget(QLabel("说明：导出/导入当前屏幕的完整配置（JSON），用于备份或迁移到其他电脑。"))
+        data_lay.addStretch(1)
+
+    def _build_content_settings(parent, dev):
+        """设置 → 页面内容（子子页：跑马灯 / 天气与行情 / 热搜 / 时间 / 纪念日待办）"""
+        outer = QVBoxLayout(parent)
+        outer.setContentsMargins(0, 0, 0, 0)
+        cb = QTabWidget()
+        outer.addWidget(cb)
+
+        def _cfg():
+            return dev.config if dev.config is not None else config_obj
+
+        def _lock():
+            set_active_device_config(dev)
+
+        # ---- 文字跑马灯 ----
+        marquee = QWidget()
+        cb.addTab(marquee, "  文字跑马灯  ")
+        ml = QVBoxLayout(marquee)
+        ml.addWidget(QLabel("跑马灯文本:"))
+        marquee_text = QLineEdit(getattr(_cfg(), "marquee_text", ""))
+        ml.addWidget(marquee_text)
+        row = QHBoxLayout()
+        ml.addLayout(row)
+        row.addWidget(QLabel("字号:"))
+        marquee_size = QLineEdit(str(getattr(_cfg(), "marquee_font_size", 20)))
+        marquee_size.setFixedWidth(50)
+        row.addWidget(marquee_size)
+        row.addWidget(QLabel("滚动速度(像素/帧):"))
+        marquee_speed = QLineEdit(str(getattr(_cfg(), "marquee_speed", 2)))
+        marquee_speed.setFixedWidth(50)
+        row.addWidget(marquee_speed)
+        row.addStretch(1)
+        row2 = QHBoxLayout()
+        ml.addLayout(row2)
+        row2.addWidget(QLabel("字体颜色:"))
+        marquee_color = QLineEdit(getattr(_cfg(), "marquee_color", "#ffffff"))
+        marquee_color.setFixedWidth(90)
+        row2.addWidget(marquee_color)
+
+        def _pick_marquee_color():
+            c = QColorDialog.getColor(QColor(marquee_color.text()), window)
+            if c.isValid():
+                marquee_color.setText(c.name())
+                _save_marquee()
+
+        pick_btn = QPushButton("调色板")
+        pick_btn.clicked.connect(_pick_marquee_color)
+        row2.addWidget(pick_btn)
+        row2.addStretch(1)
+
+        def _save_marquee():
+            _lock()
+            config_obj.marquee_text = marquee_text.text() or " "
+            try:
+                config_obj.marquee_font_size = int(marquee_size.text())
+            except ValueError:
+                pass
+            try:
+                config_obj.marquee_speed = float(marquee_speed.text())
+            except ValueError:
+                pass
+            config_obj.marquee_color = marquee_color.text() or "#ffffff"
+            save_config()
+
+        marquee_text.editingFinished.connect(_save_marquee)
+        marquee_size.editingFinished.connect(_save_marquee)
+        marquee_speed.editingFinished.connect(_save_marquee)
+        marquee_color.editingFinished.connect(_save_marquee)
+        ml.addStretch(1)
+
+        # ---- 天气与行情 ----
+        net = QWidget()
+        cb.addTab(net, "  天气与行情  ")
+        nl = QVBoxLayout(net)
+
+        def _entry_row(label, key, width, default):
+            r = QHBoxLayout()
+            nl.addLayout(r)
+            r.addWidget(QLabel(label))
+            e = QLineEdit(str(getattr(_cfg(), key, default)))
+            e.setFixedWidth(width)
+            r.addWidget(e)
+            r.addStretch(1)
+
+            def _save(k=key):
+                _lock()
+                setattr(config_obj, k, e.text().strip())
+                save_config()
+
+            e.editingFinished.connect(_save)
+            return e
+
+        _entry_row("天气城市:", "weather_city", 16, "Beijing")
+        _entry_row("行情交易对:", "crypto_symbols", 24, "BTCUSDT,ETHUSDT")
+        _entry_row("延迟测试目标:", "ping_host", 16, "223.5.5.5")
+        nl.addWidget(QLabel("支持中文城市名，如 北京 或 Beijing"))
+        nl.addStretch(1)
+
+        # ---- 热搜 ----
+        hot = QWidget()
+        cb.addTab(hot, "  热搜  ")
+        hl = QVBoxLayout(hot)
+
+        def _spin_row(label, key, default, suffix=""):
+            r = QHBoxLayout()
+            hl.addLayout(r)
+            r.addWidget(QLabel(label))
+            e = QLineEdit(str(getattr(_cfg(), key, default)))
+            e.setFixedWidth(50)
+            r.addWidget(e)
+            if suffix:
+                r.addWidget(QLabel(suffix))
+            r.addStretch(1)
+
+            def _save(k=key):
+                _lock()
+                try:
+                    setattr(config_obj, k, int(e.text()))
+                except ValueError:
+                    pass
+                save_config()
+
+            e.editingFinished.connect(_save)
+            return e
+
+        def _cb_row(label, key):
+            r = QHBoxLayout()
+            hl.addLayout(r)
+            ck = QCheckBox(label)
+            ck.setChecked(bool(getattr(_cfg(), key, 0)))
+            r.addWidget(ck)
+            r.addStretch(1)
+
+            def _save(k=key):
+                _lock()
+                setattr(config_obj, k, 1 if ck.isChecked() else 0)
+                save_config()
+
+            ck.toggled.connect(_save)
+            return ck
+
+        _spin_row("每页显示条数:", "hotsearch_count", 3)
+        _spin_row("抓取总条数:", "hotsearch_total", 10, "(多于每页条数时自动翻页)")
+        _cb_row("字体自动适配屏幕", "hotsearch_font_auto")
+        _spin_row("手动字号:", "hotsearch_font_size", 12)
+        _cb_row("长文本自动滚动字幕", "hotsearch_scroll_enable")
+        _spin_row("滚动速度:", "hotsearch_scroll_speed", 2)
+        _spin_row("翻页间隔(秒):", "hotsearch_page_interval", 3)
+        _cb_row("自动刷新", "hotsearch_auto_refresh")
+        _spin_row("刷新间隔(秒):", "hotsearch_interval", 60)
+        hl.addStretch(1)
+
+        # ---- 时间 ----
+        t = QWidget()
+        cb.addTab(t, "  时间  ")
+        tl = QVBoxLayout(t)
+        r = QHBoxLayout()
+        tl.addLayout(r)
+        r.addWidget(QLabel("番茄钟时长(分钟):"))
+        timer_edit = QLineEdit(str(getattr(_cfg(), "timer_minutes", 25)))
+        timer_edit.setFixedWidth(50)
+        r.addWidget(timer_edit)
+        r.addStretch(1)
+
+        def _save_timer():
+            _lock()
+            try:
+                config_obj.timer_minutes = int(timer_edit.text())
+            except ValueError:
+                pass
+            save_config()
+
+        timer_edit.editingFinished.connect(_save_timer)
+        tl.addWidget(QLabel("世界时钟时区（每项：名称|UTC偏移，逗号分隔）:"))
+        zones_edit = QLineEdit(getattr(_cfg(), "clock_zones", "北京|8"))
+        tl.addWidget(zones_edit)
+
+        def _save_zones():
+            _lock()
+            config_obj.clock_zones = zones_edit.text().strip() or "北京|8"
+            save_config()
+
+        zones_edit.editingFinished.connect(_save_zones)
+        tl.addWidget(QLabel("例：北京|8,伦敦|0,纽约|-5,东京|9"))
+        tl.addStretch(1)
+
+        # ---- 纪念日/待办 ----
+        lst = QWidget()
+        cb.addTab(lst, "  纪念日/待办  ")
+        ll = QVBoxLayout(lst)
+        ll.addWidget(QLabel("纪念日（每行一项：名称|月-日，如 生日|01-01）:"))
+        memo_edit = QPlainTextEdit()
+        memo_edit.setPlainText("\n".join(getattr(_cfg(), "memo_items", [])))
+        ll.addWidget(memo_edit)
+        ll.addWidget(QLabel("待办事项（每行一项）:"))
+        todo_edit = QPlainTextEdit()
+        todo_edit.setPlainText("\n".join(getattr(_cfg(), "todo_items", [])))
+        ll.addWidget(todo_edit)
+
+        def _save_lists():
+            _lock()
+            config_obj.memo_items = [l for l in memo_edit.toPlainText().split("\n") if l.strip()]
+            config_obj.todo_items = [l for l in todo_edit.toPlainText().split("\n") if l.strip()]
+            save_config()
+
+        memo_edit.textChanged.connect(_save_lists)
+        todo_edit.textChanged.connect(_save_lists)
+
+    def _build_mirror_settings(parent, dev):
+        """设置 → 屏幕镜像（镜像局部放大跟随鼠标）"""
+        outer = QVBoxLayout(parent)
+        outer.setContentsMargins(6, 6, 6, 6)
+
+        def _cfg():
+            return dev.config if dev.config is not None else config_obj
+
+        def _lock():
+            set_active_device_config(dev)
+
+        zoom_cb = QCheckBox("镜像局部放大（跟随鼠标）")
+        zoom_cb.setChecked(bool(getattr(_cfg(), "zoom_enable", 0)))
+
+        def _chg_zoom():
+            _lock()
+            config_obj.zoom_enable = 1 if zoom_cb.isChecked() else 0
+            save_config()
+
+        zoom_cb.toggled.connect(_chg_zoom)
+        outer.addWidget(zoom_cb)
+        row = QHBoxLayout()
+        outer.addLayout(row)
+        row.addWidget(QLabel("放大倍数:"))
+        zoom_edit = QLineEdit(str(getattr(_cfg(), "zoom_scale", 2)))
+        zoom_edit.setFixedWidth(50)
+        row.addWidget(zoom_edit)
+        row.addStretch(1)
+
+        def _save_zoom():
+            _lock()
+            try:
+                config_obj.zoom_scale = int(zoom_edit.text())
+            except ValueError:
+                pass
+            save_config()
+
+        zoom_edit.editingFinished.connect(_save_zoom)
+        outer.addStretch(1)
+
+    def _build_scheme_settings(parent, dev):
+        """设置 → 配色方案：方案选择 + 预览 + 新增/编辑/删除自定义方案"""
+        outer = QVBoxLayout(parent)
+        outer.setContentsMargins(6, 6, 6, 6)
+
+        def _cfg():
+            return dev.config if dev.config is not None else config_obj
+
+        def _lock():
+            set_active_device_config(dev)
+
+        outer.addWidget(QLabel("选择配色方案预览；内置方案只读，可新增/编辑/删除自定义方案："))
+        row = QHBoxLayout()
+        outer.addLayout(row)
+        row.addWidget(QLabel("方案:"))
+        scheme_combo = QComboBox()
+        scheme_combo.setMinimumWidth(200)
+        row.addWidget(scheme_combo)
+        row.addStretch(1)
+
+        preview = QWidget()
+        preview.setFixedHeight(28)
+        preview.setStyleSheet("border:1px solid gray; background:white;")
+        outer.addWidget(preview)
+
+        def _draw_preview():
+            schemes = get_all_color_schemes(config_obj)
+            colors = schemes.get(scheme_combo.currentText(), []) or []
+            if len(colors) >= 2:
+                preview.setStyleSheet(
+                    "border:1px solid gray; background: qlineargradient(x1:0,y1:0,x2:1,y2:0,"
+                    "stop:0 %s, stop:0.5 %s, stop:1 %s);" % (colors[0], colors[len(colors) // 2], colors[-1]))
+            elif len(colors) == 1:
+                preview.setStyleSheet("border:1px solid gray; background:%s;" % colors[0])
+            else:
+                preview.setStyleSheet("border:1px solid gray; background:white;")
+
+        def _refresh_schemes():
+            schemes = get_all_color_schemes(config_obj)
+            names = list(schemes.keys())
+            cur = scheme_combo.currentText()
+            scheme_combo.blockSignals(True)
+            scheme_combo.clear()
+            scheme_combo.addItems(names)
+            scheme_combo.blockSignals(False)
+            if cur in names:
+                scheme_combo.setCurrentText(cur)
+            elif names:
+                scheme_combo.setCurrentText(names[0])
+            _draw_preview()
+
+        scheme_combo.currentIndexChanged.connect(lambda _: _draw_preview())
+
+        def _scheme_dialog(title, name="", colors_text=""):
+            dlg = QDialog(window)
+            dlg.setWindowTitle(title)
+            dlg.setModal(True)
+            v = QVBoxLayout(dlg)
+            v.addWidget(QLabel("方案名称:"))
+            name_edit = QLineEdit(name)
+            v.addWidget(name_edit)
+            v.addWidget(QLabel("颜色列表（#rrggbb，逗号分隔）:"))
+            colors_edit = QLineEdit(colors_text)
+            v.addWidget(colors_edit)
+            v.addWidget(QLabel("示例：#ffb3ba,#baffc9,#bae1ff,#ddbaff,#ffd6ba,#ffffba"))
+            btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+            v.addWidget(btns)
+            btns.accepted.connect(dlg.accept)
+            btns.rejected.connect(dlg.reject)
+            if dlg.exec() == QDialog.Accepted:
+                return {"name": name_edit.text().strip(), "colors": colors_edit.text().strip()}
+            return None
+
+        def add_custom_scheme():
+            res = _scheme_dialog("新增配色方案")
+            if not res or not res.get("name"):
+                return
+            colors = parse_color_list(res.get("colors", ""))
+            if not colors:
+                insert_text_message("新增失败：颜色列表为空或格式不正确")
+                return
+            _lock()
+            config_obj.custom_color_schemes = config_obj.custom_color_schemes or {}
+            config_obj.custom_color_schemes[res["name"]] = colors
+            save_config()
+            scheme_combo.setCurrentText(res["name"])
+            _refresh_schemes()
+            insert_text_message("已保存新配色方案：%s" % res["name"])
+
+        def edit_custom_scheme():
+            name = scheme_combo.currentText()
+            if name in BUILTIN_COLOR_SCHEMES:
+                insert_text_message("内置方案不可编辑")
+                return
+            custom = getattr(config_obj, "custom_color_schemes", {}) or {}
+            res = _scheme_dialog("编辑配色方案", name, ",".join(custom.get(name, [])))
+            if not res or not res.get("name"):
+                return
+            colors = parse_color_list(res.get("colors", ""))
+            if not colors:
+                insert_text_message("保存失败：颜色列表为空或格式不正确")
+                return
+            _lock()
+            config_obj.custom_color_schemes = config_obj.custom_color_schemes or {}
+            if res["name"] != name and name in config_obj.custom_color_schemes:
+                del config_obj.custom_color_schemes[name]
+            config_obj.custom_color_schemes[res["name"]] = colors
+            save_config()
+            scheme_combo.setCurrentText(res["name"])
+            _refresh_schemes()
+            insert_text_message("已保存配色方案：%s" % res["name"])
+
+        def del_custom_scheme():
+            name = scheme_combo.currentText()
+            if name in BUILTIN_COLOR_SCHEMES:
+                insert_text_message("内置方案不可删除")
+                return
+            if QMessageBox.question(window, "删除配色方案", "确定删除「%s」？" % name) != QMessageBox.Yes:
+                return
+            _lock()
+            config_obj.custom_color_schemes = config_obj.custom_color_schemes or {}
+            config_obj.custom_color_schemes.pop(name, None)
+            save_config()
+            _refresh_schemes()
+            insert_text_message("已删除配色方案：%s" % name)
+
+        btn_row = QHBoxLayout()
+        outer.addLayout(btn_row)
+        for text, fn in (("新增方案", add_custom_scheme), ("编辑当前", edit_custom_scheme), ("删除当前", del_custom_scheme)):
+            b = QPushButton(text)
+            b.clicked.connect(fn)
+            btn_row.addWidget(b)
+        btn_row.addWidget(QLabel("（内置方案只读）"))
+        btn_row.addStretch(1)
+        _refresh_schemes()
+
+    def _build_monitor_settings(parent, dev):
+        """设置 → 监控显示（进程 / 硬件详情 / 仪表盘 / 磁盘读写 / 网络流量）"""
+        outer = QVBoxLayout(parent)
+        outer.setContentsMargins(0, 0, 0, 0)
+        mb = QTabWidget()
+        outer.addWidget(mb)
+
+        def _cfg():
+            return dev.config if dev.config is not None else config_obj
+
+        def _lock():
+            set_active_device_config(dev)
+
+        # ---- 进程 ----
+        proc = QWidget()
+        mb.addTab(proc, "  进程  ")
+        pl = QVBoxLayout(proc)
+        r = QHBoxLayout()
+        pl.addLayout(r)
+        r.addWidget(QLabel("进程TOP显示数量:"))
+        proc_edit = QLineEdit(str(getattr(_cfg(), "proc_count", 10)))
+        proc_edit.setFixedWidth(50)
+        r.addWidget(proc_edit)
+        r.addStretch(1)
+
+        def _save_proc():
+            _lock()
+            try:
+                config_obj.proc_count = int(proc_edit.text())
+            except ValueError:
+                pass
+            save_config()
+
+        proc_edit.editingFinished.connect(_save_proc)
+        pl.addStretch(1)
+
+        # ---- 硬件详情 ----
+        hw = QWidget()
+        mb.addTab(hw, "  硬件详情  ")
+        hl = QVBoxLayout(hw)
+        r = QHBoxLayout()
+        hl.addLayout(r)
+        r.addWidget(QLabel("硬件详情显示数量:"))
+        hw_edit = QLineEdit(str(getattr(_cfg(), "hwdetail_max", 10)))
+        hw_edit.setFixedWidth(50)
+        r.addWidget(hw_edit)
+        r.addStretch(1)
+
+        def _save_hw():
+            _lock()
+            try:
+                config_obj.hwdetail_max = int(hw_edit.text())
+            except ValueError:
+                pass
+            save_config()
+
+        hw_edit.editingFinished.connect(_save_hw)
+        hl.addWidget(QLabel("硬件详情监控类型:"))
+        types_row = QHBoxLayout()
+        hl.addLayout(types_row)
+        hw_types = ("Temperature", "Fan", "Voltage", "Load", "Power")
+        hw_types_state = {}
+        for t in hw_types:
+            ck = QCheckBox(t)
+            ck.setChecked(t in (getattr(_cfg(), "hwdetail_types", "") or "").split(","))
+            hw_types_state[t] = ck
+
+            def _save_type(k=t):
+                _lock()
+                sel = [tt for tt, cc in hw_types_state.items() if cc.isChecked()]
+                config_obj.hwdetail_types = ",".join(sel) or "Temperature"
+                save_config()
+
+            ck.toggled.connect(_save_type)
+            types_row.addWidget(ck)
+        types_row.addStretch(1)
+        hl.addStretch(1)
+
+        # ---- 仪表盘 ----
+        gauge = QWidget()
+        mb.addTab(gauge, "  仪表盘  ")
+        gl = QVBoxLayout(gauge)
+        gl.addWidget(QLabel("仪表盘显示项目与颜色（多于一页自动翻页）:"))
+        gauge_items = [
+            ("CPU", "gauge_show_cpu", "gauge_cpu_color"),
+            ("内存", "gauge_show_mem", "gauge_mem_color"),
+            ("磁盘", "gauge_show_disk", "gauge_disk_color"),
+            ("CPU温度", "gauge_show_cpu_temp", "gauge_cpu_temp_color"),
+            ("GPU", "gauge_show_gpu", "gauge_gpu_color"),
+            ("GPU温度", "gauge_show_gpu_temp", "gauge_gpu_temp_color"),
+            ("风扇", "gauge_show_fan", "gauge_fan_color"),
+            ("上传", "gauge_show_upload", "gauge_upload_color"),
+            ("下载", "gauge_show_download", "gauge_download_color"),
+        ]
+
+        def _save_gauge():
+            _lock()
+            for _label, show_key, color_key in gauge_items:
+                setattr(config_obj, show_key, gauge_state[show_key])
+                setattr(config_obj, color_key, gauge_state[color_key])
+            save_config()
+
+        gauge_state = {}
+        for label, show_key, color_key in gauge_items:
+            grow = QHBoxLayout()
+            gl.addLayout(grow)
+            ck = QCheckBox(label)
+            ck.setChecked(bool(getattr(_cfg(), show_key, 0)))
+            gauge_state[show_key] = 1 if ck.isChecked() else 0
+            grow.addWidget(ck)
+            color_edit = QLineEdit(getattr(_cfg(), color_key, "#ff8000"))
+            color_edit.setFixedWidth(80)
+            gauge_state[color_key] = color_edit.text()
+            grow.addWidget(color_edit)
+
+            def _pick_color(ce):
+                c = QColorDialog.getColor(QColor(ce.text()), window)
+                if c.isValid():
+                    ce.setText(c.name())
+                    _save_gauge()
+
+            pick_btn = QPushButton("颜色")
+            pick_btn.clicked.connect(lambda _=False, ce=color_edit: _pick_color(ce))
+            grow.addWidget(pick_btn)
+            grow.addStretch(1)
+
+            def _on_toggled(val, k=show_key):
+                gauge_state[k] = 1 if val else 0
+                _save_gauge()
+
+            def _on_color(k=color_key, ce=color_edit):
+                gauge_state[k] = ce.text()
+                _save_gauge()
+
+            ck.toggled.connect(_on_toggled)
+            color_edit.editingFinished.connect(_on_color)
+        gl.addStretch(1)
+
+        # ---- 磁盘读写 ----
+        disk = QWidget()
+        mb.addTab(disk, "  磁盘读写  ")
+        dl = QVBoxLayout(disk)
+        mode_row = QHBoxLayout()
+        dl.addLayout(mode_row)
+        mode_row.addWidget(QLabel("显示模式:"))
+        disk_mode = QComboBox()
+        disk_mode.addItems(["经典", "经典2", "网速样式"])
+        disk_mode.setCurrentText(getattr(_cfg(), "diskio_mode", "经典"))
+        mode_row.addWidget(disk_mode)
+        mode_row.addWidget(QLabel("（经典2样式自动跟随网络流量配色，无需单独配置）"))
+        mode_row.addStretch(1)
+        dn = QTabWidget()
+        dl.addWidget(dn)
+
+        def _disk_color_row(lay, label, key):
+            row = QHBoxLayout()
+            lay.addLayout(row)
+            row.addWidget(QLabel(label))
+            e = QLineEdit(getattr(_cfg(), key, "#ffffff"))
+            e.setFixedWidth(80)
+            row.addWidget(e)
+
+            def _pick(ce):
+                c = QColorDialog.getColor(QColor(ce.text()), window)
+                if c.isValid():
+                    ce.setText(c.name())
+                    _save_disk(key, ce.text())
+
+            b = QPushButton("颜色")
+            b.clicked.connect(lambda _=False, ce=e: _pick(ce))
+            row.addWidget(b)
+            row.addStretch(1)
+
+            def _save(k=key, ce=e):
+                _lock()
+                setattr(config_obj, k, ce.text())
+                save_config()
+
+            e.editingFinished.connect(lambda k=key, ce=e: _save(k, ce))
+
+        def _save_disk(k, v):
+            _lock()
+            setattr(config_obj, k, v)
+            save_config()
+
+        classic = QWidget()
+        dn.addTab(classic, "  经典模式  ")
+        cl = QVBoxLayout(classic)
+        _disk_color_row(cl, "标题颜色:", "diskio_title_color")
+        _disk_color_row(cl, "读 颜色:", "diskio_read_color")
+        _disk_color_row(cl, "写 颜色:", "diskio_write_color")
+        cl.addStretch(1)
+
+        netspeed_tab = QWidget()
+        dn.addTab(netspeed_tab, "  网速样式  ")
+        nsl = QVBoxLayout(netspeed_tab)
+        _disk_color_row(nsl, "标签颜色:", "diskio_label_color")
+        _disk_color_row(nsl, "读数值颜色:", "diskio_value_read_color")
+        _disk_color_row(nsl, "写数值颜色:", "diskio_value_write_color")
+        _disk_color_row(nsl, "读柱颜色:", "diskio_bar1_color")
+        _disk_color_row(nsl, "写柱颜色:", "diskio_bar2_color")
+        nsl.addStretch(1)
+
+        def _save_disk_mode():
+            _lock()
+            config_obj.diskio_mode = disk_mode.currentText()
+            save_config()
+
+        disk_mode.currentIndexChanged.connect(lambda _: _save_disk_mode())
+
+        # ---- 网络流量 ----
+        net = QWidget()
+        mb.addTab(net, "  网络流量  ")
+        nl = QVBoxLayout(net)
+        net_mode_row = QHBoxLayout()
+        nl.addLayout(net_mode_row)
+        net_mode_row.addWidget(QLabel("显示模式:"))
+        netspeed_mode = QComboBox()
+        netspeed_mode.addItems(["经典", "自定义"])
+        netspeed_mode.setCurrentText(getattr(_cfg(), "netspeed_mode", "经典"))
+        net_mode_row.addWidget(netspeed_mode)
+        net_mode_row.addWidget(QLabel("（经典=修改前样式，自定义=全部颜色独立）"))
+        net_mode_row.addStretch(1)
+        for label, key in (("上传文字颜色:", "netspeed_up_color"),
+                           ("下载文字颜色:", "netspeed_down_color"),
+                           ("上传柱颜色:", "netspeed_bar1_color"),
+                           ("下载柱颜色:", "netspeed_bar2_color")):
+            row = QHBoxLayout()
+            nl.addLayout(row)
+            row.addWidget(QLabel(label))
+            e = QLineEdit(getattr(_cfg(), key, "#ff8000"))
+            e.setFixedWidth(80)
+            row.addWidget(e)
+
+            def _pick(ce, k=key):
+                c = QColorDialog.getColor(QColor(ce.text()), window)
+                if c.isValid():
+                    ce.setText(c.name())
+                    _save_netspeed(k, ce.text())
+
+            b = QPushButton("颜色")
+            b.clicked.connect(lambda _=False, ce=e: _pick(ce))
+            row.addWidget(b)
+            row.addStretch(1)
+
+            def _save(k=key, ce=e):
+                _lock()
+                setattr(config_obj, k, ce.text())
+                save_config()
+
+            e.editingFinished.connect(lambda k=key, ce=e: _save(k, ce))
+
+        def _save_netspeed(k, v):
+            _lock()
+            setattr(config_obj, k, v)
+            save_config()
+
+        def _save_netspeed_mode():
+            _lock()
+            config_obj.netspeed_mode = netspeed_mode.currentText()
+            save_config()
+
+        netspeed_mode.currentIndexChanged.connect(lambda _: _save_netspeed_mode())
+        nl.addStretch(1)
+
+    def _build_hw_tab(parent, dev):
+        """第三层「设备信息」子页：连接信息 / SFR寄存器 / Flash芯片 / Flash分区 / 系统信息"""
+        outer = QVBoxLayout(parent)
+        outer.setContentsMargins(6, 6, 6, 6)
+        hw_nb = QTabWidget()
+        outer.addWidget(hw_nb)
+
+        conn_page = QWidget()
+        hw_nb.addTab(conn_page, "  连接信息  ")
+        sfr_page = QWidget()
+        hw_nb.addTab(sfr_page, "  SFR寄存器  ")
+        flash_page = QWidget()
+        hw_nb.addTab(flash_page, "  Flash芯片  ")
+        parts_page = QWidget()
+        hw_nb.addTab(parts_page, "  Flash分区  ")
+        sys_page = QWidget()
+        hw_nb.addTab(sys_page, "  系统信息  ")
+
+        def _make_form(page):
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            content = QWidget()
+            form = QFormLayout(content)
+            form.setContentsMargins(8, 8, 8, 8)
+            scroll.setWidget(content)
+            lay = QVBoxLayout(page)
+            lay.setContentsMargins(0, 0, 0, 0)
+            lay.addWidget(scroll)
+            return form
+
+        conn_form = _make_form(conn_page)
+        sfr_form = _make_form(sfr_page)
+        flash_form = _make_form(flash_page)
+        parts_form = _make_form(parts_page)
+        sys_form = _make_form(sys_page)
+
+        def _clear_form(form):
+            while form.rowCount() > 0:
+                form.removeRow(0)
+
+        def _add_row(form, label, value):
+            try:
+                l = QLabel(label)
+                l.setStyleSheet("color:gray;")
+                v = QLabel(value)
+                v.setTextInteractionFlags(Qt.TextSelectableByMouse)
+                form.addRow(l, v)
+            except Exception:
+                pass
+
+        # Flash 布局（内置默认，与原版一致）
+        _flash_default = {
+            "chip": "P25D80", "capacity": "1024KB", "page_size": "256B", "total_pages": 4096,
+            "allocations": {
+                "gif_frames": {"start_page": 0, "pages": 3600, "count": 36, "description": "36张动图, 每张100页"},
+                "demo_image": {"start_page": 3600, "pages": 29, "description": "240x240单色Demo1"},
+                "digit_font_48x66": {"start_page": 3629, "pages": 22, "description": "48x66数码管字体N48X66P"},
+                "clock_font_asc64": {"start_page": 3651, "pages": 128, "description": "32x64 ASCII字体ASC64"},
+                "logo": {"start_page": 3779, "pages": 12, "description": "240x102单色LOGO"},
+                "j1_image": {"start_page": 3791, "pages": 29, "description": "240x240单色J1"},
+                "mlogo": {"start_page": 3820, "pages": 6, "description": "160x68单色MLOGO"},
+                "clock_background": {"start_page": 3826, "pages": 100, "description": "160x80彩色时钟背景CLK_BG"},
+                "photo_album": {"start_page": 3926, "pages": 100, "description": "160x80彩色相册图像PH1"},
+                "state_font_24x33": {"start_page": 4026, "pages": 12, "description": "24x33状态页数码管字体N24X33P"},
+                "state_background": {"start_page": 4038, "pages": 7, "description": "160x80状态页背景MP1"},
+            },
+        }
+
+        def _load_flash_layout():
+            try:
+                with open(_get_resource("device_protocol.json"), "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                return data.get("flash_layout") or _flash_default
+            except Exception:
+                return _flash_default
+
+        _sfr_type_names = ["u8地址", "u16地址", "u32地址", "字符串", "数组"]
+
+        def _sfr_addr_str(entry):
+            try:
+                data_type = entry.family[0] // 32
+                length = entry.family[0] % 32
+                if data_type == 0:
+                    return "0x%04X(%d字节)" % (entry.data[0] * 256 + entry.data[1], length)
+                elif data_type == 1:
+                    return "0x%02X" % entry.data[0]
+                elif data_type == 2:
+                    return "0x%04X(%d字节)" % (entry.data[0] * 256 + entry.data[1], length)
+            except Exception:
+                pass
+            return "-"
+
+        def _read_sfr_value(entry):
+            try:
+                data_type = entry.family[0] // 32
+                if data_type == 0:
+                    return Read_M_u8(entry.data[0] * 256 + entry.data[1])
+                elif data_type == 1:
+                    return Read_M_u16(entry.data[0])
+                elif data_type == 2:
+                    addr = entry.data[0] * 256 + entry.data[1]
+                    val = 0
+                    for n in range(entry.family[0] % 32):
+                        val = (val << 8) | Read_M_u8(addr + n)
+                    return val
+                elif data_type == 3:
+                    return entry.data.decode("utf-8", errors="replace")
+                elif data_type == 4:
+                    return " ".join("%02X" % b for b in entry.data)
+            except Exception:
+                return None
+            return None
+
+        def refresh_hw_info():
+            for form in (conn_form, sfr_form, flash_form, parts_form, sys_form):
+                _clear_form(form)
+            _add_row(conn_form, "读取中", "请稍候…")
+
+            # 跨线程桥：后台线程结果经信号回主线程填充
+            # （QTimer.singleShot(0,...) 在后台线程不触发，会导致设备信息一直空白）
+            class _HwBridge(QObject):
+                ready = Signal(object)
+
+            _hw_bridge = _HwBridge()
+            _keepalive.append(_hw_bridge)  # 防 GC
+
+            def _collect():
+                d = dev
+                usb = getattr(d, "usb_info", {}) if d is not None else {}
+                fw = getattr(d, "firmware_version", 0) if d is not None else 0
+                connected = (d is not None and d.ser is not None and d.ser.is_open)
+                sfr_rows = []
+                sfr = getattr(d, "msn_data", None) if d is not None else None
+                if sfr:
+                    for entry in sfr:
+                        try:
+                            name = entry.name.decode("utf-8", errors="replace")
+                        except Exception:
+                            name = "?"
+                        try:
+                            dtype = _sfr_type_names[entry.family[0] // 32]
+                        except Exception:
+                            dtype = "?"
+                        addr = _sfr_addr_str(entry)
+                        val = _read_sfr_value(entry) if connected else None
+                        val_str = "-" if val is None else str(val)
+                        sfr_rows.append((name, "%s %s = %s" % (dtype, addr, val_str)))
+                import platform
+                sys_rows = [
+                    ("操作系统", platform.platform()),
+                    ("电脑名", platform.node()),
+                    ("架构", platform.machine()),
+                    ("CPU型号", platform.processor() or "未知"),
+                ]
+                try:
+                    sys_rows.append(("CPU核心",
+                                     "%d物理 / %d逻辑" % (psutil.cpu_count(logical=False) or 0, psutil.cpu_count(logical=True) or 0)))
+                except Exception:
+                    pass
+                try:
+                    freq = psutil.cpu_freq()
+                    if freq and freq.current:
+                        sys_rows.append(("CPU频率", "%.1f GHz" % (freq.current / 1000)))
+                except Exception:
+                    pass
+                try:
+                    sys_rows.append(("内存", "%.1f GB" % (psutil.virtual_memory().total / (1024 ** 3))))
+                except Exception:
+                    pass
+                try:
+                    batt = psutil.sensors_battery()
+                    if batt:
+                        sys_rows.append(("电池", "%d%%" % batt.percent))
+                except Exception:
+                    pass
+                sys_rows.append(("Python", sys.version.split()[0]))
+                flash = _load_flash_layout()
+                return usb, fw, connected, sfr_rows, sys_rows, flash
+
+            def _apply(result):
+                try:
+                    usb, fw, connected, sfr_rows, sys_rows, flash = result
+                    for form in (conn_form, sfr_form, flash_form, parts_form, sys_form):
+                        _clear_form(form)
+                    _add_row(conn_form, "连接状态", "已连接" if connected else "未连接")
+                    _add_row(conn_form, "端口", usb.get("port") or "-")
+                    _add_row(conn_form, "序列号(SN)", usb.get("serial_number") or "-")
+                    _add_row(conn_form, "VID", usb.get("vid") or "-")
+                    _add_row(conn_form, "PID", usb.get("pid") or "-")
+                    _add_row(conn_form, "制造商", usb.get("manufacturer") or "-")
+                    _add_row(conn_form, "产品", usb.get("product") or "-")
+                    _add_row(conn_form, "名称", usb.get("name") or "-")
+                    _add_row(conn_form, "描述", usb.get("description") or "-")
+                    _add_row(conn_form, "接口", usb.get("interface") or "-")
+                    _add_row(conn_form, "硬件ID", usb.get("hwid") or "-")
+                    _add_row(conn_form, "位置", usb.get("location") or "-")
+                    _add_row(conn_form, "固件版本", ("v%d" % fw) if fw else "-")
+                    if sfr_rows:
+                        _add_row(sfr_form, "变量名", "类型 / 地址 / 当前值")
+                        for name, row in sfr_rows:
+                            _add_row(sfr_form, name, row)
+                    else:
+                        _add_row(sfr_form, "SFR数据", "未获取（设备未连接）")
+                    _add_row(flash_form, "Flash芯片", flash.get("chip") or "-")
+                    _add_row(flash_form, "容量", flash.get("capacity") or "-")
+                    _add_row(flash_form, "页大小", flash.get("page_size") or "-")
+                    _add_row(flash_form, "总页数", str(flash.get("total_pages") or "-"))
+                    allocs = flash.get("allocations") or {}
+                    if allocs:
+                        for name, info in allocs.items():
+                            start = info.get("start_page", "?")
+                            pages = info.get("pages", "?")
+                            desc = info.get("description", "")
+                            _add_row(parts_form, name, "页 %s（共%s页）%s" % (start, pages, desc))
+                    for label, val in sys_rows:
+                        _add_row(sys_form, label, val)
+                except Exception:
+                    pass
+
+            _hw_bridge.ready.connect(_apply)
+
+            def _worker():
+                try:
+                    _result = _collect()
+                except Exception:
+                    _result = None
+                if _result is not None:
+                    _hw_bridge.ready.emit(_result)
+
+            threading.Thread(target=_worker, daemon=True).start()
+
+        btn_row = QHBoxLayout()
+        outer.addLayout(btn_row)
+        refresh_btn = QPushButton("刷新")
+        refresh_btn.setFixedWidth(80)
+        refresh_btn.clicked.connect(refresh_hw_info)
+        btn_row.addWidget(refresh_btn)
+        btn_row.addWidget(QLabel("连接信息在设备连接成功时采集；未连接或显示“-”属正常"))
+        btn_row.addStretch(1)
+        refresh_hw_info()
+
+    # 防 GC 容器：后台线程回调用的跨线程桥等对象（避免被垃圾回收导致信号失效）
+    _keepalive = []
+
+    # 每屏 inner_notebook 的懒加载状态（设置/设备信息首次点开才构建，减少启动卡顿）
+    _inner_notebooks = {}
+
+    def _on_inner_tab_changed(did, nb, idx):
+        """用户切换到某屏的设置/设备信息子页时，若未构建则首次构建"""
+        try:
+            rec = _inner_notebooks.get(did)
+            if rec is None:
+                return
+            dev = all_devices.get(did)
+            if dev is None:
+                return
+            if idx == 1 and not rec["settings"]:
+                rec["settings"] = True
+                _build_settings_tab(nb.widget(1), dev)
+            elif idx == 2 and not rec["hw"]:
+                rec["hw"] = True
+                _build_hw_tab(nb.widget(2), dev)
+        except Exception:
+            pass
+
+    def _rebuild_main_tabs():
+        """根据已连接设备重建主控多标签（保留已有屏的上下文）。
+        每个屏幕标签 = 第三层「主控|设置|设备信息」三页（设置/设备信息懒加载）。"""
+        global _active_main_dev_id
+        connected = [d for d in all_devices.values() if d.device_state == 1]
+        if not connected:
+            connected = [_primary_device] if _primary_device is not None else []
+        # 移除已断开的设备标签
+        for did in list(_main_ctxs.keys()):
+            if not any(d.index == did for d in connected):
+                for i in range(main_notebook.count()):
+                    w = main_notebook.widget(i)
+                    if w is not None and w.property("dev_index") == did:
+                        main_notebook.removeTab(i)
+                        break
+                _main_ctxs.pop(did, None)
+                _inner_notebooks.pop(did, None)
+        # 为新连接设备创建标签（每屏一个外层标签，内含 主控|设置|设备信息）
+        for d in connected:
+            if d.index not in _main_ctxs:
+                screen_tab = QWidget()
+                screen_tab.setProperty("dev_index", d.index)
+                lay = QVBoxLayout(screen_tab)
+                lay.setContentsMargins(0, 0, 0, 0)
+                inner_nb = QTabWidget()
+                lay.addWidget(inner_nb)
+                main_page = QWidget()
+                inner_nb.addTab(main_page, "  主控  ")
+                _build_main_tab(main_page, d)
+                settings_page = QWidget()
+                inner_nb.addTab(settings_page, "  设置  ")
+                hw_page = QWidget()
+                inner_nb.addTab(hw_page, "  设备信息  ")
+                main_notebook.addTab(screen_tab, d.device_name)
+                _inner_notebooks[d.index] = {"settings": False, "hw": False}
+                inner_nb.currentChanged.connect(
+                    lambda idx, nb=inner_nb, did=d.index: _on_inner_tab_changed(did, nb, idx))
+        # 同步当前选中标签与活跃设备
+        try:
+            cur = main_notebook.currentIndex()
+            items = list(_main_ctxs.keys())
+            if 0 <= cur < len(items):
+                _active_main_dev_id = items[cur]
+        except Exception:
+            pass
+
+    def _main_tab_for_dev_index(did):
+        for i in range(main_notebook.count()):
+            if main_notebook.widget(i).property("dev_index") == did:
+                return i
+        return -1
+
+    def _select_main_tab(did):
+        """联动：切换到指定设备的主控标签"""
+        global _active_main_dev_id
+        idx = _main_tab_for_dev_index(did)
+        if idx >= 0:
+            try:
+                main_notebook.setCurrentIndex(idx)
+            except Exception:
+                pass
+            _active_main_dev_id = did
+
+    def _on_main_tab_changed(index):
+        """联动：用户点击屏幕标签时，同步活跃设备（用 tab 的 dev_index 直接映射，避免顺序错位）"""
+        try:
+            w = main_notebook.widget(index) if 0 <= index < main_notebook.count() else None
+            if w is not None:
+                did = w.property("dev_index")
+                dev = next((d for d in all_devices.values()
+                            if d.index == did and d.device_state == 1), None)
+                if dev is not None:
+                    _activate_by_name(dev.device_name)
+        except Exception:
+            pass
+
+    main_notebook.currentChanged.connect(_on_main_tab_changed)
+    _rebuild_main_tabs()
+
+    # ==================== 联动 ====================
+    _syncing_screen_tabs = False
+
+    def _activate_by_name(name):
+        """按设备名切换活跃屏，并同步主控标签与下拉框"""
+        global _primary_device, _active_main_dev_id
+        nonlocal _syncing_screen_tabs  # _syncing_screen_tabs 定义在 UI_Page 内，须用 nonlocal（原 global 会 NameError 且被吞掉）
+        if _syncing_screen_tabs:
+            return
+        _syncing_screen_tabs = True
+        try:
+            for dev in all_devices.values():
+                if dev.device_name == name and dev.device_state == 1:
+                    old = _primary_device
+                    if old is not None and old != dev:
+                        if old.config is not None:
+                            old.config.state_machine = old.state_machine
+                        else:
+                            old.state_machine = config_obj.state_machine
+                    set_current_device(dev)
+                    _primary_device = dev
+                    set_active_device_config(dev)
+                    if dev.config is not None:
+                        dev.config.state_machine = getattr(dev, "state_machine", SCREEN_PAGE_ID)
+                    try:
+                        device_selector.blockSignals(True)
+                        device_selector.setCurrentText(dev.device_name)
+                        device_selector.blockSignals(False)
+                    except Exception:
+                        pass
+                    try:
+                        _select_main_tab(dev.index)
+                    except Exception:
+                        pass
+                    return True
+            return False
+        finally:
+            _syncing_screen_tabs = False
+
+    # ==================== 电视墙（第一层：中控 | 电视墙 | 关于） ====================
+    wall_tab = QWidget()
+    top_nb.addTab(wall_tab, "  电视墙  ")
+    wall_lay = QVBoxLayout(wall_tab)
+    wall_lay.setContentsMargins(4, 4, 4, 4)
+    wall_nb = QTabWidget()
+    wall_lay.addWidget(wall_nb)
+
+    # ---------- 显示墙页（所有小屏实时预览，按设置的行×列排布） ----------
+    # 两种渲染方式：控件方式（每格一个 QLabel）/ 画布方式（QPainter 统一绘制，更省资源）
+    wall_view_page = QWidget()
+    wall_nb.addTab(wall_view_page, "  显示墙  ")
+    wv_lay = QVBoxLayout(wall_view_page)
+    wv_lay.setContentsMargins(4, 4, 4, 4)
+    wall_stack = QStackedWidget()
+    wv_lay.addWidget(wall_stack)
+    widget_view = QWidget()  # 页面0：控件方式
+    widget_lay = QVBoxLayout(widget_view)
+    widget_lay.setContentsMargins(0, 0, 0, 0)
+    wall_grid = QGridLayout()
+    wall_grid.setSpacing(4)
+    widget_lay.addLayout(wall_grid)
+    wall_stack.addWidget(widget_view)
+
+    class _WallCanvas(QWidget):
+        """显示墙画布方式：单个控件上用 QPainter 按行列统一绘制所有小屏预览，
+        屏幕多时比 N 个 QLabel 控件更省资源、更流畅。"""
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self.setAutoFillBackground(True)
+            self.setMinimumSize(120, 70)
+            self.rows = 1
+            self.cols = 1
+            self.cells = []  # [(设备名, QPixmap或None, 是否已连接)]
+
+        def set_cells(self, rows, cols, cells):
+            self.rows = rows
+            self.cols = cols
+            self.cells = cells
+            self.update()
+
+        def paintEvent(self, event):
+            p = None
+            try:
+                p = QPainter(self)
+                p.fillRect(self.rect(), QColor("#101010"))
+                rows = max(1, self.rows)
+                cols = max(1, self.cols)
+                W = self.width() / cols
+                H = self.height() / rows
+                pen = QPen(QColor("#444444"))
+                for idx, cell in enumerate(self.cells):
+                    name, pm, connected = cell
+                    r, c = idx // cols, idx % cols
+                    rect = QRectF(c * W + 1, r * H + 1, W - 2, H - 2)
+                    p.setPen(pen)
+                    p.drawRect(rect)
+                    if not connected:
+                        p.setPen(QColor("#888888"))
+                        p.drawText(rect, Qt.AlignCenter, "%s\n(未连接)" % name)
+                        continue
+                    if pm is not None and not pm.isNull():
+                        pw, ph = pm.width(), pm.height()
+                        if pw > 0 and ph > 0:
+                            scale = min(rect.width() / pw, rect.height() / ph)
+                            dw, dh = pw * scale, ph * scale
+                            dx = rect.x() + (rect.width() - dw) / 2
+                            dy = rect.y() + (rect.height() - dh) / 2
+                            p.drawPixmap(QRectF(dx, dy, dw, dh), pm, QRectF(0, 0, pw, ph))
+                    else:
+                        p.setPen(QColor("#888888"))
+                        p.drawText(rect, Qt.AlignCenter, "%s\n(无预览)" % name)
+            except Exception:
+                pass
+            finally:
+                if p is not None:
+                    p.end()
+
+    wall_canvas = _WallCanvas()  # 页面1：画布方式
+    wall_stack.addWidget(wall_canvas)
+
+    # ---------- 显示墙设置页（分页：布局 / 显示方式） ----------
+    wall_set_page = QWidget()
+    wall_nb.addTab(wall_set_page, "  显示墙设置  ")
+    ws_lay = QVBoxLayout(wall_set_page)
+    ws_lay.setContentsMargins(4, 4, 4, 4)
+    set_nb = QTabWidget()
+    ws_lay.addWidget(set_nb)
+
+    # ---- 子页1：布局 ----
+    layout_page = QWidget()
+    set_nb.addTab(layout_page, "  布局  ")
+    lp_lay = QVBoxLayout(layout_page)
+    lp_lay.setContentsMargins(12, 12, 12, 12)
+    lp_lay.addWidget(QLabel("显示墙布局设置：根据已连接屏幕数量，选择横向/纵向排布方式"))
+
+    wall_count_lbl = QLabel("")
+    wall_count_lbl.setStyleSheet("color:gray;")
+    lp_lay.addWidget(wall_count_lbl)
+
+    quick_row = QHBoxLayout()
+    lp_lay.addLayout(quick_row)
+    quick_row.addWidget(QLabel("快速布局:"))
+    wall_quick = QComboBox()
+    wall_quick.setMinimumWidth(150)
+    quick_row.addWidget(wall_quick)
+    quick_row.addStretch(1)
+
+    rc_row = QHBoxLayout()
+    lp_lay.addLayout(rc_row)
+    rc_row.addWidget(QLabel("纵向行数:"))
+    wall_rows_sb = QSpinBox()
+    wall_rows_sb.setRange(1, 8)
+    wall_rows_sb.setFixedWidth(70)
+    rc_row.addWidget(wall_rows_sb)
+    rc_row.addSpacing(20)
+    rc_row.addWidget(QLabel("横向列数:"))
+    wall_cols_sb = QSpinBox()
+    wall_cols_sb.setRange(1, 8)
+    wall_cols_sb.setFixedWidth(70)
+    rc_row.addWidget(wall_cols_sb)
+    rc_row.addStretch(1)
+
+    ws_hint = QLabel("提示：行数 × 列数 应 ≥ 已连接屏幕数，多余的格子会留空；"
+                     "预览图会自动等比缩放铺满各自格子。")
+    ws_hint.setWordWrap(True)
+    ws_hint.setStyleSheet("color:gray;")
+    lp_lay.addWidget(ws_hint)
+    lp_lay.addStretch(1)
+
+    # ---- 子页2：显示方式 ----
+    mode_page = QWidget()
+    set_nb.addTab(mode_page, "  显示方式  ")
+    mp_lay = QVBoxLayout(mode_page)
+    mp_lay.setContentsMargins(12, 12, 12, 12)
+    mp_lay.addWidget(QLabel("选择显示墙的渲染方式："))
+    wall_mode_combo = QComboBox()
+    wall_mode_combo.addItem("控件方式（每格一个 QLabel）", "widget")
+    wall_mode_combo.addItem("画布方式（QPainter 统一绘制，更省资源）", "canvas")
+    wall_mode_combo.setMinimumWidth(260)
+    mp_lay.addWidget(wall_mode_combo)
+    mp_mode_hint = QLabel("提示：小屏数量多时，画布方式用一个控件统一绘制所有预览，"
+                          "比每格一个控件更省资源、更流畅。")
+    mp_mode_hint.setWordWrap(True)
+    mp_mode_hint.setStyleSheet("color:gray;")
+    mp_lay.addWidget(mp_mode_hint)
+    mp_lay.addStretch(1)
+
+    # 电视墙运行时状态（UI_Page 局部，嵌套函数用 nonlocal 访问）
+    _wall_devs = []    # 当前已连接设备（按 index 排序）
+    _wall_cells = []   # [(dev, QLabel), ...] 当前格子（控件方式使用）
+    _wall_expected = None  # 期望布局 (行,列)，来自配置文件；设备连接足够后应用
+    _wall_mode = "widget"  # 显示方式：widget=控件(QLabel) / canvas=画布(QPainter)
+
+    def _wall_connected():
+        """返回已连接设备（按 index 排序）"""
+        return sorted([d for d in all_devices.values() if d.device_state == 1],
+                      key=lambda x: x.index)
+
+    def _wall_config_path():
+        """电视墙布局独立配置文件（程序级，不受多屏 daemon 切换全局 config 影响）"""
+        return os.path.join(get_config_dir(), "MSU2_MINI_wall.json")
+
+    def _wall_load_config():
+        """读取已保存的显示墙设置（行数, 列数, 显示方式），失败返回 (0, 0, "widget")"""
+        try:
+            with open(_wall_config_path(), "r", encoding="utf-8") as f:
+                data = json.load(f)
+            rows = int(data.get("wall_rows", 0) or 0)
+            cols = int(data.get("wall_cols", 0) or 0)
+            mode = data.get("mode", "widget")
+            if mode not in ("widget", "canvas"):
+                mode = "widget"
+            return rows, cols, mode
+        except Exception:
+            return 0, 0, "widget"
+
+    def _wall_save():
+        """保存显示墙设置（行列 + 显示方式）到独立配置文件（原子写入，下次启动自动恢复）"""
+        try:
+            data = {"wall_rows": wall_rows_sb.value(), "wall_cols": wall_cols_sb.value(),
+                    "mode": _wall_mode}
+            path = _wall_config_path()
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f)
+            os.replace(tmp, path)
+        except Exception:
+            pass
+
+    def _wall_apply_layout():
+        """把已连接设备按 行数×列数 排进显示墙（行主序：先填满第一行）。
+        控件方式建 QLabel 网格；画布方式只更新画布元数据（pixmap 由刷新定时器填充）。"""
+        nonlocal _wall_cells
+        try:
+            rows = wall_rows_sb.value()
+            cols = wall_cols_sb.value()
+            if _wall_mode == "canvas":
+                _wall_cells = []
+                wall_canvas.set_cells(rows, cols,
+                                      [(dev.device_name, None, dev.device_state == 1)
+                                       for dev in _wall_devs])
+                return
+            for i in reversed(range(wall_grid.count())):
+                it = wall_grid.itemAt(i)
+                w = it.widget() if it is not None else None
+                if w is not None:
+                    wall_grid.removeWidget(w)
+                    w.deleteLater()
+            _wall_cells = []
+            for idx, dev in enumerate(_wall_devs):
+                r, c = idx // cols, idx % cols
+                cell = QLabel(dev.device_name)
+                cell.setAlignment(Qt.AlignCenter)
+                cell.setAutoFillBackground(True)
+                cell.setStyleSheet("background-color:#101010; color:#aaaaaa; border:1px solid #444444;")
+                cell.setScaledContents(False)
+                wall_grid.addWidget(cell, r, c)
+                _wall_cells.append((dev, cell))
+            for cc in range(cols):
+                wall_grid.setColumnStretch(cc, 1)
+            for rr in range(rows):
+                wall_grid.setRowStretch(rr, 1)
+        except Exception:
+            pass
+
+    def _wall_refresh_options():
+        """根据当前屏数刷新 快速布局下拉 与 行/列取值范围；设备未连接完时保留期望布局。"""
+        nonlocal _wall_devs, _wall_expected
+        try:
+            n = len(_wall_devs)
+            wall_count_lbl.setText("已连接屏幕数量：%d 台" % n)
+            maxv = max(1, n)
+            wall_rows_sb.setRange(1, maxv)
+            wall_cols_sb.setRange(1, maxv)
+            # 列出所有 行×列≥屏数 的组合，最接近方形者优先
+            combos = [(r, c) for r in range(1, maxv + 1) for c in range(1, maxv + 1)
+                      if r * c >= n]
+            combos.sort(key=lambda x: (abs(x[0] - x[1]), x[0] * x[1]))
+            wall_quick.blockSignals(True)
+            wall_quick.clear()
+            for r, c in combos:
+                wall_quick.addItem("%d 行 × %d 列" % (r, c), (r, c))
+            # 决定要应用的行列：
+            # 1) 有保存的期望布局且当前屏数已能容纳（r,c<=n 且 r*c>=n）→ 应用期望布局（恢复）
+            # 2) 否则当前值合法则保留，不合法用推荐值
+            cur = (wall_rows_sb.value(), wall_cols_sb.value())
+            if _wall_expected is not None:
+                er, ec = _wall_expected
+                if n >= 1 and er <= n and ec <= n and er * ec >= n:
+                    cur = (er, ec)
+                    _wall_expected = None
+                elif combos:
+                    cur = combos[0]
+            elif cur not in combos and combos:
+                cur = combos[0]
+            wall_rows_sb.blockSignals(True)
+            wall_cols_sb.blockSignals(True)
+            wall_rows_sb.setValue(cur[0])
+            wall_cols_sb.setValue(cur[1])
+            wall_rows_sb.blockSignals(False)
+            wall_cols_sb.blockSignals(False)
+            # 同步下拉选择
+            for i in range(wall_quick.count()):
+                if wall_quick.itemData(i) == cur:
+                    wall_quick.setCurrentIndex(i)
+                    break
+            wall_quick.blockSignals(False)
+            _wall_apply_layout()
+        except Exception:
+            pass
+
+    def _on_wall_quick(idx):
+        """选择快速布局 → 设置行/列并应用"""
+        nonlocal _wall_expected
+        try:
+            _wall_expected = None
+            data = wall_quick.itemData(idx)
+            if data is None:
+                return
+            r, c = data
+            wall_rows_sb.blockSignals(True)
+            wall_cols_sb.blockSignals(True)
+            wall_rows_sb.setValue(r)
+            wall_cols_sb.setValue(c)
+            wall_rows_sb.blockSignals(False)
+            wall_cols_sb.blockSignals(False)
+            _wall_apply_layout()
+            _wall_save()
+        except Exception:
+            pass
+
+    def _on_wall_rc_changed():
+        """行/列手动调整：不满足 行×列≥屏数 时自动补足；否则应用并保存。"""
+        nonlocal _wall_expected
+        try:
+            _wall_expected = None
+            rows = wall_rows_sb.value()
+            cols = wall_cols_sb.value()
+            n = max(1, len(_wall_devs))
+            if rows * cols < n:
+                need_rows = -(-n // cols)
+                if need_rows != rows:
+                    wall_rows_sb.blockSignals(True)
+                    wall_rows_sb.setValue(need_rows)
+                    wall_rows_sb.blockSignals(False)
+                    rows = need_rows
+                else:
+                    need_cols = -(-n // rows)
+                    wall_cols_sb.blockSignals(True)
+                    wall_cols_sb.setValue(need_cols)
+                    wall_cols_sb.blockSignals(False)
+                    cols = need_cols
+            # 同步下拉（存在该组合时）
+            for i in range(wall_quick.count()):
+                if wall_quick.itemData(i) == (rows, cols):
+                    wall_quick.blockSignals(True)
+                    wall_quick.setCurrentIndex(i)
+                    wall_quick.blockSignals(False)
+                    break
+            _wall_apply_layout()
+            _wall_save()
+        except Exception:
+            pass
+
+    def _on_wall_mode_changed(idx):
+        """切换显示墙渲染方式（控件/画布）"""
+        nonlocal _wall_mode
+        try:
+            _wall_mode = wall_mode_combo.itemData(idx) or "widget"
+            wall_stack.setCurrentIndex(0 if _wall_mode == "widget" else 1)
+            _wall_apply_layout()
+            _wall_save()
+        except Exception:
+            pass
+
+    wall_quick.currentIndexChanged.connect(_on_wall_quick)
+    wall_rows_sb.valueChanged.connect(lambda _v: _on_wall_rc_changed())
+    wall_cols_sb.valueChanged.connect(lambda _v: _on_wall_rc_changed())
+    wall_mode_combo.currentIndexChanged.connect(_on_wall_mode_changed)
+
+    # 初始：读取保存的显示墙设置（布局作为期望，设备未连接完时先不应用，连接后自动恢复）
+    _wr, _wc, _wm = _wall_load_config()
+    _wall_expected = (_wr, _wc) if (_wr >= 1 and _wc >= 1) else None
+    _wall_mode = _wm if _wm in ("widget", "canvas") else "widget"
+    wall_mode_combo.blockSignals(True)
+    wall_mode_combo.setCurrentIndex(0 if _wall_mode == "widget" else 1)
+    wall_mode_combo.blockSignals(False)
+    wall_stack.setCurrentIndex(0 if _wall_mode == "widget" else 1)
+
+    _wall_devs = _wall_connected()
+    _wall_refresh_options()
+
+    def _wall_shrink(img, max_w, max_h):
+        """numpy 等比降采样到 max_w×max_h 以内（nearest 采样）。
+        小屏多时避免对每台屏做全帧 QImage 拷贝 + 大图 SmoothTransformation 缩放，
+        先在主线程用 numpy 缩到格子尺寸，QImage 构造/拷贝开销从几十毫秒降到 1~2 毫秒/屏。"""
+        h, w = img.shape[:2]
+        if w <= max_w and h <= max_h:
+            return img
+        scale = min(max_w / w, max_h / h)
+        nw = max(1, int(w * scale))
+        nh = max(1, int(h * scale))
+        ys = np.linspace(0, h - 1, nh).astype(np.intp)
+        xs = np.linspace(0, w - 1, nw).astype(np.intp)
+        return img[np.ix_(ys, xs)]
+
+    def _wall_tick():
+        """定时刷新显示墙：检测设备集合变化；仅当显示墙标签激活且窗口可见时才渲染预览图，
+        避免后台标签页白白消耗主线程，屏幕多时显著降低卡顿。"""
+        nonlocal _wall_devs
+        try:
+            devs = _wall_connected()
+            if [d.index for d in devs] != [d.index for d in _wall_devs]:
+                _wall_devs = devs
+                _wall_refresh_options()
+            # 仅激活且可见时才渲染（屏幕多时不看的页面零开销）
+            visible = False
+            try:
+                visible = (top_nb.currentWidget() is wall_tab
+                           and wall_nb.currentIndex() == 0
+                           and window.isVisible() and not window.isMinimized())
+            except Exception:
+                visible = False
+            if visible:
+                if _wall_mode == "canvas":
+                    # 画布方式：统一生成每格 pixmap 交给画布绘制（比 N 个 QLabel 更省资源）
+                    rows = wall_rows_sb.value()
+                    cols = wall_cols_sb.value()
+                    cw = max(120, wall_canvas.width())
+                    ch = max(70, wall_canvas.height())
+                    tw = max(80, int(cw / max(1, cols)))
+                    th = max(45, int(ch / max(1, rows)))
+                    canvas_cells = []
+                    for dev in _wall_devs:
+                        connected = dev.device_state == 1
+                        pm = None
+                        if connected:
+                            img = None
+                            try:
+                                with dev._preview_lock:
+                                    img = dev.last_preview_rgb
+                            except Exception:
+                                img = None
+                            if img is not None and getattr(img, "size", 0) and img.size > 0:
+                                try:
+                                    small = _wall_shrink(img, tw, th)
+                                except Exception:
+                                    small = img
+                                small = np.ascontiguousarray(small)
+                                h, w = small.shape[:2]
+                                try:
+                                    qimg = QImage(small.data, w, h, small.strides[0],
+                                                  QImage.Format_RGB888).copy()
+                                    pm = QPixmap.fromImage(qimg)
+                                except Exception:
+                                    pm = None
+                        canvas_cells.append((dev.device_name, pm, connected))
+                    wall_canvas.set_cells(rows, cols, canvas_cells)
+                else:
+                    for dev, cell in list(_wall_cells):
+                        try:
+                            if dev.device_state != 1:
+                                cell.setPixmap(QPixmap())
+                                cell.setText("%s\n(未连接)" % dev.device_name)
+                                cell.setStyleSheet("background-color:#101010; color:#888888; border:1px solid #444444;")
+                                continue
+                            img = None
+                            try:
+                                with dev._preview_lock:
+                                    img = dev.last_preview_rgb
+                            except Exception:
+                                img = None
+                            if img is not None and getattr(img, "size", 0) and img.size > 0:
+                                tw = cell.width() if cell.width() > 10 else 160
+                                th = cell.height() if cell.height() > 10 else 80
+                                # 先 numpy 等比降采样到格子尺寸，再做小图 QImage（快）
+                                try:
+                                    small = _wall_shrink(img, tw, th)
+                                except Exception:
+                                    small = img
+                                small = np.ascontiguousarray(small)
+                                h, w = small.shape[:2]
+                                qimg = QImage(small.data, w, h, small.strides[0],
+                                              QImage.Format_RGB888).copy()
+                                pix = QPixmap.fromImage(qimg)
+                                try:
+                                    pix = pix.scaled(tw, th, Qt.KeepAspectRatio, Qt.FastTransformation)
+                                except Exception:
+                                    pass
+                                cell.setPixmap(pix)
+                                cell.setStyleSheet("background-color:#101010; border:1px solid #444444;")
+                            else:
+                                cell.setPixmap(QPixmap())
+                                cell.setText("%s\n(无预览)" % dev.device_name)
+                                cell.setStyleSheet("background-color:#101010; color:#888888; border:1px solid #444444;")
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+        QTimer.singleShot(1000, _wall_tick)
+
+    QTimer.singleShot(1000, _wall_tick)
+
+    # ==================== 关于页 ====================
+    about_frame = QWidget()
+    top_nb.addTab(about_frame, "  关于  ")
+    about_lay = QVBoxLayout(about_frame)
+    about_lay.setContentsMargins(12, 12, 12, 12)
+    about_text = QTextEdit()
+    about_text.setReadOnly(True)
+    try:
+        about_text.setPlainText(get_program_info())
+    except Exception:
+        about_text.setPlainText("%s v%s" % (PROGRAM_TITLE, PROGRAM_VERSION))
+    about_lay.addWidget(about_text)
+
+    # ==================== 托盘 ====================
+    _tray_icon = None
+
+    def hide_to_tray():
+        global _tray_icon
+        try:
+            iconimage = MiniMark.load_image("resource/icon.ico")
+
+            def show_window(icon=None, item=None):
+                window.showNormal()
+                window.raise_()
+                window.activateWindow()
+                if _tray_icon is not None:
+                    _tray_icon.stop()
+
+            def quit_window(icon=None, item=None):
+                window.close()
+
+            menu = pystray.Menu(
+                pystray.MenuItem("显示", show_window, default=True),
+                pystray.MenuItem("退出", quit_window),
+            )
+            _tray_icon = pystray.Icon(PROGRAM_TITLE, iconimage, PROGRAM_TITLE, menu)
+            _tray_icon.run_detached()
+            window.hide()
+        except Exception as e:
+            insert_text_message("Failed to use pystray to hide to tray, %s" % e)
+
+    def show_window():
+        window.showNormal()
+        window.raise_()
+        window.activateWindow()
+
+    def quit_window():
+        window.close()
+
+    # ==================== UI 状态持久化（窗口几何 + 第一层标签） ====================
+    def _ui_state_path():
+        """UI 状态独立配置文件（程序级，不受多屏 daemon 切换全局 config 影响）"""
+        return os.path.join(get_config_dir(), "MSU2_MINI_ui.json")
+
+    def _ui_save_state():
+        """保存窗口几何（位置/大小/最大化）与当前第一层标签索引"""
+        try:
+            geo = window.geometry()
+            data = {
+                "geometry": [geo.x(), geo.y(), geo.width(), geo.height()],
+                "maximized": 1 if window.isMaximized() else 0,
+                "top_tab": top_nb.currentIndex(),
+            }
+            path = _ui_state_path()
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f)
+            os.replace(tmp, path)
+        except Exception:
+            pass
+
+    def _ui_load_state():
+        """恢复窗口几何/最大化与第一层标签；文件缺失或异常时默认显示"""
+        try:
+            with open(_ui_state_path(), "r", encoding="utf-8") as f:
+                data = json.load(f)
+            g = data.get("geometry")
+            if isinstance(g, (list, tuple)) and len(g) == 4:
+                try:
+                    window.setGeometry(int(g[0]), int(g[1]), int(g[2]), int(g[3]))
+                except Exception:
+                    pass
+            if data.get("maximized"):
+                window.showMaximized()
+            else:
+                window.show()
+            try:
+                ti = int(data.get("top_tab", 0))
+                if 0 <= ti < top_nb.count():
+                    top_nb.setCurrentIndex(ti)
+            except Exception:
+                pass
+        except Exception:
+            window.show()
+
+    # ==================== 关闭/退出 ====================
     def on_closing():
         stop_api_server()
-        window.destroy()
+        window.close()
 
-    window.protocol("WM_DELETE_WINDOW", on_closing)
-    window.resizable(0, 0)  # 锁定窗口大小不能改变
-    # 点击最小化按钮时隐藏窗口
-    # window.bind("<Unmap>", lambda event: hide_to_tray() if window.state() == "iconic" else False)
+    def closeEvent(event):
+        try:
+            _ui_save_state()
+        except Exception:
+            pass
+        try:
+            _wall_save()  # 退出时确保显示墙设置（行列+显示方式）落盘
+        except Exception:
+            pass
+        stop_api_server()
+        event.accept()
+
+    window.closeEvent = closeEvent
+    window.setMinimumSize(760, 660)
     if len(sys.argv) > 1:
         arg = sys.argv[1].lstrip('-').lower()
         if arg == "h" or arg == "hide":
-            hide_to_tray()  # 命令行启动时设置隐藏
+            hide_to_tray()
 
-    # 参数全部获取后再启动截图线程（幂等启动，避免与daemon线程重复启动）
+    # 参数全部获取后再启动各后台线程（与老版 4.7.1 一致）：
+    # daemon=自动扫描连接设备/渲染状态机，load=配置加载，ping=延迟检测，manager=按键检测
     if _primary_device:
         _primary_device.start_threads()
+    daemon_thread.start()
+    load_thread.start()
+    if ping_thread is not None:
+        ping_thread.start()
     manager_thread.start()
-    
+
     # 定期刷新设备列表 + 恢复当前设备上次的页面/方向选择
     last_synced_device_state = None
+    last_refresh_device_signature = None
+
     def _periodic_refresh():
-        nonlocal last_synced_device_state
+        nonlocal last_synced_device_state, last_refresh_device_signature
         refresh_device_list()
         try:
-            # 设备配置加载/变化后，把页面/方向下拉框同步为该设备上次的状态
+            _dev = get_current_device()
+            if _dev is not None:
+                dev_state_lbl.setText("设备已连接: %s" % _dev.device_name if _dev.device_state == 1 else "设备未连接")
+        except Exception:
+            pass
+        try:
             dev = get_current_device()
             if dev is not None and dev.config is not None:
                 key = (dev.device_name, dev.config.state_machine, dev.config.lcd_change)
@@ -10779,10 +10622,19 @@ def UI_Page():  # 进行图像界面显示
                     last_synced_device_state = key
                     sync_page_combobox()
                     sync_lcd_combobox()
+                # 设备集合变化（新屏连接/断开）即重建主控多标签，保证一开始就显示所有屏标签
+                sig = tuple(sorted((d.index, d.device_state) for d in all_devices.values()))
+                if sig != last_refresh_device_signature:
+                    last_refresh_device_signature = sig
+                    try:
+                        _rebuild_main_tabs()
+                    except Exception:
+                        pass
         except Exception:
             pass
-        window.after(2000, _periodic_refresh)
-    window.after(2000, _periodic_refresh)
+        QTimer.singleShot(2000, _periodic_refresh)
+
+    QTimer.singleShot(2000, _periodic_refresh)
 
     # 自动翻页轮播（主线程定时器）
     global _last_cycle_time
@@ -10798,8 +10650,9 @@ def UI_Page():  # 进行图像界面显示
                     Page_Down()
         except Exception:
             pass
-        window.after(1000, _auto_cycle_tick)
-    window.after(1000, _auto_cycle_tick)
+        QTimer.singleShot(1000, _auto_cycle_tick)
+
+    QTimer.singleShot(1000, _auto_cycle_tick)
 
     # 启动本地 API 投屏服务器（HTTP + WebSocket）
     try:
@@ -10808,8 +10661,18 @@ def UI_Page():  # 进行图像界面显示
     except Exception as e:
         print("启动 API 服务器失败：%s" % e)
 
-    # 进入消息循环
-    window.mainloop()
+    # 进入消息循环（先恢复上次的窗口几何/最大化/第一层标签）
+    _ui_load_state()
+    app.exec()
+
+
+
+
+
+
+
+
+
 
 
 class MSN_Device:
@@ -10975,7 +10838,10 @@ def Get_MSN_Device(port_list):  # 尝试获取MSN设备
     device.lcd_change_now = config_obj.lcd_change
     LCD_State(device.lcd_change_now)  # 配置显示方向
     device.state_change = 1  # 状态发生变化
-    device.state_machine = config_obj.state_machine  # 继承当前页面（每屏独立配置）
+    # 继承页面：用本设备自己的配置页面，避免 daemon 当前全局 config_obj 是别的屏
+    # 导致本屏页面被错误覆盖（串台）且 _periodic_refresh 每轮检测到变化→下拉框频繁刷新
+    device.state_machine = (device.config.state_machine
+                            if device.config is not None else config_obj.state_machine)
     # 注意：先完成全部初始化，最后才标记设备已连接(set_device_state(1))。
     # 若过早置1，截图/处理/按键线程会立即开始并发发送帧，
     # 与下面的LCD检测、ADC阈值读取、方向重置交错，导致启动后首帧画面倾斜。
@@ -11001,10 +10867,15 @@ def MSN_Device_1_State_machine():  # MSN设备1的循环状态机
     device = get_current_device()
     if device is None:
         return
+    # 用当前渲染设备的运行时页面渲染（多屏各自独立），
+    # 避免 daemon/UI 切换全局 config_obj 时把别的屏幕的页面串到本屏
+    config_obj.state_machine = device.state_machine
 
     if write_path_index != 0:
         if write_path_index == 1:
-            photo_path = Label3.get("1.0", tk.END).rstrip()
+            ctx = _cur_main_ctx()
+            le = ctx.get('label3') if ctx else None
+            photo_path = le.text().strip() if le else ""
             Write_Flash_Photo_fast(0, photo_path)
         elif write_path_index == 2:
             Write_Flash_hex_fast(3826, Img_data_use)
@@ -11724,75 +11595,83 @@ def _format_sensor_display(name, val):
 
 
 def _open_sensor_picker(parent, mode, title, cfg_key, type_filter=None, label_hint="", on_done=None):
-    """打开传感器选择子窗口。
+    """传感器选择对话框（PySide6）。
     mode: "multi"=多选(硬件详情) / "single"=单选(仪表盘某项)
     type_filter: 传感器类型过滤（如 "Temperature"），None=全部
     on_done: 确定保存后回调（用于刷新界面显示）
     """
     global config_obj, hardware_monitor_manager
     if hardware_monitor_manager is None or hardware_monitor_manager == 1:
-        tk.messagebox.showinfo(title="提示", message="硬件监控未就绪，请稍后再试。", parent=parent)
+        QMessageBox.information(parent, "提示", "硬件监控未就绪，请稍后再试。")
         return
     sensors = hardware_monitor_manager.list_sensors()
     if type_filter:
         sensors = [x for x in sensors if x[3] == type_filter]
     if not sensors:
-        tk.messagebox.showinfo(
-            title="提示",
-            message="未检测到%s传感器。\n主板传感器(CPU温度/风扇等)需以管理员身份运行才能读取。" % (type_filter or ""),
-            parent=parent)
+        QMessageBox.information(
+            parent, "提示",
+            "未检测到%s传感器。\n主板传感器(CPU温度/风扇等)需以管理员身份运行才能读取。" % (type_filter or ""))
         return
 
-    picker = tk.Toplevel(parent)
-    picker.title(title)
-    picker.resizable(0, 0)
-    picker.transient(parent)
+    dlg = QDialog(parent)
+    dlg.setWindowTitle(title)
+    dlg.setMinimumSize(480, 380)
+    v = QVBoxLayout(dlg)
     if label_hint:
-        ttk.Label(picker, text=label_hint, wraplength=430, justify=tk.LEFT).pack(anchor=tk.W, padx=10, pady=(10, 4))
+        hint = QLabel(label_hint)
+        hint.setWordWrap(True)
+        v.addWidget(hint)
 
-    body = ttk.Frame(picker)
-    body.pack(fill=tk.BOTH, expand=True, padx=10, pady=6)
-    canvas = tk.Canvas(body, width=440, height=280)
-    scrollbar = ttk.Scrollbar(body, orient=tk.VERTICAL, command=canvas.yview)
-    list_frame = ttk.Frame(canvas)
-    list_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-    canvas.create_window((0, 0), window=list_frame, anchor=tk.NW)
-    canvas.configure(yscrollcommand=scrollbar.set)
-    canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-    scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+    list_widget = QListWidget()
+    v.addWidget(list_widget)
+    list_widget.setSelectionMode(QListWidget.NoSelection)
 
     if mode == "multi":
         current = [n.strip() for n in (getattr(config_obj, cfg_key) or "").split(",") if n.strip()]
-        vars_map = {}
+        checks = {}
         for name, hw, s, t, val in sensors:
-            var = tk.IntVar(list_frame, 1 if name in current else 0)
-            vars_map[name] = var
-            ttk.Checkbutton(list_frame, text=_format_sensor_display(name, val), variable=var).pack(anchor=tk.W)
+            item = QListWidgetItem(_format_sensor_display(name, val))
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Checked if name in current else Qt.Unchecked)
+            list_widget.addItem(item)
+            checks[name] = item
     else:
         current = getattr(config_obj, cfg_key) or ""
-        selected = tk.StringVar(list_frame, current or "AUTO")
-        ttk.Radiobutton(list_frame, text="自动检测（推荐）", value="AUTO", variable=selected).pack(anchor=tk.W)
+        checks = {}
+        auto_item = QListWidgetItem("自动检测（推荐）")
+        auto_item.setFlags(auto_item.flags() | Qt.ItemIsUserCheckable)
+        auto_item.setCheckState(Qt.Checked if (not current or current == "AUTO") else Qt.Unchecked)
+        list_widget.addItem(auto_item)
+        checks["AUTO"] = auto_item
         for name, hw, s, t, val in sensors:
-            ttk.Radiobutton(list_frame, text=_format_sensor_display(name, val), value=name, variable=selected).pack(anchor=tk.W)
+            item = QListWidgetItem(_format_sensor_display(name, val))
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Checked if name == current else Qt.Unchecked)
+            list_widget.addItem(item)
+            checks[name] = item
 
     def on_ok():
         global config_obj
         _ui_set_active()  # 锁定到UI当前设备（避免多屏设置冲突）
+        sel = [n for n, it in checks.items() if it.checkState() == Qt.Checked]
         if mode == "multi":
-            sel = [n for n, v in vars_map.items() if v.get()]
             setattr(config_obj, cfg_key, ",".join(sel))
         else:
-            val = selected.get()
+            val = sel[0] if sel else "AUTO"
             setattr(config_obj, cfg_key, "" if val == "AUTO" else val)
         save_config()
-        picker.destroy()
+        dlg.accept()
         if on_done:
-            on_done()
+            try:
+                on_done()
+            except Exception:
+                pass
 
-    btn_bar = ttk.Frame(picker)
-    btn_bar.pack(fill=tk.X, padx=10, pady=(0, 10))
-    ttk.Button(btn_bar, text="确定", padding=(20, 4), command=on_ok).pack(side=tk.RIGHT, padx=(5, 0))
-    ttk.Button(btn_bar, text="取消", padding=(20, 4), command=picker.destroy).pack(side=tk.RIGHT)
+    btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+    btns.accepted.connect(on_ok)
+    btns.rejected.connect(dlg.reject)
+    v.addWidget(btns)
+    dlg.exec()
 
 
 def _resolve_gauge_sensor(cfg_key, stype, keyword=""):
@@ -12370,8 +12249,12 @@ def load_task():
         print("Libre hardware monitor 加载失败，%s" % traceback.format_exc())
 
 
+_force_rescan_now = False  # 手动"连接"按钮置 True，daemon 下一轮立即重扫设备（默认仍自动连接）
+_auto_connect = True       # "设为自动连接"开关（UI 第三层主控页勾选框），默认自动连接
+
+
 def daemon_task():
-    global Device_State_Labelen, screen_off, last_key_activity_time, config_obj, preferred_com_port
+    global Device_State_Labelen, screen_off, last_key_activity_time, config_obj, preferred_com_port, _force_rescan_now, _auto_connect
     last_key_activity_time = time.monotonic()  # 初始化按键活动时间，避免启动即触发息屏
     known_com_ports = set()  # 已连接的COM端口集合
     retry_times = 0
@@ -12411,11 +12294,12 @@ def daemon_task():
                     # 渲染完一轮后把全局配置切回UI当前设备（_primary），
                     # 避免UI主控/设置操作误改到其他设备的独立配置
                     set_active_device_config(_primary_device)
-                # 定期重新扫描（可能有新设备插入）
+                # 定期重新扫描（可能有新设备插入）；手动"连接"按钮可触发立即重扫
                 now = time.monotonic()
-                if now - last_scan_time < 5:
+                if now - last_scan_time < 5 and not _force_rescan_now:
                     continue
                 last_scan_time = now
+                _force_rescan_now = False
             
             # 无设备连接或定期扫描：检测新设备
             if Device_State_Labelen == 2:
@@ -12425,7 +12309,12 @@ def daemon_task():
 
             if _primary_device is None:
                 _init_single_device()
-            
+
+            if not _auto_connect:
+                # 已关闭自动连接：不扫描新设备，仅渲染已连接设备
+                time.sleep(0.5)
+                continue
+
             port_list = list(serial.tools.list_ports.comports())
             wch_port_list = [x for x in port_list if x.vid == 0x1a86]
             if preferred_com_port:
@@ -12796,7 +12685,7 @@ if __name__ == "__main__":
         except Exception:
             pass
         try:
-            tk.messagebox.showerror(title="错误", message=message)
+            QMessageBox.critical(None, "错误", message)
         except Exception:
             pass
     finally:
@@ -12821,9 +12710,42 @@ if __name__ == "__main__":
         if _primary_device and _primary_device.ser is not None and _primary_device.ser.is_open:
             print("%s close" % _primary_device.ser.name)
             _primary_device.ser.close()
-        # 结束时保存配置
+        # 结束时保存配置：等待写盘线程真正完成再退出，
+        # 否则daemon保存线程可能随进程退出被杀，导致本次修改（如强制投屏）未写入配置文件
         save_config(True)
+        if save_thread is not None and save_thread.is_alive():
+            save_thread.join(timeout=5.0)
         if load_thread.is_alive():
             load_thread.join(timeout=5.0)
 
         sys.exit(exit_code)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

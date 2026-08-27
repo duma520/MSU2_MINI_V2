@@ -100,7 +100,7 @@ GRAY2 = 0x4208
 # ==================== 程序元数据 ====================
 PROGRAM_TITLE = "USB副屏工具"
 PROGRAM_SUBTITLE = ""
-PROGRAM_VERSION = "5.8.0"
+PROGRAM_VERSION = "5.10.0"
 PROGRAM_AUTHOR = "杜玛"
 PROGRAM_GITHUB = "https://github.com/duma520/MSU2_MINI_V2"
 PROGRAM_LICENSE = "MIT"
@@ -124,6 +124,10 @@ PROGRAM_SOURCE_PROJECTS = [
 
 # 版本更新说明
 PROGRAM_CHANGELOG = """
+v5.10.0 (2026-08-27)
+- 新增：MQTT 全面接入（★ 2026-08-27）——新增附加接入协议 MQTT（设置 → API接入 → 附加接入协议 勾选「MQTT 客户端…」后启用，默认关闭）：以 paho-mqtt 客户端连接外部 Broker（可配地址/端口/用户名/密码），订阅命令主题执行投屏命令（JSON 与 HTTP/TCP/UDP 完全一致，响应发回响应主题），并低频推送屏幕帧（RGB888 原始字节到帧主题，有变化才发、≥0.5s 节流）；未安装 paho-mqtt 自动跳过并提示（与 pyzmq/grpcio 一致）。设置新增「MQTT 接入」分组：Broker 地址/端口/用户名/密码/命令主题/响应主题/帧主题，实时自动保存。同步：/api/protocols 自动发现、OpenAPI info、API 文档页第 8 节、Web 控制台文档标签、程序头变更记录
+v5.9.0 (2026-08-27)
+- 新增：gRPC 全面接入（★ 2026-08-27）——新增附加接入协议 gRPC（设置 → API接入 → 附加接入协议 勾选「gRPC（端口+4…）」后启动，默认关闭，端口 = api_port+4 即默认 8636）：基于 grpcio 动态构建服务描述（仅需 grpcio，无需 grpcio-tools），提供 msu2.Msu2Api 服务——Execute（投屏命令，JSON 与 HTTP/TCP/UDP 完全一致，支持 text/screen/clear/page/mirror/quit 等全部命令）与 WatchFrame（服务器端流式推送指定屏幕的最新外部投屏帧 RGB888，有变化才推送）；启动时自动导出 msu2_api.proto 到程序目录供外部生成 gRPC 客户端；未安装 grpcio 自动跳过并提示（与 pyzmq 一致）。同步：设置勾选框、/api/protocols 自动发现、API 文档页第 8 节、OpenAPI info、Web 控制台文档标签、程序头变更记录
 v5.8.0 (2026-08-27)
 - 新增：Webhook 对接（★ 2026-08-27）——对接 Synology Chat / Discord / 钉钉等聊天机器人，支持双向收发：
   ① 接收（发出的 Webhook）：独立 Webhook 接收服务器（设置 → Webhook，默认端口 8633），外部聊天服务把消息 POST 到 http://127.0.0.1:<端口>/webhook/incoming，消息自动显示到屏幕（叠加显示，超时自动恢复原页面）与底部信息框；兼容 Synology Chat / Discord / 钉钉 / 通用 JSON / 表单 / 纯文本，自动解析 text/content/message 与 attachments/embeds。可选接收令牌（X-Webhook-Token 或 ?token=）。
@@ -4167,6 +4171,23 @@ def api_get_protocols():
         has_zmq = True
     except Exception:
         pass
+    has_grpc = False
+    try:
+        import grpc  # noqa: F401
+        has_grpc = True
+    except Exception:
+        pass
+    has_mqtt = False
+    try:
+        import paho.mqtt.client  # noqa: F401
+        has_mqtt = True
+    except Exception:
+        pass
+    try:
+        mqtt_addr = "mqtt://%s:%d" % (str(getattr(config_obj, "mqtt_host", "127.0.0.1") or "127.0.0.1"),
+                                      int(getattr(config_obj, "mqtt_port", 1883) or 1883))
+    except Exception:
+        mqtt_addr = "mqtt://127.0.0.1:1883"
     protocols = [
         {"name": "HTTP REST", "type": "http", "address": "http://127.0.0.1:%d" % port,
          "enabled": True, "note": "GET 查询 / POST JSON 命令（主接口）"},
@@ -4180,6 +4201,12 @@ def api_get_protocols():
          "enabled": True, "note": "JSON 数据报"},
         {"name": "ZeroMQ", "type": "zmq", "address": "tcp://127.0.0.1:%d" % (port + 3),
          "enabled": has_zmq, "note": "REP/REQ JSON（需 pip install pyzmq）"},
+        {"name": "gRPC", "type": "grpc", "address": "127.0.0.1:%d" % (port + 4),
+         "enabled": has_grpc, "note": "msu2.Msu2Api：Execute=JSON 命令，WatchFrame=流式帧（需 pip install grpcio）"},
+        {"name": "MQTT", "type": "mqtt", "address": mqtt_addr, "enabled": has_mqtt,
+         "note": "连接外部 Broker：命令主题 %s / 响应主题 %s（需 pip install paho-mqtt）"
+                 % (getattr(config_obj, "mqtt_command_topic", "msu2/command"),
+                    getattr(config_obj, "mqtt_response_topic", "msu2/response"))},
         {"name": "Windows 命名管道", "type": "pipe", "address": r"\\.\pipe\MSU2_MINI_V2_api",
          "enabled": isWindows, "note": "JSON 行协议"},
         {"name": "Unix Domain Socket", "type": "unix",
@@ -4756,7 +4783,8 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
         try:
             html = _API_DOC_HTML.format(port=port, size="%dx%d" % (SHOW_WIDTH, SHOW_HEIGHT),
                                         bytes_len=SHOW_WIDTH * SHOW_HEIGHT * 3,
-                                        port_plus_1=port + 1, port_plus_2=port + 2, port_plus_3=port + 3)
+                                        port_plus_1=port + 1, port_plus_2=port + 2, port_plus_3=port + 3,
+                                        port_plus_4=port + 4)
         except Exception:
             html = "<pre>MSU2_MINI_V2 API: http://127.0.0.1:%d</pre>" % port
         body = html.encode("utf-8")
@@ -4930,7 +4958,7 @@ def _build_openapi_doc():
         "openapi": "3.0.0",
         "info": {
             "title": "MSU2_MINI_V2 投屏 API",
-            "description": "USB 副屏工具的外部接入接口。支持 HTTP REST / WebSocket / SSE(/api/events) / TCP(JSON行,端口+1) / UDP(JSON报,端口+2) / ZeroMQ(REP,端口+3,需pyzmq) / Windows命名管道(\\\\\\.\\\\pipe\\\\MSU2_MINI_V2_api) / Unix Domain Socket(api_unix.sock) / 热文件夹 投屏。可自定义投屏内容（图像、文本、清屏、切页、多图轮播、窗口投屏、实时帧）。支持「强制投屏」：未选 API投屏 页也可投屏，结束自动返回原页面。屏幕分辨率 %dx%d。%s"
+            "description": "USB 副屏工具的外部接入接口。支持 HTTP REST / WebSocket / SSE(/api/events) / TCP(JSON行,端口+1) / UDP(JSON报,端口+2) / ZeroMQ(REP,端口+3,需pyzmq) / gRPC(msu2.Msu2Api,端口+4,需grpcio) / MQTT(外部Broker,需paho-mqtt) / Windows命名管道(\\\\\\.\\\\pipe\\\\MSU2_MINI_V2_api) / Unix Domain Socket(api_unix.sock) / 热文件夹 投屏。可自定义投屏内容（图像、文本、清屏、切页、多图轮播、窗口投屏、实时帧）。支持「强制投屏」：未选 API投屏 页也可投屏，结束自动返回原页面。屏幕分辨率 %dx%d。%s"
                            % (SHOW_WIDTH, SHOW_HEIGHT, token_note),
             "version": PROGRAM_VERSION,
             "license": {"name": "MIT", "url": PROGRAM_GITHUB},
@@ -5470,7 +5498,7 @@ code{background:#eee;padding:1px 4px;border-radius:3px}
 
 <div id="panel-docs" class="panel">
   <p>机器可读规范（OpenAPI 3.0）：<a href="/api/openapi.json">/api/openapi.json</a></p>
-  <p><b>接入协议：</b>HTTP/WebSocket/SSE（端口N）、TCP（JSON行，N+1）、UDP（JSON报，N+2）、ZeroMQ（REP，N+3，需pyzmq）、Windows命名管道（<code>\\.\pipe\MSU2_MINI_V2_api</code>）、Unix Domain Socket（api_unix.sock）、热文件夹（程序目录 hotfolder/，放入图片/文本即投屏）。<br>
+  <p><b>接入协议：</b>HTTP/WebSocket/SSE（端口N）、TCP（JSON行，N+1）、UDP（JSON报，N+2）、ZeroMQ（REP，N+3，需pyzmq）、gRPC（N+4，msu2.Msu2Api，需grpcio）、MQTT（连接外部 Broker，需paho-mqtt）、Windows命名管道（<code>\\.\pipe\MSU2_MINI_V2_api</code>）、Unix Domain Socket（api_unix.sock）、热文件夹（程序目录 hotfolder/，放入图片/文本即投屏）。<br>
   所有协议命令格式一致（JSON，<code>type</code> 为 screen/text/clear/slideshow/slideshow_stop/stop/page/mirror，可选 <code>device</code> 指定目标屏）。</p>
   <p>常用接口：</p>
   <ul>
@@ -5672,6 +5700,8 @@ screen/text/clear/slideshow/slideshow_stop/stop/page/mirror，可选 device 指�
 <pre>TCP Socket : 127.0.0.1:{port_plus_1}，每行一个 JSON 命令，返回一行 JSON 响应
 UDP        : 127.0.0.1:{port_plus_2}，每条数据报一个 JSON 命令
 ZeroMQ     : tcp://127.0.0.1:{port_plus_3}（REP 模式，需 pip install pyzmq）
+gRPC       : 127.0.0.1:{port_plus_4}（msu2.Msu2Api，需 pip install grpcio；proto 已导出到程序目录 msu2_api.proto）
+MQTT       : 连接外部 Broker（设置 → API接入 → MQTT 接入 配置地址/主题；命令主题收 JSON 命令，响应/帧主题发结果与 RGB888 帧，需 pip install paho-mqtt）
 命名管道   : \\\.\\pipe\\MSU2_MINI_V2_api（JSON 行协议，Windows）
 Unix Socket: 程序目录 api_unix.sock（JSON 行协议，需系统支持 AF_UNIX）
 热文件夹   : 程序目录 hotfolder/，放入图片/文本即投屏（文件名 "屏幕1_xxx.png" 指定目标屏）
@@ -5682,6 +5712,24 @@ import socket
 s = socket.create_connection(("127.0.0.1", {port_plus_1}))
 s.sendall(b'{{"type":"text","text":"你好"}}\n')
 print(s.recv(1024).decode())</pre>
+<pre># gRPC 示例（Python，需 pip install grpcio + grpcio-tools）
+# ① 用程序目录的 msu2_api.proto 生成客户端代码：
+#    python -m grpc_tools.protoc -I. --python_out=. --grpc_python_out=. msu2_api.proto
+# ② 客户端调用（Execute=投屏命令，WatchFrame=流式帧订阅）：
+import grpc
+import msu2_api_pb2, msu2_api_pb2_grpc
+ch = grpc.insecure_channel("127.0.0.1:{port_plus_4}")
+stub = msu2_api_pb2_grpc.Msu2ApiStub(ch)
+resp = stub.Execute(msu2_api_pb2.Command(json='{{"type":"text","text":"你好"}}'))
+print(resp.json)      # {{"ok": true, ...}}
+for f in stub.WatchFrame(msu2_api_pb2.FrameRequest()):
+    print(f.width, f.height, len(f.rgb888))   # 屏幕帧 RGB888</pre>
+<pre># MQTT 示例（Python，需 pip install paho-mqtt）
+import paho.mqtt.client as mqtt, json
+c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+c.connect("127.0.0.1", 1883)                  # 替换为设置里配置的 Broker 地址/端口
+c.publish("msu2/command", json.dumps({{'type': 'text', 'text': '你好'}}))
+# 命令响应发到 msu2/response；屏幕帧（原始 RGB888，W*H*3）发到 msu2/frame</pre>
 
 <h2>9. 信息与状态查询</h2>
 <pre>GET /api/health        健康检查（探测服务可用）
@@ -5793,6 +5841,13 @@ _api_unix_server = None         # Unix Domain Socket 服务器
 _api_unix_thread = None         # Unix Domain Socket 监听线程
 _api_zmq_sock = None            # ZeroMQ 套接字
 _api_zmq_thread = None          # ZeroMQ 监听线程
+_api_grpc_server = None         # gRPC 服务器（grpc.Server）
+_api_grpc_thread = None         # gRPC wait_for_termination 线程
+_api_grpc_port = None           # gRPC 实际监听端口（api_port+4）
+_api_mqtt_client = None         # paho MQTT 客户端
+_api_mqtt_thread = None         # MQTT 帧发布线程
+_api_mqtt_connected = threading.Event()      # MQTT 已连接
+_api_mqtt_frame_running = threading.Event()  # MQTT 帧发布运行标志
 _api_extra_running = threading.Event()   # 附加协议统一停止信号（Unix/ZeroMQ）
 _api_event_version = 0          # SSE 帧版本号（帧写入时递增）
 _api_event_lock = threading.Lock()
@@ -6147,6 +6202,338 @@ def start_api_zmq():
         print("API ZeroMQ 启动失败: %s" % e)
 
 
+# ---- gRPC 接入（需 grpcio，未安装则自动跳过，与 pyzmq 处理一致）----
+_GRPC_PROTO = '''syntax = "proto3";
+
+// MSU2_MINI_V2 本地 gRPC 接入服务（设置 → API接入 → 附加接入协议 勾选 gRPC 后启动）。
+// 仅监听 127.0.0.1:<api_port+4>（默认 8636）。命令语义与 HTTP/TCP/UDP 完全一致。
+package msu2;
+
+service Msu2Api {
+  // 执行一条投屏命令（json 内容与 HTTP POST /api/* 一致：
+  //   {"type":"text","text":"你好"} / {"type":"screen","image":...} / page / clear / ...）
+  rpc Execute(Command) returns (Response);
+
+  // 服务器端流式推送指定屏幕的最新外部投屏帧（原始 RGB888，有变化才推送）
+  rpc WatchFrame(FrameRequest) returns (stream FrameData);
+}
+
+// 投屏命令（json = JSON 字符串）
+message Command {
+  string json = 1;
+}
+
+// 执行结果（json = JSON 响应字符串，code 0=成功 非0=失败）
+message Response {
+  string json = 1;
+  int32 code = 2;
+}
+
+// 帧订阅请求（device 留空=当前活跃屏，也可填设备名如 "屏幕1"）
+message FrameRequest {
+  string device = 1;
+}
+
+// 屏幕帧（rgb888 = 原始 RGB888 字节，长度 = width*height*3）
+message FrameData {
+  string device = 1;
+  int32 width = 2;
+  int32 height = 3;
+  bytes rgb888 = 4;
+  int64 version = 5;
+}
+'''
+
+
+def _api_grpc_build_messages():
+    """用 google.protobuf 动态构建 msu2.Msu2Api 服务描述与消息类（仅需 grpcio，无需 grpcio-tools）。
+    返回 {"Command","Response","FrameRequest","FrameData"} 消息类。"""
+    from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
+    f = descriptor_pb2.FileDescriptorProto()
+    f.name = "msu2_api.proto"
+    f.package = "msu2"
+    f.syntax = "proto3"
+
+    def _add_msg(name, fields):
+        m = f.message_type.add()
+        m.name = name
+        for i, (fname, fnum, ftype) in enumerate(fields, start=1):
+            fd = m.field.add()
+            fd.name = fname
+            fd.number = fnum
+            fd.label = descriptor_pb2.FieldDescriptorProto.LABEL_OPTIONAL
+            fd.type = ftype
+        return m
+
+    _add_msg("Command", [("json", 1, descriptor_pb2.FieldDescriptorProto.TYPE_STRING)])
+    _add_msg("Response", [
+        ("json", 1, descriptor_pb2.FieldDescriptorProto.TYPE_STRING),
+        ("code", 2, descriptor_pb2.FieldDescriptorProto.TYPE_INT32)])
+    _add_msg("FrameRequest", [("device", 1, descriptor_pb2.FieldDescriptorProto.TYPE_STRING)])
+    _add_msg("FrameData", [
+        ("device", 1, descriptor_pb2.FieldDescriptorProto.TYPE_STRING),
+        ("width", 2, descriptor_pb2.FieldDescriptorProto.TYPE_INT32),
+        ("height", 3, descriptor_pb2.FieldDescriptorProto.TYPE_INT32),
+        ("rgb888", 4, descriptor_pb2.FieldDescriptorProto.TYPE_BYTES),
+        ("version", 5, descriptor_pb2.FieldDescriptorProto.TYPE_INT64)])
+
+    svc = f.service.add()
+    svc.name = "Msu2Api"
+    m_exec = svc.method.add()
+    m_exec.name = "Execute"
+    m_exec.input_type = ".msu2.Command"
+    m_exec.output_type = ".msu2.Response"
+    m_exec.client_streaming = False
+    m_exec.server_streaming = False
+    m_watch = svc.method.add()
+    m_watch.name = "WatchFrame"
+    m_watch.input_type = ".msu2.FrameRequest"
+    m_watch.output_type = ".msu2.FrameData"
+    m_watch.client_streaming = False
+    m_watch.server_streaming = True
+
+    pool = descriptor_pool.DescriptorPool()
+    pool.Add(f)
+    return {
+        "Command": message_factory.GetMessageClass(pool.FindMessageTypeByName("msu2.Command")),
+        "Response": message_factory.GetMessageClass(pool.FindMessageTypeByName("msu2.Response")),
+        "FrameRequest": message_factory.GetMessageClass(pool.FindMessageTypeByName("msu2.FrameRequest")),
+        "FrameData": message_factory.GetMessageClass(pool.FindMessageTypeByName("msu2.FrameData")),
+    }
+
+
+def start_api_grpc():
+    """gRPC 服务器（需 grpcio，未安装则跳过）：127.0.0.1:api_port+4，服务 msu2.Msu2Api。
+    Execute=投屏命令（JSON 与 HTTP/TCP/UDP 一致），WatchFrame=服务器端流式推送屏幕帧（有变化才推）。"""
+    global _api_grpc_server, _api_grpc_thread, _api_grpc_port
+    if _api_grpc_server is not None:
+        return
+    try:
+        import grpc
+    except Exception:
+        print("未安装 grpcio，跳过 gRPC 接入（如需启用请 pip install grpcio）")
+        return
+    try:
+        from google.protobuf import descriptor_pb2, descriptor_pool, message_factory  # noqa: F401
+        from concurrent.futures import ThreadPoolExecutor
+    except Exception as e:
+        print("gRPC 需要 google.protobuf（随 grpcio 安装）: %s" % e)
+        return
+    try:
+        base = int(getattr(config_obj, "api_port", 8632))
+    except Exception:
+        base = 8632
+
+    class _GrpcApiHandler(grpc.GenericRpcHandler):
+        """gRPC 通用处理器：路由 /msu2.Msu2Api/Execute 与 /WatchFrame 到本地投屏命令/帧推送。"""
+
+        def __init__(self, msgs):
+            self._Command = msgs["Command"]
+            self._Response = msgs["Response"]
+            self._FrameRequest = msgs["FrameRequest"]
+            self._FrameData = msgs["FrameData"]
+
+        def service(self, handler_call_details):
+            method = handler_call_details.method
+            if method == "/msu2.Msu2Api/Execute":
+                return grpc.unary_unary_rpc_method_handler(
+                    self._execute,
+                    request_deserializer=self._deser_cmd,
+                    response_serializer=self._ser_resp)
+            if method == "/msu2.Msu2Api/WatchFrame":
+                return grpc.unary_stream_rpc_method_handler(
+                    self._watch_frame,
+                    request_deserializer=self._deser_freq,
+                    response_serializer=self._ser_frame)
+            return None
+
+        def _deser_cmd(self, data):
+            m = self._Command()
+            m.ParseFromString(data)
+            return m
+
+        def _deser_freq(self, data):
+            m = self._FrameRequest()
+            m.ParseFromString(data)
+            return m
+
+        def _ser_resp(self, msg):
+            return msg.SerializeToString()
+
+        def _ser_frame(self, msg):
+            return msg.SerializeToString()
+
+        def _execute(self, cmd, context):
+            try:
+                payload = (cmd.json or "").strip()
+                data = json.loads(payload) if payload else {}
+                resp = api_execute_command(data)
+            except Exception as e:
+                resp = {"ok": False, "error": str(e)}
+            out = self._Response()
+            out.json = json.dumps(resp, ensure_ascii=False)
+            out.code = 0 if resp.get("ok") else 1
+            return out
+
+        def _watch_frame(self, req, context):
+            key = _api_device_key(req.device if req.device else None)
+            last = b""
+            v = 0
+            while context.is_active():
+                try:
+                    frame = api_get_frame(key)
+                    if frame is not None and getattr(frame, "size", 0):
+                        raw = np.asarray(frame, dtype=np.uint8).tobytes()
+                        if raw != last:
+                            last = raw
+                            v += 1
+                            msg = self._FrameData()
+                            msg.device = key
+                            msg.width = int(frame.shape[1])
+                            msg.height = int(frame.shape[0])
+                            msg.rgb888 = raw
+                            msg.version = v
+                            yield msg
+                except Exception:
+                    pass
+                time.sleep(0.2)  # 低频轮询：仅推送有变化的帧，避免占用 CPU
+
+    try:
+        msgs = _api_grpc_build_messages()
+        server = grpc.server(thread_pool=ThreadPoolExecutor(max_workers=8), maximum_concurrent_rpcs=64)
+        server.add_generic_rpc_handlers((_GrpcApiHandler(msgs),))
+        port = server.add_insecure_port("127.0.0.1:%d" % (base + 4))
+        if port == 0:
+            raise RuntimeError("端口 %d 绑定失败" % (base + 4))
+        server.start()
+        _api_grpc_server = server
+        _api_grpc_port = port
+        _api_grpc_thread = threading.Thread(target=server.wait_for_termination, daemon=True)
+        _api_grpc_thread.start()
+        # 导出 .proto 到程序目录，便于外部程序生成 gRPC 客户端
+        try:
+            _proto_path = os.path.join(get_base_config_dir(), "msu2_api.proto")
+            with open(_proto_path, "w", encoding="utf-8") as _pf:
+                _pf.write(_GRPC_PROTO)
+        except Exception:
+            _proto_path = ""
+        print("API gRPC 已启动: 127.0.0.1:%d (msu2.Msu2Api，需 grpcio%s)"
+              % (port, ("；proto 已导出 %s" % _proto_path) if _proto_path else ""))
+    except Exception as e:
+        _api_grpc_server = None
+        _api_grpc_port = None
+        print("API gRPC 启动失败: %s" % e)
+
+
+def start_api_mqtt():
+    """MQTT 客户端接入（需 paho-mqtt，未安装则跳过）：连接外部 Broker（设置 → API接入 → MQTT 接入）。
+    订阅命令主题执行投屏命令（JSON 与 HTTP/TCP/UDP 一致，响应发回响应主题），并低频推送屏幕帧（RGB888）。"""
+    global _api_mqtt_client, _api_mqtt_thread
+    if _api_mqtt_client is not None:
+        return
+    try:
+        import paho.mqtt.client as mqtt
+    except Exception:
+        print("未安装 paho-mqtt，跳过 MQTT 接入（如需启用请 pip install paho-mqtt）")
+        return
+    try:
+        host = str(getattr(config_obj, "mqtt_host", "127.0.0.1") or "127.0.0.1").strip()
+        port = int(getattr(config_obj, "mqtt_port", 1883) or 1883)
+        username = str(getattr(config_obj, "mqtt_username", "") or "")
+        password = str(getattr(config_obj, "mqtt_password", "") or "")
+        cmd_topic = str(getattr(config_obj, "mqtt_command_topic", "msu2/command") or "msu2/command").strip()
+        resp_topic = str(getattr(config_obj, "mqtt_response_topic", "msu2/response") or "msu2/response").strip()
+        frame_topic = str(getattr(config_obj, "mqtt_frame_topic", "msu2/frame") or "msu2/frame").strip()
+    except Exception:
+        return
+
+    try:
+        # paho 2.x 需 CallbackAPIVersion.VERSION2；1.x 直接 Client()
+        api_ver = getattr(mqtt, "CallbackAPIVersion", None)
+        client = (mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2, client_id="msu2_mini_v2")
+                  if api_ver else mqtt.Client(client_id="msu2_mini_v2"))
+        if username:
+            client.username_pw_set(username, password)
+        client.reconnect_delay_set(min_delay=1, max_delay=10)
+        _api_mqtt_connected.clear()
+        _api_mqtt_frame_running.set()
+
+        def _on_connect(c, userdata, flags, reason_code, properties=None):
+            # paho 1.x 传 (client,userdata,flags,rc)；2.x VERSION2 传 (…,reason_code,properties)
+            rc = getattr(reason_code, "value", reason_code)
+            ok = (rc == 0) or (hasattr(reason_code, "is_failure") and not reason_code.is_failure)
+            if ok:
+                _api_mqtt_connected.set()
+                try:
+                    c.subscribe(cmd_topic, qos=1)
+                except Exception:
+                    pass
+                try:
+                    c.publish(resp_topic, json.dumps(
+                        {"ok": True, "type": "mqtt_status", "event": "connected",
+                         "name": PROGRAM_TITLE, "version": PROGRAM_VERSION}, ensure_ascii=False))
+                except Exception:
+                    pass
+                print("API MQTT 已连接: %s:%d（命令主题 %s，响应主题 %s）" % (host, port, cmd_topic, resp_topic))
+            else:
+                print("API MQTT 连接失败（%r），将自动重连" % (reason_code,))
+
+        def _on_message(c, userdata, msg):
+            try:
+                if msg.topic != cmd_topic:
+                    return
+                payload = (msg.payload or b"").decode("utf-8", "replace").strip()
+                if not payload:
+                    return
+                try:
+                    data = json.loads(payload)
+                except Exception:
+                    data = {"type": payload}
+                resp = api_execute_command(data)
+            except Exception as e:
+                resp = {"ok": False, "error": str(e)}
+            try:
+                c.publish(resp_topic, json.dumps(resp, ensure_ascii=False), qos=1)
+            except Exception:
+                pass
+
+        def _on_disconnect(c, userdata, *args):
+            _api_mqtt_connected.clear()
+
+        client.on_connect = _on_connect
+        client.on_message = _on_message
+        client.on_disconnect = _on_disconnect
+        client.connect(host, port, keepalive=30)
+        client.loop_start()
+
+        def _frame_loop():
+            last = b""
+            last_ts = 0.0
+            while _api_mqtt_frame_running.is_set():
+                try:
+                    if _api_mqtt_connected.is_set():
+                        frame = api_get_frame(None)  # 当前活跃屏的外部投屏帧
+                        if frame is not None and getattr(frame, "size", 0):
+                            raw = np.asarray(frame, dtype=np.uint8).tobytes()
+                            now = time.time()
+                            if raw != last and now - last_ts >= 0.5:  # 有变化且节流≥0.5s
+                                last = raw
+                                last_ts = now
+                                client.publish(frame_topic, raw, qos=0)
+                except Exception:
+                    pass
+                time.sleep(0.2)
+
+        _api_mqtt_thread = threading.Thread(target=_frame_loop, daemon=True)
+        _api_mqtt_thread.start()
+        _api_mqtt_client = client
+        print("API MQTT 接入已启动: %s:%d（需 paho-mqtt，命令主题 %s）" % (host, port, cmd_topic))
+    except Exception as e:
+        _api_mqtt_client = None
+        _api_mqtt_frame_running.clear()
+        print("API MQTT 接入启动失败: %s" % e)
+
+
 def _api_stdin_loop():
     """常驻 stdin 管道：从标准输入按行读取 JSON 命令执行（echo ... | python MSU2_MINI_V2.py）"""
     while True:
@@ -6172,9 +6559,11 @@ def _api_stdin_loop():
 
 
 def stop_api_extra():
-    """停止 TCP / UDP / 热文件夹 / Unix Socket / ZeroMQ（命名管道为 daemon 线程随程序退出结束）"""
+    """停止 TCP / UDP / 热文件夹 / Unix Socket / ZeroMQ / gRPC / MQTT（命名管道为 daemon 线程随程序退出结束）"""
     global _api_tcp_server, _api_udp_sock, _api_udp_thread, _api_hotfolder_thread
     global _api_unix_server, _api_unix_thread, _api_zmq_sock, _api_zmq_thread
+    global _api_grpc_server, _api_grpc_thread, _api_grpc_port
+    global _api_mqtt_client, _api_mqtt_thread, _api_mqtt_connected, _api_mqtt_frame_running
     if _api_tcp_server is not None:
         try:
             _api_tcp_server.shutdown()
@@ -6230,6 +6619,41 @@ def stop_api_extra():
         except Exception:
             pass
         _api_zmq_thread = None
+    if _api_grpc_server is not None:
+        try:
+            _api_grpc_server.stop(grace=1)
+        except Exception:
+            pass
+        try:
+            _api_grpc_server.wait_for_termination(timeout=2)
+        except Exception:
+            pass
+        _api_grpc_server = None
+    if _api_grpc_thread is not None:
+        try:
+            _api_grpc_thread.join(timeout=2)
+        except Exception:
+            pass
+        _api_grpc_thread = None
+    _api_grpc_port = None
+    _api_mqtt_frame_running.clear()
+    if _api_mqtt_thread is not None:
+        try:
+            _api_mqtt_thread.join(timeout=2)
+        except Exception:
+            pass
+        _api_mqtt_thread = None
+    if _api_mqtt_client is not None:
+        try:
+            _api_mqtt_client.loop_stop()
+        except Exception:
+            pass
+        try:
+            _api_mqtt_client.disconnect()
+        except Exception:
+            pass
+        _api_mqtt_client = None
+    _api_mqtt_connected.clear()
 
 
 def _api_enabled_protocols():
@@ -6268,6 +6692,10 @@ def start_api_server():
             start_api_unix()       # Unix Domain Socket
         if "zmq" in _protocols:
             start_api_zmq()        # ZeroMQ（需 pyzmq）
+        if "grpc" in _protocols:
+            start_api_grpc()       # gRPC（需 grpcio）
+        if "mqtt" in _protocols:
+            start_api_mqtt()       # MQTT 客户端（需 paho-mqtt）
         _check_openapi_sync()  # 启动时校验端点与 JSON 文档同步性
         try:
             export_api_json()  # 生成 api_openapi.json 到程序目录，便于其他程序直接读取
@@ -7974,8 +8402,16 @@ class sys_config(object):
         self.api_port = 8632       # API 服务器端口
         self.api_token = ""        # API 访问令牌（可选，空=不校验）
         self.api_overlay = 0       # 强制投屏覆盖：0=需选择API投屏页 1=任何页面可投屏(结束自动返回原页面)
-        self.api_protocols = "tcp,hotfolder"  # 附加接入协议（逗号分隔：tcp/udp/hotfolder/pipe/unix/zmq）；http/ws 随 api_enable 总开关
+        self.api_protocols = "tcp,hotfolder"  # 附加接入协议（逗号分隔：tcp/udp/hotfolder/pipe/unix/zmq/grpc/mqtt）；http/ws 随 api_enable 总开关
         self.screen_id_timeout = 5 # 屏幕序号检测显示时长（秒）
+        # --- MQTT 接入（连接外部 Broker；附加接入协议勾选「mqtt」后启用） ---
+        self.mqtt_host = "127.0.0.1"     # MQTT Broker 地址
+        self.mqtt_port = 1883            # MQTT Broker 端口
+        self.mqtt_username = ""          # MQTT 用户名（可选，空=匿名）
+        self.mqtt_password = ""          # MQTT 密码（可选）
+        self.mqtt_command_topic = "msu2/command"    # 订阅：投屏命令主题（发布 JSON 命令）
+        self.mqtt_response_topic = "msu2/response"  # 发布：命令响应/状态主题
+        self.mqtt_frame_topic = "msu2/frame"        # 发布：屏幕帧主题（RGB888 原始字节，有变化才发）
         # --- Webhook 对接（Synology Chat / 其他聊天机器人） ---
         self.webhook_enable = 0           # Webhook 功能总开关：0=关闭 1=开启（开启后启动本地接收服务器 + 允许发送）
         self.webhook_port = 8633          # Webhook 接收服务器端口（供 Synology Chat「发出的 Webhook」等外部回调）
@@ -9678,6 +10114,8 @@ def UI_Page():  # PySide6 (Qt) 主界面
             ("pipe", "Windows 命名管道（需 pywin32）"),
             ("unix", "Unix Domain Socket（Windows 支持有限）"),
             ("zmq", "ZeroMQ（端口+3，需 pyzmq）"),
+            ("grpc", "gRPC（端口+4，msu2.Msu2Api，需 pip install grpcio）"),
+            ("mqtt", "MQTT 客户端（连接外部 Broker，需 pip install paho-mqtt）"),
         ]
         _proto_cbs = {}
         cur_protos = {p.strip().lower() for p in str(getattr(_cfg(), "api_protocols", "tcp,hotfolder") or "").split(",") if p.strip()}
@@ -9686,6 +10124,50 @@ def UI_Page():  # PySide6 (Qt) 主界面
             cbx.setChecked(_key in cur_protos)
             _proto_cbs[_key] = cbx
             api_lay.addWidget(cbx)
+
+        # MQTT 接入（连接外部 Broker）——勾选上方「mqtt」后生效，修改后点下方按钮应用
+        mqtt_box = QGroupBox("MQTT 接入（连接外部 Broker，需 pip install paho-mqtt）")
+        mqtt_lay = QVBoxLayout(mqtt_box)
+        mrow1 = QHBoxLayout()
+        mqtt_lay.addLayout(mrow1)
+        mrow1.addWidget(QLabel("Broker 地址:"))
+        mqtt_host_edit = QLineEdit(str(getattr(_cfg(), "mqtt_host", "127.0.0.1")))
+        mqtt_host_edit.setFixedWidth(120)
+        mrow1.addWidget(mqtt_host_edit)
+        mrow1.addWidget(QLabel("端口:"))
+        mqtt_port_edit = QLineEdit(str(getattr(_cfg(), "mqtt_port", 1883)))
+        mqtt_port_edit.setFixedWidth(60)
+        mrow1.addWidget(mqtt_port_edit)
+        mrow1.addStretch(1)
+        mrow2 = QHBoxLayout()
+        mqtt_lay.addLayout(mrow2)
+        mrow2.addWidget(QLabel("用户名:"))
+        mqtt_user_edit = QLineEdit(getattr(_cfg(), "mqtt_username", ""))
+        mqtt_user_edit.setFixedWidth(100)
+        mrow2.addWidget(mqtt_user_edit)
+        mrow2.addWidget(QLabel("密码:"))
+        mqtt_pass_edit = QLineEdit(getattr(_cfg(), "mqtt_password", ""))
+        mqtt_pass_edit.setFixedWidth(100)
+        mqtt_pass_edit.setEchoMode(QLineEdit.Password)
+        mrow2.addStretch(1)
+        mrow3 = QHBoxLayout()
+        mqtt_lay.addLayout(mrow3)
+        mrow3.addWidget(QLabel("命令主题:"))
+        mqtt_cmd_edit = QLineEdit(getattr(_cfg(), "mqtt_command_topic", "msu2/command"))
+        mqtt_cmd_edit.setFixedWidth(160)
+        mrow3.addWidget(mqtt_cmd_edit)
+        mrow3.addStretch(1)
+        mrow4 = QHBoxLayout()
+        mqtt_lay.addLayout(mrow4)
+        mrow4.addWidget(QLabel("响应主题:"))
+        mqtt_resp_edit = QLineEdit(getattr(_cfg(), "mqtt_response_topic", "msu2/response"))
+        mqtt_resp_edit.setFixedWidth(160)
+        mrow4.addWidget(mqtt_resp_edit)
+        mrow4.addWidget(QLabel("帧主题:"))
+        mqtt_frame_edit = QLineEdit(getattr(_cfg(), "mqtt_frame_topic", "msu2/frame"))
+        mqtt_frame_edit.setFixedWidth(160)
+        mrow4.addStretch(1)
+        api_lay.addWidget(mqtt_box)
 
         def _restart_api():
             _lock()
@@ -9697,6 +10179,16 @@ def UI_Page():  # PySide6 (Qt) 主界面
             config_obj.api_token = api_token_edit.text().strip()
             config_obj.api_overlay = 1 if overlay_cb.isChecked() else 0
             config_obj.api_protocols = ",".join(k for k, cbx in _proto_cbs.items() if cbx.isChecked())
+            config_obj.mqtt_host = mqtt_host_edit.text().strip() or "127.0.0.1"
+            try:
+                config_obj.mqtt_port = int(mqtt_port_edit.text())
+            except ValueError:
+                config_obj.mqtt_port = 1883
+            config_obj.mqtt_username = mqtt_user_edit.text().strip()
+            config_obj.mqtt_password = mqtt_pass_edit.text()
+            config_obj.mqtt_command_topic = mqtt_cmd_edit.text().strip() or "msu2/command"
+            config_obj.mqtt_response_topic = mqtt_resp_edit.text().strip() or "msu2/response"
+            config_obj.mqtt_frame_topic = mqtt_frame_edit.text().strip() or "msu2/frame"
             save_config()
             try:
                 stop_api_server()

@@ -100,7 +100,7 @@ GRAY2 = 0x4208
 # ==================== 程序元数据 ====================
 PROGRAM_TITLE = "USB副屏工具"
 PROGRAM_SUBTITLE = ""
-PROGRAM_VERSION = "5.7.0"
+PROGRAM_VERSION = "5.8.0"
 PROGRAM_AUTHOR = "杜玛"
 PROGRAM_GITHUB = "https://github.com/duma520/MSU2_MINI_V2"
 PROGRAM_LICENSE = "MIT"
@@ -124,6 +124,12 @@ PROGRAM_SOURCE_PROJECTS = [
 
 # 版本更新说明
 PROGRAM_CHANGELOG = """
+v5.8.0 (2026-08-27)
+- 新增：Webhook 对接（★ 2026-08-27）——对接 Synology Chat / Discord / 钉钉等聊天机器人，支持双向收发：
+  ① 接收（发出的 Webhook）：独立 Webhook 接收服务器（设置 → Webhook，默认端口 8633），外部聊天服务把消息 POST 到 http://127.0.0.1:<端口>/webhook/incoming，消息自动显示到屏幕（叠加显示，超时自动恢复原页面）与底部信息框；兼容 Synology Chat / Discord / 钉钉 / 通用 JSON / 表单 / 纯文本，自动解析 text/content/message 与 attachments/embeds。可选接收令牌（X-Webhook-Token 或 ?token=）。
+  ② 发送（传入的 Webhook）：设置里配置发送目标 URL（每行一个），副屏可把消息 POST 推送到聊天频道；提供「测试发送」按钮、POST /api/webhook/send、type=webhook_send（TCP/UDP/WS 复用）、Webhook 服务器 POST /webhook/send 四种触发方式，后台线程发送不卡 UI，收发日志可查（GET /api/webhook/status）。
+  ③ 设置实时自动保存：webhook_enable/port/urls/auto_display/display_seconds/receive_token 全部持久化（走 save_config 5 秒防抖写盘），下次启动自动恢复并自动启动服务器。
+  ④ 同步：OpenAPI 文档新增 /api/webhook/send、/api/webhook/status 与 Webhook tag；API 文档页新增第 12 节 Webhook 对接说明。新增 _scaffold/smoke_test_webhook.py 冒烟测试（全过）
 v5.7.0 (2026-08-27)
 - 新增：静态页不重复刷新（★ 2026-08-27）——显示静态/极低频页面（照片/关于/纪念日/待办/农历）时，内容无变化则跳过重绘与串口发送，仅低频等待（_static_page_loop 内容指纹机制：指纹变化=配置修改/跨天 或状态变更时自动重绘；照片/关于仅切页/唤醒时渲染一次、待办用列表指纹、纪念日用列表+日期、农历用日期跨天重绘）。显著降低静态页长期挂机时的 CPU 与串口占用。新增 _scaffold/smoke_test_static_api.py 冒烟测试（28 项全过）
 - 新增：API 附加接入协议常驻开关（★ 2026-08-27）——设置 → API接入 → 附加接入协议（sys_config.api_protocols）：TCP Socket（端口+1）与热文件夹默认推荐常驻，UDP（端口+2）/Windows 命名管道/Unix Domain Socket/ZeroMQ（端口+3）可关闭省内存与线程；HTTP+WebSocket（网页控制台/SSE）随「启用 API 投屏服务器」总开关始终常驻。start_api_server 按 _api_enabled_protocols() 按需启动；旧配置（无 api_protocols 键）迁移为全部开启保持旧行为，可在设置里按需关闭
@@ -4457,6 +4463,10 @@ def api_apply_quit(data):
                 except Exception:
                     pass
                 try:
+                    stop_webhook_server()
+                except Exception:
+                    pass
+                try:
                     root.close()
                 except Exception:
                     pass
@@ -4514,6 +4524,10 @@ def api_execute_command(data):
             return api_apply_device_refresh()
         elif cmd == "notify":
             return api_apply_notify(data)
+        elif cmd == "webhook_send":
+            return api_apply_webhook_send(data)
+        elif cmd == "webhook_status":
+            return api_get_webhook_status()
         elif cmd == "quit":
             return api_apply_quit(data)
         elif cmd == "health":
@@ -4626,6 +4640,8 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
             self._send_json(api_get_protocols())
         elif path == "/api/status":
             self._send_json(api_get_status())
+        elif path == "/api/webhook/status":
+            self._send_json(api_get_webhook_status())
         elif path == "/api/config":
             qs = parse_qs(urlparse(self.path).query)
             gdev = _api_resolve_device({"device": (qs.get("device") or [""])[0]})
@@ -4708,6 +4724,8 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
             self._send_json(api_apply_marquee(data, dev))
         elif path == "/api/notify":
             self._send_json(api_apply_notify(data))
+        elif path == "/api/webhook/send":
+            self._send_json(api_apply_webhook_send(data))
         elif path == "/api/screen/id":
             self._send_json(api_trigger_screen_id(data))
         elif path == "/api/quit":
@@ -4923,6 +4941,7 @@ def _build_openapi_doc():
             {"name": "投屏", "description": "投屏图像 / 文本 / 清屏"},
             {"name": "控制", "description": "页面切换"},
             {"name": "实时", "description": "WebSocket 实时通道"},
+            {"name": "Webhook", "description": "对接聊天机器人（Synology Chat 等）的收发接口"},
         ],
         "paths": {
             "/api/info": {
@@ -5273,6 +5292,29 @@ def _build_openapi_doc():
                         "type": "object", "properties": {"text": {"type": "string", "description": "通知文本"}},
                     }}}},
                     "responses": {"200": {"description": "结果"}},
+                }
+            },
+            "/api/webhook/status": {
+                "get": {
+                    "tags": ["Webhook"],
+                    "summary": "查询 Webhook 状态与最近收发日志",
+                    "responses": {"200": {"description": "enabled/port/receive_url/send_targets/server_running/receive_log/send_log"}},
+                }
+            },
+            "/api/webhook/send": {
+                "post": {
+                    "tags": ["Webhook"],
+                    "summary": "发送文本到配置的 Webhook URL（Synology Chat「传入的 Webhook」/ Discord / 钉钉等）",
+                    "description": "需要先启用 Webhook（设置 → Webhook）。text 必填；urls 可选覆盖配置的发送目标列表。",
+                    "requestBody": {"required": True, "content": {"application/json": {"schema": {
+                        "type": "object",
+                        "properties": {
+                            "text": {"type": "string", "description": "要发送的文本"},
+                            "urls": {"type": "array", "items": {"type": "string"}, "description": "可选：覆盖配置的发送目标 URL"},
+                        },
+                        "required": ["text"],
+                    }}}},
+                    "responses": {"200": {"description": "ok + targets"}},
                 }
             },
             "/api/quit": {
@@ -5668,6 +5710,28 @@ POST /api/quit            {{"force":true}} 退出程序
 <p>在「设置 → API接入」勾选「强制投屏」后，无需把程序切换到「API投屏」页，任何页面（时间/热搜/仪表盘等）
 都会被投屏内容覆盖显示。停止投屏后自动返回投屏前的页面（如 热搜）。
 该选项按设备保存；未开启时仍需手动选择「API投屏」页才能看到投屏内容。</p>
+
+<h2>12. Webhook 对接（聊天机器人，Synology Chat / Discord / 钉钉等）</h2>
+<p>在「设置 → Webhook」勾选「启用 Webhook 功能」后，支持与聊天机器人双向对接：</p>
+<pre>接收（发出的 Webhook）：外部服务把消息 POST 到
+  http://127.0.0.1:8633/webhook/incoming
+  （Synology Chat「发出的 Webhook」等回调地址填这个 URL；
+   消息会显示到屏幕（超时自动恢复）与底部信息框）
+
+发送（传入的 Webhook）：把文本 POST 到配置的 URL（每行一个，逗号/换行分隔）
+  本程序即把屏上事件推送到聊天（如 Synology Chat「传入的 Webhook」URL）
+  POST /api/webhook/send     {{ "text": "要发送的消息" }}
+  POST /api/webhook/status   查询状态与最近收发日志
+
+接收令牌（可选）：设置 webhook_receive_token 后，
+  回调需带请求头 X-Webhook-Token 或查询参数 ?token=</pre>
+<pre># 模拟接收（把消息推给副屏显示）
+curl -X POST http://127.0.0.1:8633/webhook/incoming \\
+     -H "Content-Type: application/json" -d '{{"text":"你好，副屏"}}'
+
+# 模拟发送（推送到配置的聊天 URL）
+curl -X POST http://127.0.0.1:8632/api/webhook/send \\
+     -H "Content-Type: application/json" -d '{{"text":"来自副屏的消息"}}'</pre>
 </body></html>"""
 
 
@@ -6228,6 +6292,389 @@ def stop_api_server():
             pass
         _api_server = None
     stop_api_extra()
+
+
+# ==================== Webhook 对接（Synology Chat / 其他聊天机器人） ====================
+# 说明：
+#  - 接收（发出 Webhook）：Synology Chat 等外部服务把消息 POST 到本程序
+#    http://127.0.0.1:<webhook_port>/webhook/incoming，本程序显示在屏幕/信息框。
+#  - 发送（传入 Webhook）：本程序把文本 POST 到配置的 webhook_urls（如 Synology Chat
+#    「传入的 Webhook」URL / Discord / 钉钉机器人），实现把屏上事件推送到聊天。
+# 所有设置均持久保存（走 save_config，5 秒防抖写盘），下次启动自动恢复。
+_webhook_server = None            # Webhook 接收 HTTP 服务器
+_webhook_server_thread = None     # Webhook 接收服务器线程
+_webhook_msg_until = 0.0          # 屏幕叠加显示截止时间戳（time.monotonic），<=0 未在显示
+_webhook_msg_text = ""            # 待叠加显示的消息文本
+_webhook_msg_source = ""          # 消息来源描述
+_webhook_msg_lock = threading.Lock()
+_webhook_receive_log = []         # 最近接收记录（time/source/text）
+_webhook_send_log = []            # 最近发送记录（time/url/ok/error）
+_webhook_log_max = 50             # 收发日志保留条数
+
+
+def _webhook_extract_text(data):
+    """从常见 Webhook 回调 JSON 中提取可显示文本（Synology Chat / Discord / 钉钉 / 通用）。
+    依次尝试 text/content/message/msg/title/body，并拼接 attachments/embeds 文本。"""
+    if not isinstance(data, dict):
+        return str(data)
+    parts = []
+    for key in ("text", "content", "message", "msg", "title", "body"):
+        v = data.get(key)
+        if isinstance(v, str) and v.strip():
+            parts.append(v.strip())
+        elif isinstance(v, (int, float)):
+            parts.append(str(v))
+    atts = data.get("attachments") or data.get("embeds")
+    if isinstance(atts, list):
+        for a in atts:
+            if isinstance(a, dict):
+                for key in ("text", "title", "description", "content"):
+                    if isinstance(a.get(key), str) and a[key].strip():
+                        parts.append(a[key].strip())
+                        break
+    return "\n".join(parts).strip()
+
+
+def _webhook_wrap_text(text, draw, font, max_width):
+    """按像素宽度把文本拆成多行（保留手动换行 \\n）"""
+    out = []
+    for raw in str(text or "").split("\n"):
+        if not raw:
+            out.append("")
+            continue
+        line = ""
+        for ch in raw:
+            if draw.textlength(line + ch, font=font) > max_width and line:
+                out.append(line)
+                line = ch
+            else:
+                line += ch
+        out.append(line)
+    return out
+
+
+def _webhook_set_message(text, source=""):
+    """设置待屏幕叠加显示的 Webhook 消息（超时后 _api_try_webhook_overlay 自动恢复原页面）"""
+    global _webhook_msg_until, _webhook_msg_text, _webhook_msg_source
+    with _webhook_msg_lock:
+        _webhook_msg_text = str(text or "")
+        _webhook_msg_source = str(source or "")
+        try:
+            seconds = max(1.0, float(getattr(config_obj, "webhook_display_seconds", 8) or 8))
+        except Exception:
+            seconds = 8.0
+        _webhook_msg_until = time.monotonic() + seconds
+
+
+def webhook_receive(text, source="", payload=None):
+    """Webhook 接收核心处理（HTTP 回调 / 未来其它协议复用）：
+    记录到信息框 + 接收日志 + 按配置在屏幕叠加显示。返回响应 dict。"""
+    text = str(text or "").strip()
+    if not text:
+        return {"ok": False, "error": "消息为空"}
+    src = source or "外部"
+    insert_text_message("[Webhook 接收] 来自 %s：%s" % (src, text), cleanNext=False)
+    with _webhook_msg_lock:
+        _webhook_receive_log.append({"time": datetime.now().strftime("%H:%M:%S"),
+                                     "source": src, "text": text})
+        if len(_webhook_receive_log) > _webhook_log_max:
+            del _webhook_receive_log[:len(_webhook_receive_log) - _webhook_log_max]
+    # 屏幕叠加显示（按配置）；触发已连接屏立即重绘
+    try:
+        if getattr(config_obj, "webhook_auto_display", 1):
+            _webhook_set_message(text, src)
+            for d in all_devices.values():
+                if getattr(d, "device_state", 0) == 1:
+                    d.state_change = 1
+                    try:
+                        d.sleep_event.set()
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+    return {"ok": True, "received": text, "source": src}
+
+
+def _api_try_webhook_overlay(device=None):
+    """Webhook 收到消息的临时屏幕叠加：设定时长内显示消息文本，超时自动恢复原页面。"""
+    global _webhook_msg_until
+    try:
+        if _webhook_msg_until <= 0:
+            return False
+        if time.monotonic() >= _webhook_msg_until:
+            _webhook_msg_until = 0.0
+            return False
+        dev = device if device is not None else get_current_device()
+        if dev is None:
+            return False
+        with _webhook_msg_lock:
+            text = _webhook_msg_text
+            source = _webhook_msg_source
+        if dev.state_change == 1:
+            state_change_clear()
+            LCD_ADD(0, 0, SHOW_WIDTH, SHOW_HEIGHT)
+        img = Image.new("RGB", (SHOW_WIDTH, SHOW_HEIGHT), (0, 0, 0))
+        draw = ImageDraw.Draw(img)
+        try:
+            title_font = MiniMark.load_font("./simhei.ttf", 11)
+            body_font = MiniMark.load_font("./simhei.ttf", 15)
+        except Exception:
+            title_font, body_font = default_font, default_font
+        draw.text((4, 3), "Webhook 消息", fill=(120, 200, 255), font=title_font)
+        if source:
+            draw.text((4, SHOW_HEIGHT - 12), "@%s" % str(source)[:20], fill=(150, 150, 150), font=title_font)
+        y = 20
+        for line in _webhook_wrap_text(text, draw, body_font, SHOW_WIDTH - 8):
+            if y > SHOW_HEIGHT - 18:
+                break
+            draw.text((4, y), line, fill=(255, 255, 255), font=body_font)
+            y += 17
+        _safe_send_rgb888(np.asarray(img, dtype=np.uint8))
+        dev.sleep_event.wait(0.05)
+        return True
+    except Exception:
+        return False
+
+
+def webhook_send(text, urls=None, source="程序", data=None):
+    """发送文本到配置的 Webhook URL（Synology Chat「传入的 Webhook」/ Discord / 钉钉等）。
+    urls=None 时使用配置 webhook_urls（每行一个，逗号/换行分隔）；data 可覆盖完整 JSON payload。
+    后台线程发送，不阻塞调用方。返回 {"ok": True, "targets": n} 表示已提交。"""
+    if urls is None:
+        raw = str(getattr(config_obj, "webhook_urls", "") or "")
+        urls = [u.strip() for u in raw.replace(",", "\n").splitlines() if u.strip()]
+    if not urls:
+        return {"ok": False, "error": "未配置发送目标 Webhook URL（设置 → Webhook → 发送目标 URL）"}
+    payload = data if isinstance(data, dict) else {"text": str(text)}
+    threading.Thread(target=_webhook_send_worker,
+                     args=(list(urls), payload, str(text), str(source or "程序")),
+                     daemon=True).start()
+    return {"ok": True, "targets": len(urls), "payload": payload}
+
+
+def _webhook_send_worker(targets, payload, text, source):
+    """后台发送线程：向每个 URL POST JSON payload（application/json），记录结果日志。"""
+    import urllib.request
+    results = []
+    for url in targets:
+        try:
+            body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            req = urllib.request.Request(
+                url, data=body, method="POST",
+                headers={"Content-Type": "application/json; charset=utf-8",
+                         "User-Agent": "MSU2_MINI_V2/%s" % PROGRAM_VERSION})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                results.append({"url": url, "ok": True, "code": resp.status})
+        except Exception as e:
+            results.append({"url": url, "ok": False, "error": str(e)})
+    with _webhook_msg_lock:
+        for r in results:
+            _webhook_send_log.append({"time": datetime.now().strftime("%H:%M:%S"),
+                                      "source": source, "text": text,
+                                      "url": r["url"], "ok": r["ok"],
+                                      "error": r.get("error", "")})
+        if len(_webhook_send_log) > _webhook_log_max:
+            del _webhook_send_log[:len(_webhook_send_log) - _webhook_log_max]
+    ok_count = sum(1 for r in results if r["ok"])
+    msg = "[Webhook 发送] 成功 %d/%d" % (ok_count, len(results))
+    for r in results:
+        if not r["ok"]:
+            msg += "\n  %s → %s" % (r["url"], r["error"])
+    insert_text_message(msg, cleanNext=False)
+
+
+def api_apply_webhook_send(data):
+    """API：发送文本到配置的 Webhook URL（POST /api/webhook/send 或 type=webhook_send）。
+    data: {"text": "...", "urls": [...] 可选覆盖目标}"""
+    if not getattr(config_obj, "webhook_enable", 0):
+        return {"ok": False, "error": "Webhook 功能未开启（设置 → Webhook 勾选启用）"}
+    text = str(data.get("text") or data.get("message") or "")
+    if not text:
+        return {"ok": False, "error": "需要 text"}
+    return webhook_send(text, urls=data.get("urls"), source="API")
+
+
+def api_get_webhook_status():
+    """API：查询 Webhook 状态与最近收发日志"""
+    try:
+        port = int(getattr(config_obj, "webhook_port", 8633))
+    except Exception:
+        port = 8633
+    with _webhook_msg_lock:
+        recv = list(_webhook_receive_log)
+        sent = list(_webhook_send_log)
+    return {
+        "ok": True,
+        "enabled": bool(getattr(config_obj, "webhook_enable", 0)),
+        "port": port,
+        "receive_url": "http://127.0.0.1:%d/webhook/incoming" % port,
+        "send_targets": [u.strip() for u in str(getattr(config_obj, "webhook_urls", "") or "").replace(",", "\n").splitlines() if u.strip()],
+        "server_running": _webhook_server is not None,
+        "receive_log": recv,
+        "send_log": sent,
+    }
+
+
+class WebhookReceiveHandler(http.server.BaseHTTPRequestHandler):
+    """Webhook 接收服务器：外部聊天服务（Synology Chat「发出的 Webhook」等）回调入口。
+    - POST /webhook/incoming  接收外部消息（显示到屏幕/信息框）
+    - POST /webhook/send      经本服务器发送消息到配置的 URL（便于脚本/局域网触发）
+    - GET  /webhook/health    健康检查"""
+    server_version = "MSU2MiniWebhook/1.0"
+
+    def log_message(self, fmt, *args):
+        pass  # 关闭默认请求日志
+
+    def _send_json(self, obj, code=200):
+        body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _read_body(self):
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except Exception:
+            length = 0
+        return self.rfile.read(length) if length > 0 else b""
+
+    def _check_token(self):
+        """配置了接收令牌时校验 X-Webhook-Token 或 ?token=，通过返回 True"""
+        try:
+            token = getattr(config_obj, "webhook_receive_token", "") or ""
+            if not token:
+                return True
+            got = self.headers.get("X-Webhook-Token", "")
+            if not got:
+                got = parse_qs(urlparse(self.path).query).get("token", [""])[0]
+            return got == token
+        except Exception:
+            return False
+
+    def do_GET(self):
+        path = self.path.split("?", 1)[0]
+        if path == "/webhook/health":
+            self._send_json({"ok": True, "service": "webhook", "name": "MSU2_MINI_V2",
+                             "version": PROGRAM_VERSION,
+                             "enabled": bool(getattr(config_obj, "webhook_enable", 0)),
+                             "receive_url": "http://127.0.0.1:%d/webhook/incoming"
+                                            % int(getattr(config_obj, "webhook_port", 8633))})
+        else:
+            self._send_json({"ok": True, "name": "MSU2_MINI_V2 Webhook 接收服务",
+                             "receive": "POST /webhook/incoming",
+                             "send": "POST /webhook/send",
+                             "note": "设置 → Webhook 可配置发送目标 URL 与接收令牌"})
+
+    def do_POST(self):
+        path = self.path.split("?", 1)[0]
+        if not self._check_token():
+            self._send_json({"ok": False, "error": "invalid token"}, 401)
+            return
+        if path in ("/webhook/incoming", "/webhook", "/", ""):
+            resp = self._handle_incoming()
+        elif path == "/webhook/send":
+            resp = self._handle_send()
+        else:
+            self._send_json({"ok": False, "error": "not found"}, 404)
+            return
+        self._send_json(resp)
+
+    def _handle_incoming(self):
+        """解析外部回调消息（Synology Chat / Discord / 钉钉 / 通用 JSON / 表单 / 纯文本）"""
+        body = self._read_body()
+        ctype = (self.headers.get("Content-Type") or "").lower()
+        text = ""
+        source = ""
+        payload = None
+        try:
+            data = json.loads(body.decode("utf-8")) if body else {}
+            if isinstance(data, dict):
+                payload = data
+                user = data.get("user") or data.get("username") or data.get("from") or data.get("source") or ""
+                if isinstance(user, dict):
+                    source = str(user.get("username") or user.get("name") or user.get("id") or "")
+                else:
+                    source = str(user)
+                text = _webhook_extract_text(data)
+            else:
+                text = str(data)
+        except Exception:
+            text = ""
+        if not text and body:
+            if "form" in ctype:
+                try:
+                    from urllib.parse import parse_qs as _pqs
+                    qs = _pqs(body.decode("utf-8", errors="replace"))
+                    text = (qs.get("text") or qs.get("message") or qs.get("content") or [""])[0]
+                except Exception:
+                    pass
+            else:
+                text = body.decode("utf-8", errors="replace")
+        return webhook_receive(text, source=source, payload=payload)
+
+    def _handle_send(self):
+        """经 Webhook 服务器发送消息到配置的 URL（便于脚本/局域网触发）"""
+        raw = self._read_body()
+        try:
+            data = json.loads(raw.decode("utf-8")) if raw else {}
+        except Exception:
+            data = {}
+        text = str(data.get("text") or data.get("message") or "")
+        if not text:
+            return {"ok": False, "error": "需要 text"}
+        return webhook_send(text, urls=data.get("urls"), source="Webhook 服务器")
+
+
+def start_webhook_server():
+    """启动 Webhook 接收服务器（独立端口，供 Synology Chat「发出的 Webhook」等外部回调），仅监听 127.0.0.1"""
+    global _webhook_server, _webhook_server_thread
+    if _webhook_server is not None:
+        return
+    try:
+        port = int(getattr(config_obj, "webhook_port", 8633))
+    except Exception:
+        port = 8633
+    try:
+        from http.server import ThreadingHTTPServer
+        server = ThreadingHTTPServer(("127.0.0.1", port), WebhookReceiveHandler)
+        _webhook_server = server
+        t = threading.Thread(target=server.serve_forever, daemon=True)
+        t.start()
+        _webhook_server_thread = t
+        print("Webhook 接收服务器已启动: http://127.0.0.1:%d/webhook/incoming" % port)
+    except Exception as e:
+        _webhook_server = None
+        print("Webhook 接收服务器启动失败: %s" % e)
+
+
+def stop_webhook_server():
+    """停止 Webhook 接收服务器"""
+    global _webhook_server, _webhook_server_thread
+    if _webhook_server is not None:
+        try:
+            _webhook_server.shutdown()
+        except Exception:
+            pass
+        try:
+            _webhook_server.server_close()
+        except Exception:
+            pass
+        _webhook_server = None
+    _webhook_server_thread = None
+
+
+def webhook_apply_server_state():
+    """按配置启动/停止 Webhook 接收服务器（设置变化/程序启动时调用）"""
+    try:
+        if getattr(config_obj, "webhook_enable", 0):
+            start_webhook_server()
+        else:
+            stop_webhook_server()
+    except Exception as e:
+        print("Webhook 服务器状态同步失败：%s" % e)
 
 
 def _api_try_screen_id(device=None):
@@ -7529,6 +7976,13 @@ class sys_config(object):
         self.api_overlay = 0       # 强制投屏覆盖：0=需选择API投屏页 1=任何页面可投屏(结束自动返回原页面)
         self.api_protocols = "tcp,hotfolder"  # 附加接入协议（逗号分隔：tcp/udp/hotfolder/pipe/unix/zmq）；http/ws 随 api_enable 总开关
         self.screen_id_timeout = 5 # 屏幕序号检测显示时长（秒）
+        # --- Webhook 对接（Synology Chat / 其他聊天机器人） ---
+        self.webhook_enable = 0           # Webhook 功能总开关：0=关闭 1=开启（开启后启动本地接收服务器 + 允许发送）
+        self.webhook_port = 8633          # Webhook 接收服务器端口（供 Synology Chat「发出的 Webhook」等外部回调）
+        self.webhook_urls = ""            # 发送目标 Webhook URL 列表（每行一个；如 Synology Chat「传入的 Webhook」URL / Discord / 钉钉机器人）
+        self.webhook_auto_display = 1     # 收到消息自动在屏幕显示：0=仅记录到信息框 1=屏幕叠加显示（超时自动恢复原页面）
+        self.webhook_display_seconds = 8  # 屏幕叠加显示时长（秒），到时自动恢复原页面
+        self.webhook_receive_token = ""   # 接收校验令牌（可选；请求头 X-Webhook-Token 或 ?token=，空=不校验）
 
 
 # ==================== LCD 屏幕分辨率检测 ====================
@@ -9262,6 +9716,162 @@ def UI_Page():  # PySide6 (Qt) 主界面
         api_lay.addWidget(restart_btn)
         api_lay.addWidget(QLabel("API 端口/令牌修改后点上方按钮生效。"))
         api_lay.addStretch(1)
+
+        # ---------- Webhook ----------
+        # 对接聊天机器人（Synology Chat「传入/发出的 Webhook」、Discord、钉钉等）。
+        # 所有字段修改即时保存（save_config 5 秒防抖写盘），下次启动自动恢复。
+        webhook = QWidget()
+        sb.addTab(webhook, "  Webhook  ")
+        wh_lay = QVBoxLayout(webhook)
+
+        wh_enable_cb = QCheckBox("启用 Webhook 功能（对接 Synology Chat 等聊天机器人）")
+        wh_enable_cb.setChecked(bool(getattr(_cfg(), "webhook_enable", 0)))
+        wh_lay.addWidget(wh_enable_cb)
+
+        def _chg_wh_enable():
+            _lock()
+            config_obj.webhook_enable = 1 if wh_enable_cb.isChecked() else 0
+            save_config()
+            webhook_apply_server_state()
+            if config_obj.webhook_enable:
+                insert_text_message("Webhook 接收服务器已启动（端口 %d）" % getattr(config_obj, "webhook_port", 8633))
+            else:
+                insert_text_message("Webhook 接收服务器已停止")
+        wh_enable_cb.toggled.connect(_chg_wh_enable)
+
+        # 接收地址（供 Synology Chat「发出的 Webhook」等回调）
+        wh_url_lbl = QLabel("")
+        wh_url_lbl.setWordWrap(True)
+        wh_lay.addWidget(wh_url_lbl)
+
+        def _refresh_wh_url():
+            try:
+                p = int(getattr(_cfg(), "webhook_port", 8633))
+            except Exception:
+                p = 8633
+            wh_url_lbl.setText("接收地址（聊天服务回调，消息发给副屏）：\nhttp://127.0.0.1:%d/webhook/incoming" % p)
+            wh_url_lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        _refresh_wh_url()
+
+        wh_port_row = QHBoxLayout()
+        wh_lay.addLayout(wh_port_row)
+        wh_port_row.addWidget(QLabel("接收端口:"))
+        wh_port_edit = QLineEdit(str(getattr(_cfg(), "webhook_port", 8633)))
+        wh_port_edit.setFixedWidth(70)
+        wh_port_row.addWidget(wh_port_edit)
+        wh_port_row.addStretch(1)
+
+        def _chg_wh_port():
+            _lock()
+            try:
+                config_obj.webhook_port = int(wh_port_edit.text())
+            except ValueError:
+                return
+            save_config()
+            _refresh_wh_url()
+        wh_port_edit.editingFinished.connect(_chg_wh_port)
+
+        wh_token_row = QHBoxLayout()
+        wh_lay.addLayout(wh_token_row)
+        wh_token_row.addWidget(QLabel("接收令牌(留空=无):"))
+        wh_token_edit = QLineEdit(getattr(_cfg(), "webhook_receive_token", ""))
+        wh_token_edit.setFixedWidth(150)
+        wh_token_row.addWidget(wh_token_edit)
+        wh_token_row.addStretch(1)
+
+        def _chg_wh_token():
+            _lock()
+            config_obj.webhook_receive_token = wh_token_edit.text().strip()
+            save_config()
+        wh_token_edit.editingFinished.connect(_chg_wh_token)
+
+        wh_auto_cb = QCheckBox("收到消息自动显示到屏幕（超时自动恢复原页面）")
+        wh_auto_cb.setChecked(bool(getattr(_cfg(), "webhook_auto_display", 1)))
+        wh_lay.addWidget(wh_auto_cb)
+
+        def _chg_wh_auto():
+            _lock()
+            config_obj.webhook_auto_display = 1 if wh_auto_cb.isChecked() else 0
+            save_config()
+        wh_auto_cb.toggled.connect(_chg_wh_auto)
+
+        wh_secs_row = QHBoxLayout()
+        wh_lay.addLayout(wh_secs_row)
+        wh_secs_row.addWidget(QLabel("屏幕显示时长(秒):"))
+        wh_secs_spin = QSpinBox()
+        wh_secs_spin.setRange(1, 300)
+        wh_secs_spin.setValue(int(getattr(_cfg(), "webhook_display_seconds", 8) or 8))
+        wh_secs_row.addWidget(wh_secs_spin)
+        wh_secs_row.addStretch(1)
+
+        def _chg_wh_secs(val):
+            _lock()
+            config_obj.webhook_display_seconds = val
+            save_config()
+        wh_secs_spin.valueChanged.connect(_chg_wh_secs)
+
+        wh_lay.addWidget(QLabel("发送目标 Webhook URL（每行一个；如 Synology Chat「传入的 Webhook」/ Discord / 钉钉）:"))
+        wh_urls_edit = QPlainTextEdit()
+        wh_urls_edit.setPlainText(getattr(_cfg(), "webhook_urls", ""))
+        wh_urls_edit.setFixedHeight(64)
+        wh_urls_edit.setPlaceholderText("https://chat.synology.com/webhook/xxx\nhttps://discord.com/api/webhooks/xxx")
+        wh_lay.addWidget(wh_urls_edit)
+
+        _wh_urls_timer = [None]
+
+        def _save_wh_urls():
+            _lock()
+            config_obj.webhook_urls = wh_urls_edit.toPlainText()
+            save_config()
+
+        def _chg_wh_urls():
+            # QPlainTextEdit 无 editingFinished，用 600ms 防抖保存
+            if _wh_urls_timer[0] is not None:
+                _wh_urls_timer[0].stop()
+            _wh_urls_timer[0] = QTimer.singleShot(600, _save_wh_urls)
+        wh_urls_edit.textChanged.connect(_chg_wh_urls)
+
+        wh_btn_row = QHBoxLayout()
+        wh_lay.addLayout(wh_btn_row)
+
+        def _test_send():
+            _lock()
+            r = webhook_send("测试消息：USB 副屏 Webhook 对接成功（%s）" % datetime.now().strftime("%H:%M:%S"),
+                             source="设置测试")
+            if r.get("ok"):
+                insert_text_message("测试消息已提交发送（%d 个目标），请查看聊天频道" % r["targets"])
+            else:
+                insert_text_message(r.get("error", "发送失败"))
+
+        test_btn = QPushButton("测试发送一条消息")
+        test_btn.clicked.connect(_test_send)
+        wh_btn_row.addWidget(test_btn)
+
+        def _restart_wh():
+            _lock()
+            config_obj.webhook_enable = 1 if wh_enable_cb.isChecked() else 0
+            try:
+                config_obj.webhook_port = int(wh_port_edit.text())
+            except ValueError:
+                config_obj.webhook_port = 8633
+            config_obj.webhook_receive_token = wh_token_edit.text().strip()
+            config_obj.webhook_auto_display = 1 if wh_auto_cb.isChecked() else 0
+            config_obj.webhook_display_seconds = wh_secs_spin.value()
+            config_obj.webhook_urls = wh_urls_edit.toPlainText()
+            save_config()
+            webhook_apply_server_state()
+            if config_obj.webhook_enable:
+                insert_text_message("Webhook 接收服务器已重启（端口 %d）" % config_obj.webhook_port)
+            else:
+                insert_text_message("Webhook 接收服务器已停止")
+
+        restart_wh_btn = QPushButton("应用并重启 Webhook 服务器")
+        restart_wh_btn.clicked.connect(_restart_wh)
+        wh_btn_row.addWidget(restart_wh_btn)
+        wh_btn_row.addStretch(1)
+
+        wh_lay.addWidget(QLabel("说明：接收 = 聊天服务把消息 POST 到上方接收地址（副屏显示）；发送 = 副屏把消息 POST 到下方 URL（推送到聊天）。设置自动保存，下次启动沿用。"))
+        wh_lay.addStretch(1)
 
         # ---------- 数据管理 ----------
         data = QWidget()
@@ -11363,6 +11973,7 @@ def UI_Page():  # PySide6 (Qt) 主界面
     # ==================== 关闭/退出 ====================
     def on_closing():
         stop_api_server()
+        stop_webhook_server()
         window.close()
 
     def closeEvent(event):
@@ -11375,6 +11986,7 @@ def UI_Page():  # PySide6 (Qt) 主界面
         except Exception:
             pass
         stop_api_server()
+        stop_webhook_server()
         event.accept()
 
     window.closeEvent = closeEvent
@@ -11453,6 +12065,13 @@ def UI_Page():  # PySide6 (Qt) 主界面
             start_api_server()
     except Exception as e:
         print("启动 API 服务器失败：%s" % e)
+
+    # 启动 Webhook 接收服务器（聊天机器人对接，随配置开关；设置已持久化，下次启动自动恢复）
+    try:
+        if getattr(config_obj, "webhook_enable", 0):
+            start_webhook_server()
+    except Exception as e:
+        print("启动 Webhook 服务器失败：%s" % e)
 
     # 进入消息循环（先恢复上次的窗口几何/最大化/第一层标签）
     _ui_load_state()
@@ -11718,6 +12337,8 @@ def MSN_Device_1_State_machine():  # MSN设备1的循环状态机
             pass  # 屏幕序号检测：显示本屏屏号，超时后自动恢复原页面
         elif _api_try_overlay(device):
             pass  # 强制投屏覆盖：显示外部投屏帧，跳过普通页面渲染
+        elif _api_try_webhook_overlay(device):
+            pass  # Webhook 收到消息：临时叠加显示消息文本，超时自动恢复原页面
         elif config_obj.state_machine == PCTIME_PAGE_ID:
             show_PC_time(device.color_use)
         elif config_obj.state_machine == PHOTO_PAGE_ID:
@@ -13588,6 +14209,7 @@ if __name__ == "__main__":
         if _primary_device and _primary_device.screen_shot_thread and _primary_device.screen_shot_thread.is_alive():
             _primary_device.screen_shot_thread.join(timeout=5.0)
         stop_api_server()
+        stop_webhook_server()
         # 退出前清理LCD屏幕，避免残留花屏
         Cleanup_LCD_On_Exit()
         if _primary_device and _primary_device.ser is not None and _primary_device.ser.is_open:

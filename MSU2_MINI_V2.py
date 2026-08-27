@@ -32,7 +32,7 @@ import psutil  # 引入psutil获取设备信息（需要额外安装）
 import pystray
 import serial  # 引入串口库（需要额外安装）
 import serial.tools.list_ports
-from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageTk  # 引入PIL库进行图像处理
+from PIL import Image, ImageDraw, ImageFont, ImageOps  # 引入PIL库进行图像处理（勿加 ImageTk：其依赖 tkinter，Nuitka 编译启用 PySide6 插件后排除 tkinter，会导致 exe 启动崩溃）
 from PyCameraList import camera_device
 from mss import mss  # 用于桌面截图的备用方案
 
@@ -100,11 +100,11 @@ GRAY2 = 0x4208
 # ==================== 程序元数据 ====================
 PROGRAM_TITLE = "USB副屏工具"
 PROGRAM_SUBTITLE = ""
-PROGRAM_VERSION = "5.3.0"
+PROGRAM_VERSION = "5.7.0"
 PROGRAM_AUTHOR = "杜玛"
 PROGRAM_GITHUB = "https://github.com/duma520/MSU2_MINI_V2"
 PROGRAM_LICENSE = "MIT"
-PROGRAM_BUILD_DATE = "2026-08-18"
+PROGRAM_BUILD_DATE = "2026-08-27"
 
 # 整合自以下开源项目（均为MIT协议）
 PROGRAM_SOURCE_PROJECTS = [
@@ -124,6 +124,24 @@ PROGRAM_SOURCE_PROJECTS = [
 
 # 版本更新说明
 PROGRAM_CHANGELOG = """
+v5.7.0 (2026-08-27)
+- 新增：静态页不重复刷新（★ 2026-08-27）——显示静态/极低频页面（照片/关于/纪念日/待办/农历）时，内容无变化则跳过重绘与串口发送，仅低频等待（_static_page_loop 内容指纹机制：指纹变化=配置修改/跨天 或状态变更时自动重绘；照片/关于仅切页/唤醒时渲染一次、待办用列表指纹、纪念日用列表+日期、农历用日期跨天重绘）。显著降低静态页长期挂机时的 CPU 与串口占用。新增 _scaffold/smoke_test_static_api.py 冒烟测试（28 项全过）
+- 新增：API 附加接入协议常驻开关（★ 2026-08-27）——设置 → API接入 → 附加接入协议（sys_config.api_protocols）：TCP Socket（端口+1）与热文件夹默认推荐常驻，UDP（端口+2）/Windows 命名管道/Unix Domain Socket/ZeroMQ（端口+3）可关闭省内存与线程；HTTP+WebSocket（网页控制台/SSE）随「启用 API 投屏服务器」总开关始终常驻。start_api_server 按 _api_enabled_protocols() 按需启动；旧配置（无 api_protocols 键）迁移为全部开启保持旧行为，可在设置里按需关闭
+- 优化：1 级能效深度优化（★ 2026-08-27）——进一步降低 CPU/内存占用：修复息屏空转烧 CPU（daemon 息屏分支空转死循环 → _power_wait(device,1) 按能效放宽、按键可唤醒）；新增进程空闲优先级 _apply_process_priority（能效启用时进程设 BELOW_NORMAL_PRIORITY_CLASS，让位前台程序，启动/切等级实时同步）；镜像期间串口忙轮询 50Hz→12Hz（serial_busy sleep 0.02×factor）；按键阈值校正等待按系数放大；系统监控页 CPU 采样改非阻塞（psutil.cpu_percent(interval=None)，启动预热基准）；天气/行情/热搜/电池 TTL 按能效放大（ttl×factor）减少后台网络线程；LibreHardwareMonitor 改惰性加载（_ensure_hardware_monitor_async，仅首次进入硬件相关页面才后台加载 pythonnet/.NET，加载期间显示“加载中…”自动恢复），未用硬件页面启动省整个加载开销。新增 _scaffold/smoke_test_power_opt.py 冒烟测试（16 项全过）
+- 优化：1 级能效深度降频——补齐未接入能效等级的高频轮询/等待点（1级 factor=4.0 时降到原 1/4）：镜像页 daemon 轮询 get(timeout=0.3)→0.3×factor（1.2s）、非镜像页截图/处理线程 sleep(0.5)→0.5×factor（2s）、daemon 设备扫描 5s→5×factor（20s）、主线程 UI 消息队列 100ms→100×factor（400ms）、自动翻页 1s→1×factor（4s）、按键断开轮询 sleep(0.3)→0.3×factor；镜像帧率仍保底 1fps。进一步降低 1 级能效下的 CPU 占用
+- 新增：UI 显隐控制——设置 → 通用 →「显示信息框」（关闭后底部信息框隐藏，状态存 MSU2_MINI_ui.json 的 show_info，程序级重启恢复）；「开启实时预览」关闭后主控页「实时预览:」标题与预览图控件整块隐藏；电视墙显示墙设置 → 显示方式 →「在显示器标签内显示实时内容」（关闭后显示墙格子仅显示设备名占位，状态存 MSU2_MINI_wall.json 的 wall_show_live）。新增 _scaffold/smoke_test_ui_visibility.py 冒烟测试（9 项全过）
+- 新增：能效模式（设置 → 通用，1~5 级下拉框）——各热点按等级自动降频，显著减少 CPU 占用：屏幕镜像/相机帧率按系数降低（fps // factor，最低 1fps）、按键 ADC 轮询 20Hz→1级约5Hz（manage_task）、各显示页面刷新间隔按系数放大（_power_wait：系统监控/网络流量/自定义显示/仪表盘/硬件详情/天气/行情/热搜/电池/跑马灯/静态页等）、设备刷新/显示墙/主控实时预览等 UI 定时器按系数放大、ping 后台线程按系数放大。放大系数：1级=4.0（最省，长期挂机推荐）/2级=3.0/3级=2.0/4级=1.5/5级=1.2（最接近均衡）。新增模块级辅助函数 _power_level/_power_factor/_power_active/_power_wait，多屏按设备配置隔离判断
+
+v5.6.0 (2026-08-19)
+- 修复：编译（Nuitka）生成的 exe 启动即崩溃（退出码 1，无日志）——主文件残留 `from PIL import ... ImageTk`，而 PIL.ImageTk 内部会 `import tkinter`；Nuitka 编译启用 PySide6 插件后会主动排除 tkinter，导致 exe 启动加载 PIL.ImageTk 时报 `ImportError: Module 'tkinter' was actively excluded from Nuitka compilation`。已从导入中移除 ImageTk（代码中无任何实际调用），py 调试与编译产物均恢复正常
+
+v5.5.0 (2026-08-18)
+- 修复：显示墙设置布局在程序运行期间被自动重置为推荐值（如 2行×1列 → 2行×2列）——最小化较久后某屏短暂掉线重连，屏数变化触发布局刷新：掉线时 spinbox 范围被 setRange 钳制，重连后读到的临时值不合法而落到推荐值（2 台屏按最接近方形推荐 2×2）。现新增 _wall_layout 状态（用户当前布局）与 spinbox 范围钳制解耦，掉线/重连期间保留用户布局，屏数足够后自动恢复；同时把 blockSignals 提前到 setRange 之前，避免钳制误触发保存
+
+v5.4.0 (2026-08-18)
+- 新增：配色方案编辑对话框友好化——已选颜色以色块列表展示（点击移除）、调色盘选色、常用色板点选、从其他配色方案点选添加颜色
+- 修复：新增配色方案在「设置 → 配色方案」管理页再次选择时预览/色块空白——管理页原来用全局 config_obj 读写自定义方案，daemon 在多屏间切换全局 config_obj 时会读到别的屏（无该自定义方案）→ 空白。现统一改用绑定设备配置 _cfg()，与监控设置区/主控页一致；监控设置区「存为新方案」改为锁定绑定屏配置
+
 v5.3.0 (2026-08-18)
 - 新增：所有设置持久化保存——窗口大小/位置/最大化状态与上次停留的第一层标签在退出时保存、启动自动恢复（config/MSU2_MINI_ui.json）；退出时强制保存显示墙设置
 
@@ -868,6 +886,7 @@ class ScreenDevice:
         self.gif_wait_time = 0.0
         self.last_refresh_time = 0
         self.sleep_event = threading.Event()
+        self._static_fp = None  # 静态页内容指纹（内容未变化时不重复渲染/发送）
         
         # --- 防烧屏 ---
         self.burn_offset_x = 0
@@ -1277,7 +1296,7 @@ def _process_ui_msg_queue():
         pass
     if _ui_root is not None:
         try:
-            QTimer.singleShot(100, _process_ui_msg_queue)
+            QTimer.singleShot(int(100 * _power_factor()), _process_ui_msg_queue)
         except Exception:
             pass
 
@@ -2833,7 +2852,7 @@ def show_gif():  # 显示GIF动图
     if config_obj.second_times != 0:
         if dev.second_pass < config_obj.second_times:
             dev.second_pass += 1
-            dev.sleep_event.wait(1)
+            _power_wait(dev, 1)
             return
         else:
             dev.second_pass = 0
@@ -2846,7 +2865,7 @@ def show_gif():  # 显示GIF动图
     else:
         dev.gif_wait_time += config_obj.photo_interval_var - elapse_time + config_obj.second_times
     if dev.gif_wait_time > 0:
-        dev.sleep_event.wait(dev.gif_wait_time)
+        _power_wait(dev, dev.gif_wait_time)
 
 
 def show_PC_state(FC, BC):  # 显示PC状态
@@ -2866,8 +2885,8 @@ def show_PC_state(FC, BC):  # 显示PC状态
             print("show_PC_state failed: %s" % recv)
             set_device_state(0)  # 接收出错
 
-    # CPU
-    CPU = round(psutil.cpu_percent(interval=0.5))
+    # CPU（interval=None 非阻塞采样，避免每次刷新阻塞0.5s；启动时已预热基准）
+    CPU = round(psutil.cpu_percent(interval=None))
     # mem
     mem = psutil.virtual_memory()
     RAM = round(mem.percent)
@@ -2961,7 +2980,7 @@ def show_PC_state(FC, BC):  # 显示PC状态
     dev.last_refresh_time = current_monoto_time
     dev.wait_time += 1 - seconds_elapsed
     if dev.wait_time > 0:
-        dev.sleep_event.wait(dev.wait_time)
+        _power_wait(dev, dev.wait_time)
 
 
 def show_Photo():  # 显示照片
@@ -2972,7 +2991,7 @@ def show_Photo():  # 显示照片
         LCD_ADD(0, 0, SHOW_WIDTH, SHOW_HEIGHT)
 
     LCD_Photo(3926)  # 放置背景
-    dev.sleep_event.wait(1)  # 1秒刷新一次
+    _power_wait(dev, 1)  # 1秒刷新一次（五级能效下2秒）
 
 
 def _update_preview_clock(hour, minute, color_tuple):
@@ -3053,7 +3072,7 @@ def show_PC_time(FC):
     _update_preview_clock(time_h, time_m, FC)
 
     if time_m != 59:
-        dev.sleep_event.wait(1)
+        _power_wait(dev, 1)
     else:
         dev.sleep_event.wait(1 - current_time.microsecond / 1000000.0)
 
@@ -3272,12 +3291,12 @@ def screen_shot_task(device=None):
         if dev.device_state != 1 or (cfg.state_machine != SCREEN_PAGE_ID
                                  and cfg.state_machine != CAMERA_VIDEO_ID):
             if not dev.screen_shot_queue.empty():
-                time.sleep(0.5)
+                time.sleep(0.5 * _power_factor(dev))
                 clear_queue(dev.screen_shot_queue)
-            time.sleep(0.5)
+            time.sleep(0.5 * _power_factor(dev))
             continue
         if dev.screen_shot_queue.full():
-            time.sleep(1.0 / cfg.fps_var)
+            time.sleep(_power_factor(dev) / cfg.fps_var)
 
         try:
             if cfg.state_machine == CAMERA_VIDEO_ID:
@@ -3286,7 +3305,7 @@ def screen_shot_task(device=None):
                     rgb888 = get_draw_text("请选择相机…")
                     image = Win32_Image(rgb=rgb888, size=(dev.LCD_MAX_X, dev.LCD_MAX_Y))
                     dev.screen_shot_queue.put((image, {"width": dev.LCD_MAX_X, "height": dev.LCD_MAX_Y}), timeout=1)
-                    time.sleep(0.5)
+                    time.sleep(0.5 * _power_factor(dev))
                     continue
 
                 rgb888 = get_draw_text("打开中…")
@@ -3314,7 +3333,7 @@ def screen_shot_task(device=None):
                                 time.sleep(1)
                                 raise Exception("get CAP_PROP_HUE failed")
                             if dev.screen_shot_queue.full():
-                                time.sleep(1.0 / cfg.fps_var)
+                                time.sleep(_power_factor(dev) / cfg.fps_var)
                             suc, frame = cap.read()
                             if not suc:
                                 raise Exception("cap.read() failed")
@@ -3326,7 +3345,7 @@ def screen_shot_task(device=None):
                             try:
                                 dev.screen_shot_queue.put((image, {"width": width, "height": height}), timeout=1)
                             except queue.Full:
-                                time.sleep(1.0 / cfg.fps_var)
+                                time.sleep(_power_factor(dev) / cfg.fps_var)
                                 continue
                             fps_control(dev)
                     else:
@@ -3362,13 +3381,13 @@ def screen_shot_task(device=None):
                 sct_img = _thread_mss.grab(cropped_monitor)
                 dev.screen_shot_queue.put((sct_img, cropped_monitor), timeout=1)
         except queue.Full:
-            time.sleep(1.0 / cfg.fps_var)
+            time.sleep(_power_factor(dev) / cfg.fps_var)
             continue
         except Exception as e:
             print("获取图像失败 %s" % traceback.format_exc())
             image = Win32_Image(rgb=bytes(6), size=(2, 1))
             dev.screen_shot_queue.put((image, {"width": 2, "height": 1}), timeout=1)
-            time.sleep(0.5)
+            time.sleep(0.5 * _power_factor(dev))
             continue
 
         fps_control(dev)
@@ -3377,12 +3396,76 @@ def screen_shot_task(device=None):
     print("Stop screenshot")
 
 
+def _power_level(dev=None):
+    """能效等级 0~5：0=均衡(未启用)，1~5=五级能效（1级最省资源，适合长期挂机；5级最接近均衡）。
+    dev 省略时取当前线程活跃设备，避免多屏串用全局 config_obj。
+    """
+    try:
+        if dev is None:
+            dev = get_current_device()
+        cfg = dev.config if (dev is not None and dev.config is not None) else config_obj
+        lv = int(getattr(cfg, "power_mode", 0) or 0)
+        return 0 if lv <= 0 else (5 if lv >= 5 else lv)
+    except Exception:
+        return 0
+
+
+def _power_factor(dev=None):
+    """能效等级的刷新/轮询放大系数（越大越省资源）。
+    0=1.0（均衡）；1级=4.0（最省）；2级=3.0；3级=2.0；4级=1.5；5级=1.2（最接近均衡）。
+    """
+    return {0: 1.0, 1: 4.0, 2: 3.0, 3: 2.0, 4: 1.5, 5: 1.2}.get(_power_level(dev), 1.0)
+
+
+def _power_active(dev=None):
+    """是否启用能效模式（power_mode>=1）。dev 省略时取当前线程活跃设备。"""
+    return _power_level(dev) >= 1
+
+
+def _apply_process_priority():
+    """能效模式启用时把整个进程设为低于正常的优先级（BELOW_NORMAL_PRIORITY_CLASS），
+    让系统调度优先保证前台程序响应，挂机时“感知占用”更低；
+    均衡模式恢复普通优先级。失败静默忽略（无权限等场景）。"""
+    try:
+        import ctypes
+        from ctypes import wintypes
+        kernel32 = ctypes.windll.kernel32
+        # 关键：GetCurrentProcess 返回 64 位伪句柄 ((HANDLE)-1)，必须设置 restype/argtypes，
+        # 否则默认按 32 位 c_int 截断 → SetPriorityClass 收到无效句柄返回 0（优先级设置无效）
+        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+        kernel32.SetPriorityClass.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        handle = kernel32.GetCurrentProcess()
+        if _power_active():
+            # 0x00004000 = BELOW_NORMAL_PRIORITY_CLASS（不用 IDLE，避免串口/渲染时序被过度抢占）
+            kernel32.SetPriorityClass(handle, 0x00004000)
+        else:
+            # 0x00000020 = NORMAL_PRIORITY_CLASS
+            kernel32.SetPriorityClass(handle, 0x00000020)
+    except Exception:
+        pass
+
+
+def _power_wait(dev, base):
+    """按能效等级把刷新/等待间隔放大 _power_factor 倍（1级最省资源），均衡模式返回原间隔。
+    base<=0 时直接返回不等待。
+    """
+    try:
+        base = float(base) * _power_factor(dev)
+        if base > 0:
+            dev.sleep_event.wait(base)
+    except Exception:
+        if base > 0:
+            time.sleep(base)
+
+
 def fps_control(device=None):
     if device is None:
         device = get_current_device()
     dev = device
     # 多屏隔离：fps 用本设备配置，避免全局 config_obj 被 daemon 切换导致节奏错乱
     fps = max(1, getattr(dev.config if dev.config is not None else config_obj, "fps_var", 30))
+    if _power_active(dev):  # 能效模式：镜像/相机帧率按能效等级降低（最低1fps）
+        fps = max(1, int(fps // _power_factor(dev)))
     current_monoto_time = time.monotonic()
     elapse_time = current_monoto_time - dev.screenshot_last_limit_time
     if elapse_time > 5:
@@ -3411,14 +3494,14 @@ def screen_process_task(device=None):
         if dev.device_state != 1 or (cfg.state_machine != SCREEN_PAGE_ID
                                  and cfg.state_machine != CAMERA_VIDEO_ID):
             if not dev.screen_process_queue.empty():
-                time.sleep(0.5)
+                time.sleep(0.5 * _power_factor(dev))
                 clear_queue(dev.screen_process_queue)
-            time.sleep(0.5)
+            time.sleep(0.5 * _power_factor(dev))
             continue
 
         try:
             if dev.screen_process_queue.full():
-                time.sleep(1.0 / cfg.fps_var)
+                time.sleep(_power_factor(dev) / cfg.fps_var)
 
             frame_gen = dev.screen_frame_generation
 
@@ -3635,7 +3718,7 @@ def show_PC_Screen():  # 显示屏幕镜像 / 相机视频
                 return
 
         try:
-            hexstream = dev.screen_process_queue.get(timeout=0.3)
+            hexstream = dev.screen_process_queue.get(timeout=0.3 * _power_factor(dev))
         except queue.Empty:
             return
         # 防御：发送跟不上时丢弃堆积的旧帧，只发送最新一帧，避免延迟累积和旧帧混入
@@ -4024,18 +4107,25 @@ _API_CONFIG_WRITABLE = {
     "page_cycle_enable": "int", "page_cycle_interval": "int", "screen_off_timeout": "int",
     "anti_burn": "int", "preview_enabled": "int", "zoom_enable": "int", "zoom_scale": "int",
     "marquee_text": "str", "marquee_font": "str", "marquee_font_size": "int",
-    "marquee_color": "str", "marquee_speed": "int",
+    "marquee_color": "str", "marquee_speed": "int", "marquee_bg_color": "str",
     "ping_host": "str", "timer_minutes": "int", "weather_city": "str", "crypto_symbols": "str",
     "proc_count": "int", "clock_zones": "str", "hwdetail_max": "int",
     "hotsearch_interval": "int", "hotsearch_total": "int", "hotsearch_count": "int",
     "text_color_r": "int", "text_color_g": "int", "text_color_b": "int",
     "netspeed_mode": "str", "netspeed_up_color": "str", "netspeed_down_color": "str",
-    "netspeed_bar1_color": "str", "netspeed_bar2_color": "str",
+    "netspeed_bar1_color": "str", "netspeed_bar2_color": "str", "netspeed_bg_color": "str",
     "diskio_mode": "str", "diskio_show_title": "int", "diskio_font_auto": "int",
     "diskio_font_size": "int", "diskio_title_color": "str", "diskio_read_color": "str",
     "diskio_write_color": "str", "diskio_label_color": "str", "diskio_value_auto": "int",
     "diskio_value_font_size": "int", "diskio_bar1_color": "str", "diskio_bar2_color": "str",
-    "diskio_value_read_color": "str", "diskio_value_write_color": "str",
+    "diskio_value_read_color": "str", "diskio_value_write_color": "str", "diskio_bg_color": "str",
+    "weather_bg_color": "str", "weather_text_color": "str", "crypto_text_color": "str",
+    "hotsearch_bg_color": "str", "hotsearch_text_color": "str",
+    "time_bg_color": "str", "timer_text_color": "str", "clock_text_color": "str",
+    "memo_bg_color": "str", "memo_text_color": "str", "todo_text_color": "str",
+    "proc_bg_color": "str", "proc_text_color": "str",
+    "hwdetail_bg_color": "str", "hwdetail_text_color": "str",
+    "gauge_bg_color": "str", "gauge_label_color": "str",
 }
 
 
@@ -6078,8 +6168,15 @@ def stop_api_extra():
         _api_zmq_thread = None
 
 
+def _api_enabled_protocols():
+    """当前启用的附加接入协议集合（不含 HTTP/WS，它们随 api_enable 总开关）。
+    返回小写集合，如 {"tcp","hotfolder"}。"""
+    raw = str(getattr(config_obj, "api_protocols", "tcp,hotfolder") or "tcp,hotfolder")
+    return {p.strip().lower() for p in raw.split(",") if p.strip()}
+
+
 def start_api_server():
-    """启动本地全部 API 接入（HTTP + WebSocket + TCP + UDP + 热文件夹），仅监听 127.0.0.1"""
+    """启动本地 API 接入（HTTP + WebSocket 随 api_enable 总开关；附加协议按 api_protocols 开关），仅监听 127.0.0.1"""
     global _api_server
     if _api_server is not None:
         return
@@ -6094,12 +6191,19 @@ def start_api_server():
         t = threading.Thread(target=server.serve_forever, daemon=True)
         t.start()
         print("API 投屏服务器已启动: http://127.0.0.1:%d" % port)
-        start_api_tcp()        # TCP Socket（JSON 行协议）
-        start_api_udp()        # UDP（JSON 数据报）
-        start_api_hotfolder()  # 文件/热文件夹投屏
-        start_api_pipe()       # Windows 命名管道
-        start_api_unix()       # Unix Domain Socket
-        start_api_zmq()        # ZeroMQ（需 pyzmq）
+        _protocols = _api_enabled_protocols()
+        if "tcp" in _protocols:
+            start_api_tcp()        # TCP Socket（JSON 行协议）
+        if "udp" in _protocols:
+            start_api_udp()        # UDP（JSON 数据报）
+        if "hotfolder" in _protocols:
+            start_api_hotfolder()  # 文件/热文件夹投屏
+        if "pipe" in _protocols:
+            start_api_pipe()       # Windows 命名管道
+        if "unix" in _protocols:
+            start_api_unix()       # Unix Domain Socket
+        if "zmq" in _protocols:
+            start_api_zmq()        # ZeroMQ（需 pyzmq）
         _check_openapi_sync()  # 启动时校验端点与 JSON 文档同步性
         try:
             export_api_json()  # 生成 api_openapi.json 到程序目录，便于其他程序直接读取
@@ -6226,7 +6330,7 @@ def show_api():
     draw.text((4, 40), "等待外部程序接入...", fill=(180, 180, 180), font=small)
     rgb888 = np.asarray(img, dtype=np.uint32)
     _safe_send_rgb888(rgb888)
-    dev.sleep_event.wait(1)
+    _power_wait(dev, 1)
 
 
 def _render_two_line_bars(up_label, down_label, up_value, down_value,
@@ -6300,7 +6404,7 @@ def show_netspeed(up_text_color=(255, 128, 0), down_text_color=(0, 255, 255),
 
     dev.wait_time += 1 - seconds_elapsed
     if dev.wait_time > 0:
-        dev.sleep_event.wait(dev.wait_time)
+        _power_wait(dev, dev.wait_time)
 
 
 # 独立线程加载，忽略错误，以免错误影响到程序的其他功能
@@ -6450,9 +6554,10 @@ def show_custom_two_rows(text_color=(255, 128, 0), bar1_color=(235, 139, 139),
     dev = get_current_device()
     if dev is None: return
     current_monoto_time = time.monotonic()
+    _ensure_hardware_monitor_async()  # 首次进入需硬件传感器的页面时后台加载
     if hardware_monitor_manager is None or hardware_monitor_manager == 1:
         draw_text("加载中…")
-        dev.sleep_event.wait(0.5)
+        _power_wait(dev, 0.5)
         return
 
     if dev.state_change == 1:
@@ -6521,7 +6626,7 @@ def show_custom_two_rows(text_color=(255, 128, 0), bar1_color=(235, 139, 139),
 
     dev.wait_time += 1 - seconds_elapsed
     if dev.wait_time > 0:
-        dev.sleep_event.wait(dev.wait_time)
+        _power_wait(dev, dev.wait_time)
 
 
 def get_full_custom_im(update_sensors=True):
@@ -6609,9 +6714,10 @@ def show_full_custom():
     dev = get_current_device()
     if dev is None: return
     current_monoto_time = time.monotonic()
+    _ensure_hardware_monitor_async()  # 首次进入需硬件传感器的页面时后台加载
     if hardware_monitor_manager is None or hardware_monitor_manager == 1:
         draw_text("加载中…")
-        dev.sleep_event.wait(0.5)
+        _power_wait(dev, 0.5)
         return
 
     if dev.state_change == 1:
@@ -6629,19 +6735,32 @@ def show_full_custom():
 
     dev.wait_time += 1 - seconds_elapsed
     if dev.wait_time > 0:
-        dev.sleep_event.wait(dev.wait_time)
+        _power_wait(dev, dev.wait_time)
 
 
 # UI批量同步控件（切换设备刷新设置页/主控页）时抑制落盘，刷新完统一保存一次，
 # 避免几十个控件的 trace 回调各自触发 save_config 造成切换卡顿
 _ui_batch_sync = False
 
+# 待写盘的目标文件与配置快照：多屏下 daemon 渲染线程会切换全局 config_file/config_obj，
+# 写盘必须用「本次修改时」记录的快照，否则设置可能被写到别的屏的文件/内容，
+# 造成"下次启动设置丢失/串屏"（持久化必须落到修改者自己的配置文件）
+_pending_config_file = None
+_pending_config_snapshot = None
+
 
 # now 是否立即保存
 def save_config(now=False):
-    global last_config_save_time, save_thread, config_event
+    global last_config_save_time, save_thread, config_event, _pending_config_file, _pending_config_snapshot
     if _ui_batch_sync:
         return
+    # 快照本次修改对应的目标文件与配置内容（防 5 秒延迟写盘期间 daemon/UI 切换 config_file/config_obj）
+    try:
+        _pending_config_file = config_file
+        _pending_config_snapshot = copy.deepcopy(config_obj.__dict__)
+    except Exception:
+        _pending_config_file = config_file
+        _pending_config_snapshot = dict(config_obj.__dict__)
     last_config_save_time = time.monotonic()
     if now:
         last_config_save_time -= 5
@@ -6653,7 +6772,7 @@ def save_config(now=False):
 
 
 def save_config_thread():
-    global config_obj, config_file, last_config_save_time, config_event
+    global last_config_save_time, config_event, _pending_config_file, _pending_config_snapshot
     sleep_time = last_config_save_time - time.monotonic() + 5  # 5秒没有任何修改再保存
     while sleep_time > 0:
         if config_event.is_set():
@@ -6662,11 +6781,17 @@ def save_config_thread():
         sleep_time = last_config_save_time - time.monotonic() + 5
 
     try:
-        # 原子写入：先写临时文件再替换，即使写入中途程序崩溃也不会留下损坏的配置JSON
-        tmp_file = config_file + ".tmp"
+        # 原子写入：先写临时文件再替换，即使写入中途程序崩溃也不会留下损坏的配置JSON。
+        # 用本次修改时的目标文件与配置快照（而非全局 config_file/config_obj），
+        # 避免 daemon 切换全局配置后把设置写到别的屏的文件
+        fname = _pending_config_file
+        data = _pending_config_snapshot
+        if not fname or data is None:
+            return
+        tmp_file = fname + ".tmp"
         with open(tmp_file, "w", encoding="utf-8") as f:
-            json.dump(config_obj.__dict__, f)
-        os.replace(tmp_file, config_file)
+            json.dump(data, f)
+        os.replace(tmp_file, fname)
     except Exception as e:
         print("写入配置失败：%s" % e)
 
@@ -6676,7 +6801,11 @@ def load_config():
     config_obj = sys_config()
     try:
         with open(config_file, "r", encoding="utf-8") as f:
-            config_obj.__dict__.update(json.load(f))
+            data = json.load(f)
+        # 旧配置升级迁移：配置里没有 api_protocols 键 → 默认全部附加协议开启（保持旧行为，用户可在设置里按需关闭省资源）
+        if "api_protocols" not in data:
+            config_obj.api_protocols = "tcp,udp,hotfolder,pipe,unix,zmq"
+        config_obj.__dict__.update(data)
     except FileNotFoundError:
         save_config()
     except Exception as e:
@@ -6779,7 +6908,11 @@ def load_device_config(device, serial=""):
     if os.path.exists(fname):
         try:
             with open(fname, "r", encoding="utf-8") as f:
-                cfg.__dict__.update(json.load(f))
+                data = json.load(f)
+            # 旧设备配置升级：无 api_protocols 键 → 默认全部附加协议开启（与主配置迁移一致）
+            if "api_protocols" not in data:
+                cfg.api_protocols = "tcp,udp,hotfolder,pipe,unix,zmq"
+            cfg.__dict__.update(data)
             loaded = True
         except Exception as e:
             print("读取设备配置失败：%s" % e)
@@ -7269,6 +7402,7 @@ class sys_config(object):
         self.shrink_type = 1
         self.anti_burn = 1  # 防烧屏：0=关闭, 1=开启
         self.preview_enabled = 1  # 实时预览：0=关闭, 1=开启
+        self.power_mode = 0  # 能效模式：0=均衡(默认), 1~5=五级能效（1级最省资源，适合长期挂机；5级最接近均衡）
         self.custom_selected_names = [""] * 2
         self.custom_selected_displayname = [""] * 2
         self.custom_selected_names_tech = [""] * 6
@@ -7364,6 +7498,28 @@ class sys_config(object):
         self.netspeed_down_color = "#00ffff"  # 网络流量：下载文字颜色
         self.netspeed_bar1_color = "#eb8b8b"  # 网络流量：上传柱状图颜色
         self.netspeed_bar2_color = "#92d3d9"  # 网络流量：下载柱状图颜色
+        # --- 页面内容：背景/字体颜色（可配配色方案/存为新方案） ---
+        self.marquee_bg_color = "#000000"     # 跑马灯背景颜色
+        self.weather_bg_color = "#000000"     # 天气/行情背景颜色
+        self.weather_text_color = "#ffffff"   # 天气字体颜色
+        self.crypto_text_color = "#ffc800"    # 行情字体颜色
+        self.hotsearch_bg_color = "#000000"   # 热搜背景颜色
+        self.hotsearch_text_color = "#ffffff" # 热搜字体颜色
+        self.time_bg_color = "#000000"        # 番茄钟/世界时钟背景颜色
+        self.timer_text_color = "#ffffff"     # 番茄钟字体颜色
+        self.clock_text_color = "#ffffff"     # 世界时钟字体颜色
+        self.memo_bg_color = "#000000"        # 纪念日/待办背景颜色
+        self.memo_text_color = "#ffffff"      # 纪念日字体颜色
+        self.todo_text_color = "#ffffff"      # 待办字体颜色
+        # --- 监控显示：背景/字体颜色（可配配色方案/存为新方案） ---
+        self.proc_bg_color = "#000000"        # 进程背景颜色
+        self.proc_text_color = "#ffffff"      # 进程字体颜色
+        self.hwdetail_bg_color = "#000000"    # 硬件详情背景颜色
+        self.hwdetail_text_color = "#ffffff"  # 硬件详情字体颜色
+        self.gauge_bg_color = "#000000"       # 仪表盘背景颜色
+        self.gauge_label_color = "#ffffff"    # 仪表盘标签文字颜色
+        self.diskio_bg_color = "#000000"      # 磁盘读写背景颜色
+        self.netspeed_bg_color = "#000000"    # 网络流量背景颜色
         self.guide_last_page = ""    # 设置"按页面"导航上次选择的页面
         self.custom_color_schemes = {}  # 用户自定义配色方案 {名称: [颜色hex列表]}
         # --- API 投屏接入 ---
@@ -7371,6 +7527,7 @@ class sys_config(object):
         self.api_port = 8632       # API 服务器端口
         self.api_token = ""        # API 访问令牌（可选，空=不校验）
         self.api_overlay = 0       # 强制投屏覆盖：0=需选择API投屏页 1=任何页面可投屏(结束自动返回原页面)
+        self.api_protocols = "tcp,hotfolder"  # 附加接入协议（逗号分隔：tcp/udp/hotfolder/pipe/unix/zmq）；http/ws 随 api_enable 总开关
         self.screen_id_timeout = 5 # 屏幕序号检测显示时长（秒）
 
 
@@ -7569,7 +7726,7 @@ def UI_Page():  # PySide6 (Qt) 主界面
 
     global _ui_root
     _ui_root = window
-    QTimer.singleShot(100, _process_ui_msg_queue)
+    QTimer.singleShot(int(100 * _power_factor()), _process_ui_msg_queue)
 
     try:
         ico_path = "resource/icon.ico" if scale_factor >= 200 else "resource/icon_small.ico"
@@ -7696,6 +7853,7 @@ def UI_Page():  # PySide6 (Qt) 主界面
     def _show_custom_dialog():
         """自定义显示编辑窗口（PySide6）：显示多项数值 / 显示两项图表 + 模板编辑 + 实时预览"""
         global config_obj
+        _ensure_hardware_monitor_async()  # 首次打开时后台加载，未就绪则提示等待
         if hardware_monitor_manager == 1:
             insert_text_message("Libre Hardware Monitor 加载失败，自定义内容功能不可用")
             return
@@ -8321,6 +8479,24 @@ def UI_Page():  # PySide6 (Qt) 主界面
         color_swatch.setFixedSize(40, 20)
         color_swatch.setStyleSheet("border:1px solid gray; background:#808080;")
         color_head.addWidget(color_swatch)
+
+        # 色块下拉：选配色方案后可从该方案色板选色应用到文字颜色（RGB 滑块）
+        def _apply_main_color_swatch(col):
+            try:
+                _lock_screen()
+                config_obj.text_color_r = int(col[1:3], 16)
+                config_obj.text_color_g = int(col[3:5], 16)
+                config_obj.text_color_b = int(col[5:7], 16)
+                save_config()
+                color_swatch.setStyleSheet("border:1px solid gray; background:%s;" % col)
+                for k, sl in sliders.items():
+                    sl.blockSignals(True)
+                    sl.setValue(getattr(config_obj, "text_color_" + k))
+                    sl.blockSignals(False)
+            except Exception:
+                pass
+
+        color_head.addWidget(_make_swatch_button(_apply_main_color_swatch))
         color_head.addStretch(1)
 
         color_frame = QWidget()
@@ -8419,6 +8595,54 @@ def UI_Page():  # PySide6 (Qt) 主界面
 
         color_combo.currentIndexChanged.connect(lambda _: _apply_color_preset())
         grid.addWidget(color_combo, 1, 3)
+
+        # ===== 文字颜色配色方案（row2，col3）：选方案供色块选色 + 存为新方案 =====
+        main_scheme_box = QWidget()
+        msl = QVBoxLayout(main_scheme_box)
+        msl.setContentsMargins(0, 0, 0, 0)
+        msl.setSpacing(2)
+        main_scheme_row = QHBoxLayout()
+        msl.addLayout(main_scheme_row)
+        main_scheme_row.addWidget(QLabel("方案:"))
+        main_scheme_combo = QComboBox()
+        main_scheme_combo.setMinimumWidth(120)
+        main_scheme_row.addWidget(main_scheme_combo)
+        main_scheme_row.addStretch(1)
+        main_save_btn = QPushButton("存为新方案")
+        main_save_btn.setFixedWidth(100)
+        msl.addWidget(main_save_btn)
+        grid.addWidget(main_scheme_box, 2, 3)
+
+        main_scheme_combo.addItems(list(get_all_color_schemes(_cfg()).keys()))
+        _scheme_combos.append((main_scheme_combo, dev))
+
+        def _on_main_scheme_select(_i=0):
+            schemes = get_all_color_schemes(_cfg())
+            colors = schemes.get(main_scheme_combo.currentText(), [])
+            _current_scheme_colors[:] = colors
+            _refresh_scheme_swatches()
+
+        main_scheme_combo.currentIndexChanged.connect(_on_main_scheme_select)
+
+        def _save_main_as_scheme():
+            try:
+                cc = _cfg()
+                col = "#%02x%02x%02x" % (int(cc.text_color_r), int(cc.text_color_g), int(cc.text_color_b))
+                parsed = parse_color_list(",".join([col]))
+                res = _scheme_dialog("保存当前配色为新方案", colors_text=",".join(parsed), cfg=_cfg())
+                if not res or not res.get("name"):
+                    return
+                _lock_screen()
+                cfg = _cfg()
+                cfg.custom_color_schemes = cfg.custom_color_schemes or {}
+                cfg.custom_color_schemes[res["name"]] = parsed
+                save_config()
+                _refresh_all_schemes()
+                insert_text_message("已保存新配色方案：%s" % res["name"])
+            except Exception:
+                pass
+
+        main_save_btn.clicked.connect(_save_main_as_scheme)
 
         # ===== 烧写区（row1-4，col0-2） =====
         burn_labels = {1: None, 2: None, 3: None, 4: None}
@@ -8656,7 +8880,8 @@ def UI_Page():  # PySide6 (Qt) 主界面
         grid.addWidget(detect_btn, 8, 4)
 
         # ===== 实时预览（row9-10，col0-5） =====
-        grid.addWidget(QLabel("实时预览:"), 9, 0, 1, 6)
+        preview_title = QLabel("实时预览:")
+        grid.addWidget(preview_title, 9, 0, 1, 6)
         preview_w = 480
         preview_h = int(preview_w * SHOW_HEIGHT / SHOW_WIDTH)
         preview_label = QLabel()
@@ -8679,6 +8904,7 @@ def UI_Page():  # PySide6 (Qt) 主界面
             'interval_var': interval_edit,
             'fps_var': fps_edit,
             'label3': Label3, 'label4': Label4, 'label5': Label5, 'label6': Label6,
+            'preview_title': preview_title,
             'preview_label': preview_label,
             '_preview_img': None,
         }
@@ -8710,10 +8936,24 @@ def UI_Page():  # PySide6 (Qt) 主界面
                         ctx['_preview_img'] = pix
                 except Exception:
                     pass
-            QTimer.singleShot(500, _update_preview)  # 200→500ms 降频，减轻主线程负担
+            QTimer.singleShot(int(500 * _power_factor()), _update_preview)  # 200→500ms 降频；能效模式按等级再降（1级2000ms），减轻主线程负担
 
         ctx['_update_preview'] = _update_preview
         _update_preview()
+
+        def _apply_preview_visibility():
+            """按 preview_enabled 显示/隐藏实时预览标题与预览图控件（关闭预览时整块隐藏）"""
+            d = ctx['dev']
+            cc = d.config if d.config is not None else config_obj
+            show = bool(getattr(cc, "preview_enabled", 1))
+            try:
+                ctx['preview_title'].setVisible(show)
+                ctx['preview_label'].setVisible(show)
+            except Exception:
+                pass
+
+        ctx['_apply_preview_visibility'] = _apply_preview_visibility
+        _apply_preview_visibility()
 
         # 初始化当前屏的页面/方向显示
         try:
@@ -8767,9 +9007,49 @@ def UI_Page():  # PySide6 (Qt) 主界面
             _lock()
             config_obj.preview_enabled = 1 if preview_cb.isChecked() else 0
             save_config()
+            # 同步主控页实时预览控件显隐（关闭预览时整块隐藏）
+            try:
+                c = _main_ctxs.get(dev.index)
+                if c is not None and c.get('_apply_preview_visibility'):
+                    c['_apply_preview_visibility']()
+            except Exception:
+                pass
 
         preview_cb.toggled.connect(_chg_preview)
         common_lay.addWidget(preview_cb)
+
+        show_info_cb = QCheckBox("显示信息框（底部消息记录，关闭后隐藏）")
+        show_info_cb.setChecked(not Text1.isHidden())
+
+        def _chg_show_info():
+            vis = show_info_cb.isChecked()
+            info_lbl.setVisible(vis)
+            Text1.setVisible(vis)
+            try:
+                _ui_save_state()
+            except Exception:
+                pass
+
+        show_info_cb.toggled.connect(_chg_show_info)
+        common_lay.addWidget(show_info_cb)
+
+        power_row = QHBoxLayout()
+        common_lay.addLayout(power_row)
+        power_row.addWidget(QLabel("能效模式（省资源，长期挂机推荐1级）:"))
+        power_combo = QComboBox()
+        power_combo.addItems(["均衡（默认）", "1级能效（最省资源）", "2级能效", "3级能效", "4级能效", "5级能效"])
+        power_combo.setCurrentIndex(min(5, max(0, int(getattr(_cfg(), "power_mode", 0) or 0))))
+        power_combo.setMinimumWidth(200)
+        power_row.addWidget(power_combo)
+        power_row.addStretch(1)
+
+        def _chg_power(idx=-1):
+            _lock()
+            config_obj.power_mode = power_combo.currentIndex()
+            save_config()
+            _apply_process_priority()  # 能效等级变化时同步进程优先级
+
+        power_combo.currentIndexChanged.connect(_chg_power)
 
         auto_start_cb = QCheckBox("开机自启动（随Windows启动）")
         auto_start_cb.setChecked(bool(getattr(_cfg(), "auto_start", 0)))
@@ -8935,6 +9215,24 @@ def UI_Page():  # PySide6 (Qt) 主界面
         overlay_cb.setChecked(bool(getattr(_cfg(), "api_overlay", 0)))
         api_lay.addWidget(overlay_cb)
 
+        # 附加接入协议开关（关闭可省内存/线程；HTTP+WebSocket 随上方总开关常驻）
+        api_lay.addWidget(QLabel("附加接入协议（按需开启，关闭可省内存/线程）:"))
+        _proto_items = [
+            ("tcp", "TCP Socket（端口+1，JSON 行，推荐常驻）"),
+            ("hotfolder", "热文件夹（放图片/文本即投屏，推荐常驻）"),
+            ("udp", "UDP（端口+2，JSON 数据报）"),
+            ("pipe", "Windows 命名管道（需 pywin32）"),
+            ("unix", "Unix Domain Socket（Windows 支持有限）"),
+            ("zmq", "ZeroMQ（端口+3，需 pyzmq）"),
+        ]
+        _proto_cbs = {}
+        cur_protos = {p.strip().lower() for p in str(getattr(_cfg(), "api_protocols", "tcp,hotfolder") or "").split(",") if p.strip()}
+        for _key, _label in _proto_items:
+            cbx = QCheckBox(_label)
+            cbx.setChecked(_key in cur_protos)
+            _proto_cbs[_key] = cbx
+            api_lay.addWidget(cbx)
+
         def _restart_api():
             _lock()
             config_obj.api_enable = 1 if api_enable_cb.isChecked() else 0
@@ -8944,6 +9242,7 @@ def UI_Page():  # PySide6 (Qt) 主界面
                 config_obj.api_port = 8632
             config_obj.api_token = api_token_edit.text().strip()
             config_obj.api_overlay = 1 if overlay_cb.isChecked() else 0
+            config_obj.api_protocols = ",".join(k for k, cbx in _proto_cbs.items() if cbx.isChecked())
             save_config()
             try:
                 stop_api_server()
@@ -9024,7 +9323,16 @@ def UI_Page():  # PySide6 (Qt) 主界面
         pick_btn = QPushButton("调色板")
         pick_btn.clicked.connect(_pick_marquee_color)
         row2.addWidget(pick_btn)
+
+        # 色块下拉：选配色方案后可从该方案色板选色
+        def _apply_marquee_swatch(col):
+            marquee_color.setText(col)
+            _save_marquee()
+
+        row2.addWidget(_make_swatch_button(_apply_marquee_swatch))
         row2.addStretch(1)
+        # 背景颜色行（可配色方案）
+        marquee_bg_field = _make_color_row(ml, "背景颜色:", "marquee_bg_color", dev, "#000000")
 
         def _save_marquee():
             _lock()
@@ -9044,6 +9352,8 @@ def UI_Page():  # PySide6 (Qt) 主界面
         marquee_size.editingFinished.connect(_save_marquee)
         marquee_speed.editingFinished.connect(_save_marquee)
         marquee_color.editingFinished.connect(_save_marquee)
+        # 配色方案行（支持混搭配色 + 存为新方案）
+        _make_scheme_row(ml, [marquee_bg_field, ("字体颜色", marquee_color)], dev)
         ml.addStretch(1)
 
         # ---- 天气与行情 ----
@@ -9072,6 +9382,12 @@ def UI_Page():  # PySide6 (Qt) 主界面
         _entry_row("行情交易对:", "crypto_symbols", 24, "BTCUSDT,ETHUSDT")
         _entry_row("延迟测试目标:", "ping_host", 16, "223.5.5.5")
         nl.addWidget(QLabel("支持中文城市名，如 北京 或 Beijing"))
+        weather_fields = [
+            _make_color_row(nl, "背景颜色:", "weather_bg_color", dev, "#000000"),
+            _make_color_row(nl, "天气字体颜色:", "weather_text_color", dev, "#ffffff"),
+            _make_color_row(nl, "行情字体颜色:", "crypto_text_color", dev, "#ffc800"),
+        ]
+        _make_scheme_row(nl, weather_fields, dev)
         nl.addStretch(1)
 
         # ---- 热搜 ----
@@ -9126,6 +9442,11 @@ def UI_Page():  # PySide6 (Qt) 主界面
         _spin_row("翻页间隔(秒):", "hotsearch_page_interval", 3)
         _cb_row("自动刷新", "hotsearch_auto_refresh")
         _spin_row("刷新间隔(秒):", "hotsearch_interval", 60)
+        hotsearch_fields = [
+            _make_color_row(hl, "背景颜色:", "hotsearch_bg_color", dev, "#000000"),
+            _make_color_row(hl, "字体颜色:", "hotsearch_text_color", dev, "#ffffff"),
+        ]
+        _make_scheme_row(hl, hotsearch_fields, dev)
         hl.addStretch(1)
 
         # ---- 时间 ----
@@ -9160,6 +9481,12 @@ def UI_Page():  # PySide6 (Qt) 主界面
 
         zones_edit.editingFinished.connect(_save_zones)
         tl.addWidget(QLabel("例：北京|8,伦敦|0,纽约|-5,东京|9"))
+        time_fields = [
+            _make_color_row(tl, "背景颜色:", "time_bg_color", dev, "#000000"),
+            _make_color_row(tl, "番茄钟字体颜色:", "timer_text_color", dev, "#ffffff"),
+            _make_color_row(tl, "世界时钟字体颜色:", "clock_text_color", dev, "#ffffff"),
+        ]
+        _make_scheme_row(tl, time_fields, dev)
         tl.addStretch(1)
 
         # ---- 纪念日/待办 ----
@@ -9183,6 +9510,12 @@ def UI_Page():  # PySide6 (Qt) 主界面
 
         memo_edit.textChanged.connect(_save_lists)
         todo_edit.textChanged.connect(_save_lists)
+        memo_fields = [
+            _make_color_row(ll, "背景颜色:", "memo_bg_color", dev, "#000000"),
+            _make_color_row(ll, "纪念日字体颜色:", "memo_text_color", dev, "#ffffff"),
+            _make_color_row(ll, "待办字体颜色:", "todo_text_color", dev, "#ffffff"),
+        ]
+        _make_scheme_row(ll, memo_fields, dev)
 
     def _build_mirror_settings(parent, dev):
         """设置 → 屏幕镜像（镜像局部放大跟随鼠标）"""
@@ -9224,6 +9557,354 @@ def UI_Page():  # PySide6 (Qt) 主界面
         zoom_edit.editingFinished.connect(_save_zoom)
         outer.addStretch(1)
 
+    # ==================== 配色方案：通用套用组件（各监控设置区共享，支持混搭配色） ====================
+    _scheme_combos = []          # 所有"配色方案"下拉 [(combo, dev)]，自定义方案变化后统一刷新
+    _scheme_swatch_buttons = []  # 所有"色块选择按钮" [(QToolButton, apply_cb)]
+    _current_scheme_colors = []  # 当前选中方案的候选色（各色块下拉的菜单项）
+
+    def _is_dark_hex(h):
+        """判断颜色深浅，用于色块上文字选黑/白"""
+        try:
+            h = (h or "#ffffff").lstrip('#')
+            r, g, b = (int(h[i:i + 2], 16) for i in (0, 2, 4))
+            return (r * 299 + g * 587 + b * 114) / 1000 < 140
+        except Exception:
+            return False
+
+    def _scheme_dialog(title, name="", colors_text="", cfg=None):
+        """配色方案编辑/命名对话框（友好版）：
+        已选颜色以色块列表展示（点击色块移除）；通过调色盘、常用色板、或从其他配色方案点选添加。
+        返回 {'name':..,'colors':..}（colors 为逗号分隔 #rrggbb）或 None。"""
+        cfg = cfg or config_obj
+        dlg = QDialog(window)
+        dlg.setWindowTitle(title)
+        dlg.setModal(True)
+        dlg.resize(560, 560)
+        v = QVBoxLayout(dlg)
+        v.setSpacing(8)
+
+        v.addWidget(QLabel("方案名称:"))
+        name_edit = QLineEdit(name)
+        v.addWidget(name_edit)
+
+        def _color_icon(c, size=22):
+            pm = QPixmap(size, size)
+            pm.fill(QColor(c))
+            return QIcon(pm)
+
+        colors = list(parse_color_list(colors_text))  # 当前已选颜色
+
+        # ---------- 已选颜色区 ----------
+        sel_group = QGroupBox("已选颜色（点击色块可移除）")
+        gv = QVBoxLayout(sel_group)
+        sel_box = QWidget()
+        sel_grid = QGridLayout(sel_box)
+        sel_grid.setContentsMargins(0, 0, 0, 0)
+        sel_grid.setSpacing(4)
+        sel_scroll = QScrollArea()
+        sel_scroll.setWidgetResizable(True)
+        sel_scroll.setWidget(sel_box)
+        sel_scroll.setFixedHeight(110)
+        sel_scroll.setFrameShape(QFrame.StyledPanel)
+        gv.addWidget(sel_scroll)
+
+        op_row = QHBoxLayout()
+        gv.addLayout(op_row)
+        count_lab = QLabel("共 0 个颜色")
+        op_row.addWidget(count_lab)
+        op_row.addStretch(1)
+        pick_btn = QPushButton("调色盘选色...")
+        op_row.addWidget(pick_btn)
+        clear_btn = QPushButton("清空")
+        op_row.addWidget(clear_btn)
+        v.addWidget(sel_group)
+
+        def _rebuild_selected():
+            while sel_grid.count():
+                item = sel_grid.takeAt(0)
+                w = item.widget()
+                if w is not None:
+                    w.deleteLater()
+            count_lab.setText("共 %d 个颜色" % len(colors))
+            if not colors:
+                lab = QLabel("（暂无颜色，请在下方添加）")
+                lab.setStyleSheet("color:gray;")
+                sel_grid.addWidget(lab, 0, 0)
+                return
+            cols = 3
+            for i, c in enumerate(colors):
+                b = QPushButton(_color_icon(c), " %s " % c.upper())
+                b.setStyleSheet("QPushButton{text-align:left;padding:2px;} QPushButton:hover{background:#e8f0fe;}")
+                b.setToolTip("点击移除 %s" % c)
+                b.clicked.connect(lambda _=False, cc=c: _remove_color(cc))
+                sel_grid.addWidget(b, i // cols, i % cols)
+
+        def _remove_color(c):
+            if c in colors:
+                colors.remove(c)
+                _rebuild_selected()
+
+        def _add_color(c):
+            c = (c or "").strip().lower()
+            if c and not c.startswith("#"):
+                c = "#" + c
+            if c not in colors:
+                colors.append(c)
+                _rebuild_selected()
+
+        def _pick_color():
+            c = QColorDialog.getColor(QColor("#ffffff"), dlg, "选择颜色")
+            if c.isValid():
+                _add_color(c.name())
+
+        pick_btn.clicked.connect(lambda: _pick_color())
+        clear_btn.clicked.connect(lambda: (colors.clear(), _rebuild_selected()))
+
+        # ---------- 添加颜色区 ----------
+        add_group = QGroupBox("添加颜色")
+        av = QVBoxLayout(add_group)
+        av.addWidget(QLabel("常用色板（点击添加）："))
+        quick_box = QWidget()
+        quick_grid = QGridLayout(quick_box)
+        quick_grid.setContentsMargins(0, 0, 0, 0)
+        quick_grid.setSpacing(4)
+        quick_colors = [
+            "#ff0000", "#ff4500", "#ff8000", "#ffa500", "#ffd700", "#ffff00",
+            "#adff2f", "#00ff00", "#00fa9a", "#00ffff", "#00bfff", "#0080ff",
+            "#0000ff", "#7b68ee", "#8b00ff", "#ff00ff", "#ff1493", "#ff69b4",
+            "#ffffff", "#dddddd", "#aaaaaa", "#777777", "#444444", "#000000",
+        ]
+        for i, c in enumerate(quick_colors):
+            b = QPushButton(_color_icon(c), "")
+            b.setFixedSize(26, 26)
+            b.setToolTip("添加 %s" % c)
+            b.clicked.connect(lambda _=False, cc=c: _add_color(cc))
+            quick_grid.addWidget(b, i // 12, i % 12)
+        av.addWidget(quick_box)
+
+        av.addWidget(QLabel("从其他配色方案添加（点击色块）："))
+        src_row = QHBoxLayout()
+        av.addLayout(src_row)
+        src_combo = QComboBox()
+        src_combo.setMinimumWidth(180)
+        src_row.addWidget(src_combo)
+        src_hint = QLabel("选方案后点下方颜色块加入列表")
+        src_hint.setStyleSheet("color:gray;")
+        src_row.addWidget(src_hint, 1)
+        src_box = QWidget()
+        src_grid = QGridLayout(src_box)
+        src_grid.setContentsMargins(0, 0, 0, 0)
+        src_grid.setSpacing(4)
+        av.addWidget(src_box)
+        v.addWidget(add_group)
+
+        def _rebuild_src():
+            while src_grid.count():
+                item = src_grid.takeAt(0)
+                w = item.widget()
+                if w is not None:
+                    w.deleteLater()
+            sc = (get_all_color_schemes(cfg).get(src_combo.currentText(), []) or [])
+            if not sc:
+                lab = QLabel("（该方案暂无颜色）")
+                lab.setStyleSheet("color:gray;")
+                src_grid.addWidget(lab, 0, 0)
+                return
+            cols = 8
+            for i, c in enumerate(sc):
+                b = QPushButton(_color_icon(c), "")
+                b.setFixedSize(28, 28)
+                b.setToolTip("添加 %s" % c)
+                b.setStyleSheet("QPushButton{border:1px solid #bbbbbb;border-radius:3px;} QPushButton:hover{border:2px solid #2a82da;}")
+                b.clicked.connect(lambda _=False, cc=c: _add_color(cc))
+                src_grid.addWidget(b, i // cols, i % cols)
+
+        def _fill_src():
+            names = list(get_all_color_schemes(cfg).keys())
+            src_combo.blockSignals(True)
+            src_combo.clear()
+            src_combo.addItems(names)
+            src_combo.blockSignals(False)
+            if names:
+                src_combo.setCurrentText(names[0])
+            _rebuild_src()
+
+        src_combo.currentIndexChanged.connect(lambda _: _rebuild_src())
+
+        btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        v.addWidget(btns)
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+
+        _rebuild_selected()
+        _fill_src()
+        if dlg.exec() == QDialog.Accepted:
+            return {"name": name_edit.text().strip(), "colors": ",".join(colors)}
+        return None
+
+    def _scheme_dev_cfg(dev):
+        return dev.config if dev.config is not None else config_obj
+
+    def _build_swatch_menu(btn, apply):
+        """构建色块菜单并绑定到按钮（点击弹当前方案颜色色块，选择后回调 apply(颜色)）。
+        菜单项用纯色图标显示色块（QAction 样式表背景在原生菜单上不生效，改用 QIcon 色块）。"""
+        try:
+            menu = QMenu(btn)
+            colors = _current_scheme_colors or []
+            if not colors:
+                act = menu.addAction("（未选择配色方案）")
+                act.setEnabled(False)
+            for c in colors:
+                try:
+                    pm = QPixmap(24, 24)
+                    pm.fill(QColor(c))
+                    icon = QIcon(pm)
+                    text = c.upper() if str(c).startswith("#") else str(c)
+                    act = menu.addAction(icon, text)
+                except Exception:
+                    act = menu.addAction("      ")
+                act.triggered.connect(lambda _=False, col=c: apply(col))
+            btn.setMenu(menu)
+            btn.setPopupMode(QToolButton.InstantPopup)
+        except Exception:
+            pass
+
+    def _make_swatch_button(apply):
+        """生成色块选择按钮：点击弹当前方案的颜色色块菜单，选择后执行 apply(颜色)"""
+        btn = QToolButton()
+        btn.setText("☰")
+        btn.setFixedWidth(28)
+        _build_swatch_menu(btn, apply)
+        _scheme_swatch_buttons.append((btn, apply))
+        return btn
+
+    def _refresh_scheme_swatches():
+        """方案变化后刷新所有色块按钮的候选色菜单"""
+        for btn, apply in _scheme_swatch_buttons:
+            try:
+                _build_swatch_menu(btn, apply)
+            except Exception:
+                pass
+
+    def _refresh_all_schemes():
+        """自定义方案增删改后刷新所有配色方案下拉 + 色块候选色"""
+        try:
+            for combo, dev in _scheme_combos:
+                cfg = _scheme_dev_cfg(dev)
+                names = list(get_all_color_schemes(cfg).keys())
+                cur = combo.currentText()
+                combo.blockSignals(True)
+                combo.clear()
+                combo.addItems(names)
+                combo.blockSignals(False)
+                if cur in names:
+                    combo.setCurrentText(cur)
+            _refresh_scheme_swatches()
+        except Exception:
+            pass
+
+    def _save_current_scheme(color_fields, dev):
+        """把当前各颜色位置取值收集为新方案，弹窗命名保存（支持混搭配色）"""
+        try:
+            colors = []
+            for _label, le in color_fields:
+                c = (le.text() or "").strip()
+                if c:
+                    colors.append(c if c.startswith("#") else "#" + c)
+            parsed = parse_color_list(",".join(colors))
+            if not parsed:
+                insert_text_message("保存失败：当前没有有效的颜色值")
+                return
+            res = _scheme_dialog("保存当前配色为新方案", colors_text=",".join(parsed), cfg=_scheme_dev_cfg(dev))
+            if not res or not res.get("name"):
+                return
+            set_active_device_config(dev)
+            cfg = _scheme_dev_cfg(dev)
+            cfg.custom_color_schemes = cfg.custom_color_schemes or {}
+            cfg.custom_color_schemes[res["name"]] = parsed
+            save_config()
+            _refresh_all_schemes()
+            insert_text_message("已保存新配色方案：%s" % res["name"])
+        except Exception:
+            pass
+
+    def _make_scheme_row(lay, color_fields, dev):
+        """配色方案行：方案下拉（仅提供候选色板，不自动套用）+ 存为新方案按钮。
+        各颜色行后的色块下拉可选该方案颜色（支持混合配色）。"""
+        row = QHBoxLayout()
+        lay.addLayout(row)
+        row.addWidget(QLabel("配色方案:"), 0, Qt.AlignTop)
+        combo = QComboBox()
+        combo.setMinimumWidth(150)
+        row.addWidget(combo, 0, Qt.AlignTop)
+        hint = QLabel("选方案后各颜色后的色块下拉可选该方案颜色")
+        hint.setStyleSheet("color:gray;")
+        row.addWidget(hint, 0, Qt.AlignTop)
+        save_btn = QPushButton("存为新方案")
+        row.addWidget(save_btn, 0, Qt.AlignTop)
+        row.addStretch(1)
+
+        cfg = _scheme_dev_cfg(dev)
+        combo.addItems(list(get_all_color_schemes(cfg).keys()))
+        _scheme_combos.append((combo, dev))
+
+        def _on_select(_i=0):
+            schemes = get_all_color_schemes(_scheme_dev_cfg(dev))
+            colors = schemes.get(combo.currentText(), [])
+            _current_scheme_colors[:] = colors
+            _refresh_scheme_swatches()
+
+        combo.currentIndexChanged.connect(_on_select)
+        save_btn.clicked.connect(lambda: _save_current_scheme(color_fields, dev))
+        # 初始即加载当前选中方案（如"经典方案"）的候选色，色块下拉立即生效
+        _on_select()
+        return combo
+
+    def _make_color_row(lay, label, key, dev, default="#ffffff", save=None):
+        """通用「颜色行」：标签 + 颜色输入 + 调色板 + 色块下拉（可配色方案），自动保存到 config_obj[key]。
+        返回 (label, QLineEdit) 供 _make_scheme_row 收集。save 可选：save(key, value)。"""
+        row = QHBoxLayout()
+        lay.addLayout(row)
+        row.addWidget(QLabel(label), 0, Qt.AlignTop)
+        cfg = _scheme_dev_cfg(dev)
+        e = QLineEdit(getattr(cfg, key, default))
+        e.setFixedWidth(80)
+        row.addWidget(e, 0, Qt.AlignTop)
+
+        def _commit(k, v):
+            if save:
+                save(k, v)
+            else:
+                try:
+                    set_active_device_config(dev)
+                    setattr(config_obj, k, v)
+                    save_config()
+                except Exception:
+                    pass
+
+        def _pick(ce, k=key):
+            c = QColorDialog.getColor(QColor(ce.text()), window)
+            if c.isValid():
+                ce.setText(c.name())
+                _commit(k, c.name())
+
+        b = QPushButton("颜色")
+        b.clicked.connect(lambda _=False, ce=e: _pick(ce))
+        row.addWidget(b, 0, Qt.AlignTop)
+
+        def _apply_swatch(col, k=key, ce=e):
+            ce.setText(col)
+            _commit(k, col)
+
+        row.addWidget(_make_swatch_button(_apply_swatch), 0, Qt.AlignTop)
+        row.addStretch(1)
+
+        def _save(k=key, ce=e):
+            _commit(k, ce.text())
+
+        e.editingFinished.connect(lambda k=key, ce=e: _save(k, ce))
+        return (label, e)
+
     def _build_scheme_settings(parent, dev):
         """设置 → 配色方案：方案选择 + 预览 + 新增/编辑/删除自定义方案"""
         outer = QVBoxLayout(parent)
@@ -9249,8 +9930,20 @@ def UI_Page():  # PySide6 (Qt) 主界面
         preview.setStyleSheet("border:1px solid gray; background:white;")
         outer.addWidget(preview)
 
+        # 色块选择行：当前方案（含"经典方案"）的每个颜色一个色块按钮，点击复制该颜色
+        swatch_row = QHBoxLayout()
+        outer.addLayout(swatch_row)
+        swatch_row.addWidget(QLabel("色块:"), 0, Qt.AlignTop)
+
+        def _copy_swatch(col):
+            try:
+                app.clipboard().setText(col)
+                insert_text_message("已复制颜色 %s" % str(col).upper())
+            except Exception:
+                pass
+
         def _draw_preview():
-            schemes = get_all_color_schemes(config_obj)
+            schemes = get_all_color_schemes(_cfg())
             colors = schemes.get(scheme_combo.currentText(), []) or []
             if len(colors) >= 2:
                 preview.setStyleSheet(
@@ -9260,9 +9953,28 @@ def UI_Page():  # PySide6 (Qt) 主界面
                 preview.setStyleSheet("border:1px solid gray; background:%s;" % colors[0])
             else:
                 preview.setStyleSheet("border:1px solid gray; background:white;")
+            # 重建色块按钮（保留"色块:"标签）
+            while swatch_row.count() > 1:
+                item = swatch_row.takeAt(1)
+                w = item.widget()
+                if w is not None:
+                    w.deleteLater()
+            for c in colors:
+                try:
+                    pm = QPixmap(24, 24)
+                    pm.fill(QColor(c))
+                    icon = QIcon(pm)
+                    b = QPushButton(icon, "")
+                    b.setFixedSize(26, 26)
+                    b.setToolTip(c)
+                    b.clicked.connect(lambda _=False, col=c: _copy_swatch(col))
+                    swatch_row.addWidget(b, 0, Qt.AlignTop)
+                except Exception:
+                    pass
+            swatch_row.addStretch(1)
 
         def _refresh_schemes():
-            schemes = get_all_color_schemes(config_obj)
+            schemes = get_all_color_schemes(_cfg())
             names = list(schemes.keys())
             cur = scheme_combo.currentText()
             scheme_combo.blockSignals(True)
@@ -9276,29 +9988,10 @@ def UI_Page():  # PySide6 (Qt) 主界面
             _draw_preview()
 
         scheme_combo.currentIndexChanged.connect(lambda _: _draw_preview())
-
-        def _scheme_dialog(title, name="", colors_text=""):
-            dlg = QDialog(window)
-            dlg.setWindowTitle(title)
-            dlg.setModal(True)
-            v = QVBoxLayout(dlg)
-            v.addWidget(QLabel("方案名称:"))
-            name_edit = QLineEdit(name)
-            v.addWidget(name_edit)
-            v.addWidget(QLabel("颜色列表（#rrggbb，逗号分隔）:"))
-            colors_edit = QLineEdit(colors_text)
-            v.addWidget(colors_edit)
-            v.addWidget(QLabel("示例：#ffb3ba,#baffc9,#bae1ff,#ddbaff,#ffd6ba,#ffffba"))
-            btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-            v.addWidget(btns)
-            btns.accepted.connect(dlg.accept)
-            btns.rejected.connect(dlg.reject)
-            if dlg.exec() == QDialog.Accepted:
-                return {"name": name_edit.text().strip(), "colors": colors_edit.text().strip()}
-            return None
+        _scheme_combos.append((scheme_combo, dev))
 
         def add_custom_scheme():
-            res = _scheme_dialog("新增配色方案")
+            res = _scheme_dialog("新增配色方案", cfg=_cfg())
             if not res or not res.get("name"):
                 return
             colors = parse_color_list(res.get("colors", ""))
@@ -9306,11 +9999,13 @@ def UI_Page():  # PySide6 (Qt) 主界面
                 insert_text_message("新增失败：颜色列表为空或格式不正确")
                 return
             _lock()
-            config_obj.custom_color_schemes = config_obj.custom_color_schemes or {}
-            config_obj.custom_color_schemes[res["name"]] = colors
+            cfg = _cfg()
+            cfg.custom_color_schemes = cfg.custom_color_schemes or {}
+            cfg.custom_color_schemes[res["name"]] = colors
             save_config()
             scheme_combo.setCurrentText(res["name"])
             _refresh_schemes()
+            _refresh_all_schemes()
             insert_text_message("已保存新配色方案：%s" % res["name"])
 
         def edit_custom_scheme():
@@ -9318,8 +10013,8 @@ def UI_Page():  # PySide6 (Qt) 主界面
             if name in BUILTIN_COLOR_SCHEMES:
                 insert_text_message("内置方案不可编辑")
                 return
-            custom = getattr(config_obj, "custom_color_schemes", {}) or {}
-            res = _scheme_dialog("编辑配色方案", name, ",".join(custom.get(name, [])))
+            custom = getattr(_cfg(), "custom_color_schemes", {}) or {}
+            res = _scheme_dialog("编辑配色方案", name, ",".join(custom.get(name, [])), cfg=_cfg())
             if not res or not res.get("name"):
                 return
             colors = parse_color_list(res.get("colors", ""))
@@ -9327,13 +10022,15 @@ def UI_Page():  # PySide6 (Qt) 主界面
                 insert_text_message("保存失败：颜色列表为空或格式不正确")
                 return
             _lock()
-            config_obj.custom_color_schemes = config_obj.custom_color_schemes or {}
-            if res["name"] != name and name in config_obj.custom_color_schemes:
-                del config_obj.custom_color_schemes[name]
-            config_obj.custom_color_schemes[res["name"]] = colors
+            cfg = _cfg()
+            cfg.custom_color_schemes = cfg.custom_color_schemes or {}
+            if res["name"] != name and name in cfg.custom_color_schemes:
+                del cfg.custom_color_schemes[name]
+            cfg.custom_color_schemes[res["name"]] = colors
             save_config()
             scheme_combo.setCurrentText(res["name"])
             _refresh_schemes()
+            _refresh_all_schemes()
             insert_text_message("已保存配色方案：%s" % res["name"])
 
         def del_custom_scheme():
@@ -9344,10 +10041,12 @@ def UI_Page():  # PySide6 (Qt) 主界面
             if QMessageBox.question(window, "删除配色方案", "确定删除「%s」？" % name) != QMessageBox.Yes:
                 return
             _lock()
-            config_obj.custom_color_schemes = config_obj.custom_color_schemes or {}
-            config_obj.custom_color_schemes.pop(name, None)
+            cfg = _cfg()
+            cfg.custom_color_schemes = cfg.custom_color_schemes or {}
+            cfg.custom_color_schemes.pop(name, None)
             save_config()
             _refresh_schemes()
+            _refresh_all_schemes()
             insert_text_message("已删除配色方案：%s" % name)
 
         btn_row = QHBoxLayout()
@@ -9358,6 +10057,7 @@ def UI_Page():  # PySide6 (Qt) 主界面
             btn_row.addWidget(b)
         btn_row.addWidget(QLabel("（内置方案只读）"))
         btn_row.addStretch(1)
+        outer.addStretch(1)  # 配色方案控件整体向上对齐
         _refresh_schemes()
 
     def _build_monitor_settings(parent, dev):
@@ -9394,6 +10094,11 @@ def UI_Page():  # PySide6 (Qt) 主界面
             save_config()
 
         proc_edit.editingFinished.connect(_save_proc)
+        proc_fields = [
+            _make_color_row(pl, "背景颜色:", "proc_bg_color", dev, "#000000"),
+            _make_color_row(pl, "字体颜色:", "proc_text_color", dev, "#ffffff"),
+        ]
+        _make_scheme_row(pl, proc_fields, dev)
         pl.addStretch(1)
 
         # ---- 硬件详情 ----
@@ -9436,6 +10141,11 @@ def UI_Page():  # PySide6 (Qt) 主界面
             ck.toggled.connect(_save_type)
             types_row.addWidget(ck)
         types_row.addStretch(1)
+        hwdetail_fields = [
+            _make_color_row(hl, "背景颜色:", "hwdetail_bg_color", dev, "#000000"),
+            _make_color_row(hl, "字体颜色:", "hwdetail_text_color", dev, "#ffffff"),
+        ]
+        _make_scheme_row(hl, hwdetail_fields, dev)
         hl.addStretch(1)
 
         # ---- 仪表盘 ----
@@ -9463,6 +10173,7 @@ def UI_Page():  # PySide6 (Qt) 主界面
             save_config()
 
         gauge_state = {}
+        gauge_color_fields = []
         for label, show_key, color_key in gauge_items:
             grow = QHBoxLayout()
             gl.addLayout(grow)
@@ -9473,6 +10184,7 @@ def UI_Page():  # PySide6 (Qt) 主界面
             color_edit = QLineEdit(getattr(_cfg(), color_key, "#ff8000"))
             color_edit.setFixedWidth(80)
             gauge_state[color_key] = color_edit.text()
+            gauge_color_fields.append((label, color_edit))
             grow.addWidget(color_edit)
 
             def _pick_color(ce):
@@ -9484,6 +10196,14 @@ def UI_Page():  # PySide6 (Qt) 主界面
             pick_btn = QPushButton("颜色")
             pick_btn.clicked.connect(lambda _=False, ce=color_edit: _pick_color(ce))
             grow.addWidget(pick_btn)
+
+            # 色块下拉：选配色方案后可选该方案颜色（混搭配色）
+            def _apply_gauge_swatch(col, k=color_key, ce=color_edit):
+                ce.setText(col)
+                gauge_state[k] = col
+                _save_gauge()
+
+            grow.addWidget(_make_swatch_button(_apply_gauge_swatch))
             grow.addStretch(1)
 
             def _on_toggled(val, k=show_key):
@@ -9496,6 +10216,11 @@ def UI_Page():  # PySide6 (Qt) 主界面
 
             ck.toggled.connect(_on_toggled)
             color_edit.editingFinished.connect(_on_color)
+        # 背景/标签颜色（可配色方案）
+        gauge_color_fields.append(_make_color_row(gl, "背景颜色:", "gauge_bg_color", dev, "#000000"))
+        gauge_color_fields.append(_make_color_row(gl, "标签文字颜色:", "gauge_label_color", dev, "#ffffff"))
+        # 配色方案行（支持混合配色 + 存为新方案）
+        _make_scheme_row(gl, gauge_color_fields, dev)
         gl.addStretch(1)
 
         # ---- 磁盘读写 ----
@@ -9531,6 +10256,13 @@ def UI_Page():  # PySide6 (Qt) 主界面
             b = QPushButton("颜色")
             b.clicked.connect(lambda _=False, ce=e: _pick(ce))
             row.addWidget(b)
+
+            # 色块下拉：选配色方案后可选该方案颜色（混搭配色）
+            def _apply_swatch(col, k=key, ce=e):
+                ce.setText(col)
+                _save_disk(k, col)
+
+            row.addWidget(_make_swatch_button(_apply_swatch))
             row.addStretch(1)
 
             def _save(k=key, ce=e):
@@ -9539,6 +10271,7 @@ def UI_Page():  # PySide6 (Qt) 主界面
                 save_config()
 
             e.editingFinished.connect(lambda k=key, ce=e: _save(k, ce))
+            return e
 
         def _save_disk(k, v):
             _lock()
@@ -9548,19 +10281,27 @@ def UI_Page():  # PySide6 (Qt) 主界面
         classic = QWidget()
         dn.addTab(classic, "  经典模式  ")
         cl = QVBoxLayout(classic)
-        _disk_color_row(cl, "标题颜色:", "diskio_title_color")
-        _disk_color_row(cl, "读 颜色:", "diskio_read_color")
-        _disk_color_row(cl, "写 颜色:", "diskio_write_color")
+        classic_fields = [
+            ("标题颜色", _disk_color_row(cl, "标题颜色:", "diskio_title_color")),
+            ("读 颜色", _disk_color_row(cl, "读 颜色:", "diskio_read_color")),
+            ("写 颜色", _disk_color_row(cl, "写 颜色:", "diskio_write_color")),
+        ]
+        classic_fields.append(_make_color_row(cl, "背景颜色:", "diskio_bg_color", dev, "#000000"))
+        _make_scheme_row(cl, classic_fields, dev)
         cl.addStretch(1)
 
         netspeed_tab = QWidget()
         dn.addTab(netspeed_tab, "  网速样式  ")
         nsl = QVBoxLayout(netspeed_tab)
-        _disk_color_row(nsl, "标签颜色:", "diskio_label_color")
-        _disk_color_row(nsl, "读数值颜色:", "diskio_value_read_color")
-        _disk_color_row(nsl, "写数值颜色:", "diskio_value_write_color")
-        _disk_color_row(nsl, "读柱颜色:", "diskio_bar1_color")
-        _disk_color_row(nsl, "写柱颜色:", "diskio_bar2_color")
+        ns_fields = [
+            ("标签颜色", _disk_color_row(nsl, "标签颜色:", "diskio_label_color")),
+            ("读数值颜色", _disk_color_row(nsl, "读数值颜色:", "diskio_value_read_color")),
+            ("写数值颜色", _disk_color_row(nsl, "写数值颜色:", "diskio_value_write_color")),
+            ("读柱颜色", _disk_color_row(nsl, "读柱颜色:", "diskio_bar1_color")),
+            ("写柱颜色", _disk_color_row(nsl, "写柱颜色:", "diskio_bar2_color")),
+        ]
+        ns_fields.append(_make_color_row(nsl, "背景颜色:", "diskio_bg_color", dev, "#000000"))
+        _make_scheme_row(nsl, ns_fields, dev)
         nsl.addStretch(1)
 
         def _save_disk_mode():
@@ -9583,6 +10324,7 @@ def UI_Page():  # PySide6 (Qt) 主界面
         net_mode_row.addWidget(netspeed_mode)
         net_mode_row.addWidget(QLabel("（经典=修改前样式，自定义=全部颜色独立）"))
         net_mode_row.addStretch(1)
+        net_color_fields = []
         for label, key in (("上传文字颜色:", "netspeed_up_color"),
                            ("下载文字颜色:", "netspeed_down_color"),
                            ("上传柱颜色:", "netspeed_bar1_color"),
@@ -9593,6 +10335,7 @@ def UI_Page():  # PySide6 (Qt) 主界面
             e = QLineEdit(getattr(_cfg(), key, "#ff8000"))
             e.setFixedWidth(80)
             row.addWidget(e)
+            net_color_fields.append((label, e))
 
             def _pick(ce, k=key):
                 c = QColorDialog.getColor(QColor(ce.text()), window)
@@ -9603,6 +10346,13 @@ def UI_Page():  # PySide6 (Qt) 主界面
             b = QPushButton("颜色")
             b.clicked.connect(lambda _=False, ce=e: _pick(ce))
             row.addWidget(b)
+
+            # 色块下拉：选配色方案后可选该方案颜色（混搭配色）
+            def _apply_swatch(col, k=key, ce=e):
+                ce.setText(col)
+                _save_netspeed(k, col)
+
+            row.addWidget(_make_swatch_button(_apply_swatch))
             row.addStretch(1)
 
             def _save(k=key, ce=e):
@@ -9611,6 +10361,9 @@ def UI_Page():  # PySide6 (Qt) 主界面
                 save_config()
 
             e.editingFinished.connect(lambda k=key, ce=e: _save(k, ce))
+        net_color_fields.append(_make_color_row(nl, "背景颜色:", "netspeed_bg_color", dev, "#000000"))
+        # 配色方案行（支持混合配色 + 存为新方案）
+        _make_scheme_row(nl, net_color_fields, dev)
 
         def _save_netspeed(k, v):
             _lock()
@@ -10154,13 +10907,25 @@ def UI_Page():  # PySide6 (Qt) 主界面
     mp_mode_hint.setWordWrap(True)
     mp_mode_hint.setStyleSheet("color:gray;")
     mp_lay.addWidget(mp_mode_hint)
+
+    wall_live_cb = QCheckBox("在显示器标签内显示实时内容（关闭后仅显示设备名称占位）")
+    mp_lay.addWidget(wall_live_cb)
+
+    def _on_wall_live_toggled(val):
+        nonlocal _wall_show_live
+        _wall_show_live = bool(val)
+        _wall_save()
+
+    wall_live_cb.toggled.connect(_on_wall_live_toggled)
     mp_lay.addStretch(1)
 
     # 电视墙运行时状态（UI_Page 局部，嵌套函数用 nonlocal 访问）
     _wall_devs = []    # 当前已连接设备（按 index 排序）
     _wall_cells = []   # [(dev, QLabel), ...] 当前格子（控件方式使用）
     _wall_expected = None  # 期望布局 (行,列)，来自配置文件；设备连接足够后应用
+    _wall_layout = None    # 用户当前布局 (行,列)；设备掉线/重连期间保留，不被 spinbox clamp/推荐值覆盖
     _wall_mode = "widget"  # 显示方式：widget=控件(QLabel) / canvas=画布(QPainter)
+    _wall_show_live = True  # 是否在显示器标签内显示实时内容（关闭后仅显示设备名占位）
 
     def _wall_connected():
         """返回已连接设备（按 index 排序）"""
@@ -10172,7 +10937,7 @@ def UI_Page():  # PySide6 (Qt) 主界面
         return os.path.join(get_config_dir(), "MSU2_MINI_wall.json")
 
     def _wall_load_config():
-        """读取已保存的显示墙设置（行数, 列数, 显示方式），失败返回 (0, 0, "widget")"""
+        """读取已保存的显示墙设置（行数, 列数, 显示方式, 是否显示实时内容），失败返回 (0, 0, "widget", True)"""
         try:
             with open(_wall_config_path(), "r", encoding="utf-8") as f:
                 data = json.load(f)
@@ -10181,15 +10946,16 @@ def UI_Page():  # PySide6 (Qt) 主界面
             mode = data.get("mode", "widget")
             if mode not in ("widget", "canvas"):
                 mode = "widget"
-            return rows, cols, mode
+            show_live = bool(int(data.get("wall_show_live", 1) or 1))
+            return rows, cols, mode, show_live
         except Exception:
-            return 0, 0, "widget"
+            return 0, 0, "widget", True
 
     def _wall_save():
-        """保存显示墙设置（行列 + 显示方式）到独立配置文件（原子写入，下次启动自动恢复）"""
+        """保存显示墙设置（行列 + 显示方式 + 是否显示实时内容）到独立配置文件（原子写入，下次启动自动恢复）"""
         try:
             data = {"wall_rows": wall_rows_sb.value(), "wall_cols": wall_cols_sb.value(),
-                    "mode": _wall_mode}
+                    "mode": _wall_mode, "wall_show_live": 1 if _wall_show_live else 0}
             path = _wall_config_path()
             tmp = path + ".tmp"
             with open(tmp, "w", encoding="utf-8") as f:
@@ -10235,12 +11001,17 @@ def UI_Page():  # PySide6 (Qt) 主界面
             pass
 
     def _wall_refresh_options():
-        """根据当前屏数刷新 快速布局下拉 与 行/列取值范围；设备未连接完时保留期望布局。"""
-        nonlocal _wall_devs, _wall_expected
+        """根据当前屏数刷新 快速布局下拉 与 行/列取值范围；
+        设备未连接完/掉线时保留期望布局或用户当前布局，避免被 clamp 或推荐值覆盖。"""
+        nonlocal _wall_devs, _wall_expected, _wall_layout
         try:
             n = len(_wall_devs)
             wall_count_lbl.setText("已连接屏幕数量：%d 台" % n)
             maxv = max(1, n)
+            # 先屏蔽信号再改范围/值：setRange 使当前值越界时会 clamp 并发 valueChanged，
+            # 若不屏蔽会误触发 _on_wall_rc_changed 把掉线时的临时值（如 1×1）保存进配置文件
+            wall_rows_sb.blockSignals(True)
+            wall_cols_sb.blockSignals(True)
             wall_rows_sb.setRange(1, maxv)
             wall_cols_sb.setRange(1, maxv)
             # 列出所有 行×列≥屏数 的组合，最接近方形者优先
@@ -10251,21 +11022,23 @@ def UI_Page():  # PySide6 (Qt) 主界面
             wall_quick.clear()
             for r, c in combos:
                 wall_quick.addItem("%d 行 × %d 列" % (r, c), (r, c))
-            # 决定要应用的行列：
-            # 1) 有保存的期望布局且当前屏数已能容纳（r,c<=n 且 r*c>=n）→ 应用期望布局（恢复）
-            # 2) 否则当前值合法则保留，不合法用推荐值
-            cur = (wall_rows_sb.value(), wall_cols_sb.value())
+            # 决定要应用的行列（优先级）：
+            # 1) 期望布局（启动恢复）且当前屏数已能容纳（r,c<=n 且 r*c>=n）→ 应用并记为当前布局
+            # 2) 用户当前布局 _wall_layout 在当前屏数下合法 → 保留（掉线/重连不丢失，如 2行×1列）
+            # 3) 否则临时用推荐值（不覆盖 _wall_layout/_wall_expected，等屏数足够自动恢复）
+            cur = None
             if _wall_expected is not None:
                 er, ec = _wall_expected
                 if n >= 1 and er <= n and ec <= n and er * ec >= n:
                     cur = (er, ec)
                     _wall_expected = None
-                elif combos:
-                    cur = combos[0]
-            elif cur not in combos and combos:
+                    _wall_layout = cur
+            if cur is None and _wall_layout is not None:
+                lr, lc = _wall_layout
+                if lr <= maxv and lc <= maxv and lr * lc >= n and (lr, lc) in combos:
+                    cur = _wall_layout
+            if cur is None and combos:
                 cur = combos[0]
-            wall_rows_sb.blockSignals(True)
-            wall_cols_sb.blockSignals(True)
             wall_rows_sb.setValue(cur[0])
             wall_cols_sb.setValue(cur[1])
             wall_rows_sb.blockSignals(False)
@@ -10282,13 +11055,14 @@ def UI_Page():  # PySide6 (Qt) 主界面
 
     def _on_wall_quick(idx):
         """选择快速布局 → 设置行/列并应用"""
-        nonlocal _wall_expected
+        nonlocal _wall_expected, _wall_layout
         try:
             _wall_expected = None
             data = wall_quick.itemData(idx)
             if data is None:
                 return
             r, c = data
+            _wall_layout = (r, c)
             wall_rows_sb.blockSignals(True)
             wall_cols_sb.blockSignals(True)
             wall_rows_sb.setValue(r)
@@ -10302,7 +11076,7 @@ def UI_Page():  # PySide6 (Qt) 主界面
 
     def _on_wall_rc_changed():
         """行/列手动调整：不满足 行×列≥屏数 时自动补足；否则应用并保存。"""
-        nonlocal _wall_expected
+        nonlocal _wall_expected, _wall_layout
         try:
             _wall_expected = None
             rows = wall_rows_sb.value()
@@ -10321,6 +11095,7 @@ def UI_Page():  # PySide6 (Qt) 主界面
                     wall_cols_sb.setValue(need_cols)
                     wall_cols_sb.blockSignals(False)
                     cols = need_cols
+            _wall_layout = (rows, cols)
             # 同步下拉（存在该组合时）
             for i in range(wall_quick.count()):
                 if wall_quick.itemData(i) == (rows, cols):
@@ -10350,13 +11125,17 @@ def UI_Page():  # PySide6 (Qt) 主界面
     wall_mode_combo.currentIndexChanged.connect(_on_wall_mode_changed)
 
     # 初始：读取保存的显示墙设置（布局作为期望，设备未连接完时先不应用，连接后自动恢复）
-    _wr, _wc, _wm = _wall_load_config()
+    _wr, _wc, _wm, _wall_show_live = _wall_load_config()
     _wall_expected = (_wr, _wc) if (_wr >= 1 and _wc >= 1) else None
     _wall_mode = _wm if _wm in ("widget", "canvas") else "widget"
     wall_mode_combo.blockSignals(True)
     wall_mode_combo.setCurrentIndex(0 if _wall_mode == "widget" else 1)
     wall_mode_combo.blockSignals(False)
     wall_stack.setCurrentIndex(0 if _wall_mode == "widget" else 1)
+    try:
+        wall_live_cb.setChecked(_wall_show_live)
+    except Exception:
+        pass
 
     _wall_devs = _wall_connected()
     _wall_refresh_options()
@@ -10405,7 +11184,7 @@ def UI_Page():  # PySide6 (Qt) 主界面
                     for dev in _wall_devs:
                         connected = dev.device_state == 1
                         pm = None
-                        if connected:
+                        if connected and _wall_show_live:
                             img = None
                             try:
                                 with dev._preview_lock:
@@ -10434,6 +11213,12 @@ def UI_Page():  # PySide6 (Qt) 主界面
                                 cell.setPixmap(QPixmap())
                                 cell.setText("%s\n(未连接)" % dev.device_name)
                                 cell.setStyleSheet("background-color:#101010; color:#888888; border:1px solid #444444;")
+                                continue
+                            if not _wall_show_live:
+                                # 关闭"显示器标签内显示实时内容"：仅显示设备名占位，不渲染预览
+                                cell.setPixmap(QPixmap())
+                                cell.setText(dev.device_name)
+                                cell.setStyleSheet("background-color:#101010; color:#aaaaaa; border:1px solid #444444;")
                                 continue
                             img = None
                             try:
@@ -10468,9 +11253,9 @@ def UI_Page():  # PySide6 (Qt) 主界面
                             pass
         except Exception:
             pass
-        QTimer.singleShot(1000, _wall_tick)
+        QTimer.singleShot(int(1000 * _power_factor()), _wall_tick)
 
-    QTimer.singleShot(1000, _wall_tick)
+    QTimer.singleShot(int(1000 * _power_factor()), _wall_tick)
 
     # ==================== 关于页 ====================
     about_frame = QWidget()
@@ -10534,6 +11319,7 @@ def UI_Page():  # PySide6 (Qt) 主界面
                 "geometry": [geo.x(), geo.y(), geo.width(), geo.height()],
                 "maximized": 1 if window.isMaximized() else 0,
                 "top_tab": top_nb.currentIndex(),
+                "show_info": 1 if not Text1.isHidden() else 0,
             }
             path = _ui_state_path()
             tmp = path + ".tmp"
@@ -10562,6 +11348,13 @@ def UI_Page():  # PySide6 (Qt) 主界面
                 ti = int(data.get("top_tab", 0))
                 if 0 <= ti < top_nb.count():
                     top_nb.setCurrentIndex(ti)
+            except Exception:
+                pass
+            # 信息框显隐（程序级，随 UI 状态保存/恢复）
+            try:
+                show_info = int(data.get("show_info", 1) or 1)
+                info_lbl.setVisible(bool(show_info))
+                Text1.setVisible(bool(show_info))
             except Exception:
                 pass
         except Exception:
@@ -10632,9 +11425,9 @@ def UI_Page():  # PySide6 (Qt) 主界面
                         pass
         except Exception:
             pass
-        QTimer.singleShot(2000, _periodic_refresh)
+        QTimer.singleShot(int(2000 * _power_factor()), _periodic_refresh)
 
-    QTimer.singleShot(2000, _periodic_refresh)
+    QTimer.singleShot(int(2000 * _power_factor()), _periodic_refresh)
 
     # 自动翻页轮播（主线程定时器）
     global _last_cycle_time
@@ -10650,9 +11443,9 @@ def UI_Page():  # PySide6 (Qt) 主界面
                     Page_Down()
         except Exception:
             pass
-        QTimer.singleShot(1000, _auto_cycle_tick)
+        QTimer.singleShot(int(1000 * _power_factor()), _auto_cycle_tick)
 
-    QTimer.singleShot(1000, _auto_cycle_tick)
+    QTimer.singleShot(int(1000 * _power_factor()), _auto_cycle_tick)
 
     # 启动本地 API 投屏服务器（HTTP + WebSocket）
     try:
@@ -10862,6 +11655,27 @@ def Get_MSN_Device(port_list):  # 尝试获取MSN设备
     set_device_state(1)
 
 
+def _static_page_loop(dev, page_fp_func, render_func):
+    """静态/极低频页面渲染循环：内容无变化时跳过重绘与串口发送（仅低频等待），
+    内容指纹变化（配置修改/跨天）或状态变更时重绘。大幅降低静态页资源占用。
+    page_fp_func：返回内容指纹（str/tuple）；指纹变化即重绘。"""
+    if dev.state_change == 0:
+        try:
+            fp = page_fp_func()
+            if fp == getattr(dev, "_static_fp", None):
+                _power_wait(dev, 5)   # 内容未变化：不重绘不发送，仅低频等待
+                return
+            dev._static_fp = fp       # 内容变化：更新指纹并重绘
+        except Exception:
+            pass
+    else:
+        try:
+            dev._static_fp = page_fp_func()
+        except Exception:
+            pass
+    render_func()
+
+
 def MSN_Device_1_State_machine():  # MSN设备1的循环状态机
     global config_obj, Label3, write_path_index, Img_data_use
     device = get_current_device()
@@ -10907,7 +11721,7 @@ def MSN_Device_1_State_machine():  # MSN设备1的循环状态机
         elif config_obj.state_machine == PCTIME_PAGE_ID:
             show_PC_time(device.color_use)
         elif config_obj.state_machine == PHOTO_PAGE_ID:
-            show_Photo()
+            _static_page_loop(device, lambda: "photo", show_Photo)  # 静态照片：内容不变时跳过重绘
         elif config_obj.state_machine == SCREEN_PAGE_ID or config_obj.state_machine == CAMERA_VIDEO_ID:
             show_PC_Screen()
         elif config_obj.state_machine == STATE_PAGE_ID:
@@ -10918,7 +11732,7 @@ def MSN_Device_1_State_machine():  # MSN设备1的循环状态机
                 rgb_tuple = (config_obj.text_color_r, config_obj.text_color_g, config_obj.text_color_b)
                 show_netspeed(up_text_color=rgb_tuple, down_text_color=rgb_tuple,
                               bar1_color=bar_colors[0], bar2_color=bar_colors[1],
-                              back_color=back_color)
+                              back_color=_hex2rgb(config_obj.netspeed_bg_color))
             else:
                 up_color = _diskio_hex2rgb(config_obj.netspeed_up_color)
                 down_color = _diskio_hex2rgb(config_obj.netspeed_down_color)
@@ -10926,7 +11740,7 @@ def MSN_Device_1_State_machine():  # MSN设备1的循环状态机
                 net_bar2 = _diskio_hex2rgb(config_obj.netspeed_bar2_color)
                 show_netspeed(up_text_color=up_color, down_text_color=down_color,
                               bar1_color=net_bar1, bar2_color=net_bar2,
-                              back_color=back_color)
+                              back_color=_hex2rgb(config_obj.netspeed_bg_color))
         elif config_obj.state_machine == CUSTOM1_PAGE_ID:
             rgb_tuple = (config_obj.text_color_r, config_obj.text_color_g, config_obj.text_color_b)
             show_custom_two_rows(text_color=rgb_tuple, bar1_color=bar_colors[0], bar2_color=bar_colors[1],
@@ -10934,7 +11748,7 @@ def MSN_Device_1_State_machine():  # MSN设备1的循环状态机
         elif config_obj.state_machine == CUSTOM2_PAGE_ID:
             show_full_custom()
         elif config_obj.state_machine == ABOUT_PAGE_ID:
-            show_about()
+            _static_page_loop(device, lambda: "about", show_about)  # 静态关于页：内容不变时跳过重绘
         elif config_obj.state_machine == MARQUEE_PAGE_ID:
             show_marquee()
         elif config_obj.state_machine == DISKIO_PAGE_ID:
@@ -10946,13 +11760,15 @@ def MSN_Device_1_State_machine():  # MSN设备1的循环状态机
         elif config_obj.state_machine == TIMER_PAGE_ID:
             show_timer()
         elif config_obj.state_machine == MEMO_PAGE_ID:
-            show_memo()
+            # 纪念日倒计时：内容指纹=列表+日期，跨天/配置变化自动重绘，否则跳过
+            _static_page_loop(device, lambda: (tuple(getattr(config_obj, "memo_items", []) or []), datetime.now().date()), show_memo)
         elif config_obj.state_machine == TODO_PAGE_ID:
-            show_todo()
+            # 待办：内容指纹=列表，配置变化自动重绘，否则跳过
+            _static_page_loop(device, lambda: tuple(getattr(config_obj, "todo_items", []) or []), show_todo)
         elif config_obj.state_machine == WORLDCLOCK_PAGE_ID:
             show_worldclock()
         elif config_obj.state_machine == LUNAR_PAGE_ID:
-            show_lunar()
+            _static_page_loop(device, lambda: datetime.now().date(), show_lunar)  # 农历：跨天自动重绘，否则跳过
         elif config_obj.state_machine == GAUGE_PAGE_ID:
             show_gauge()
         elif config_obj.state_machine == HWDETAIL_PAGE_ID:
@@ -11087,9 +11903,9 @@ def ping_worker():
                         ping_result = "%s: 超时" % host
                 except Exception:
                     ping_result = "%s: 失败" % host
-            time.sleep(1.0)
+            time.sleep(1.0 * _power_factor())
         except Exception:
-            time.sleep(1.0)
+            time.sleep(1.0 * _power_factor())
 
 
 def show_marquee():
@@ -11106,7 +11922,7 @@ def show_marquee():
         font_size = max(8, int(config_obj.marquee_font_size))
     except Exception:
         font_size = 20
-    im1 = Image.new("RGB", (SHOW_WIDTH, SHOW_HEIGHT), (0, 0, 0))
+    im1 = Image.new("RGB", (SHOW_WIDTH, SHOW_HEIGHT), _hex2rgb(config_obj.marquee_bg_color))
     draw = ImageDraw.Draw(im1)
     font = MiniMark.load_font("./simhei.ttf", font_size)  # 跑马灯字体固定用黑体
     try:
@@ -11130,7 +11946,7 @@ def show_marquee():
     marquee_offset += speed
     rgb888 = np.asarray(im1, dtype=np.uint32)
     _safe_send_rgb888(rgb888)
-    dev.sleep_event.wait(0.05)
+    _power_wait(dev, 0.05)  # 五级能效下0.1s（约10fps）
 
 
 def _diskio_hex2rgb(h):
@@ -11140,6 +11956,15 @@ def _diskio_hex2rgb(h):
         return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
     except Exception:
         return (255, 255, 255)
+
+
+def _hex2rgb(h, default=(0, 0, 0)):
+    """通用配置颜色(#rrggbb)转RGB元组，非法值回退 default（页面背景/字体通用）"""
+    try:
+        h = (h or "").lstrip('#')
+        return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
+    except Exception:
+        return default
 
 
 def _diskio_read_speed():
@@ -11186,7 +12011,7 @@ def show_diskio():
         _show_diskio_classic2(dev, read_s, write_s)
     else:
         _show_diskio_classic(read_s, write_s)
-    dev.sleep_event.wait(0.5)
+    _power_wait(dev, 0.5)
 
 
 def _show_diskio_classic(read_s, write_s):
@@ -11220,7 +12045,7 @@ def _show_diskio_classic(read_s, write_s):
     lines.append(("读 %.1f MB/s" % (read_s / 1048576.0), read_color))
     lines.append(("写 %.1f MB/s" % (write_s / 1048576.0), write_color))
 
-    im1 = Image.new("RGB", (SHOW_WIDTH, SHOW_HEIGHT), (0, 0, 0))
+    im1 = Image.new("RGB", (SHOW_WIDTH, SHOW_HEIGHT), _hex2rgb(config_obj.diskio_bg_color))
     draw = ImageDraw.Draw(im1)
     font = MiniMark.load_font("./simhei.ttf", font_size)
     # 长文本自动缩字号，保证整行放得下
@@ -11274,7 +12099,7 @@ def _show_diskio_netspeed(dev, read_s, write_s):
         font_size -= 1
         font = MiniMark.load_font("./simhei.ttf", font_size)
 
-    im1 = Image.new("RGB", (SHOW_WIDTH, SHOW_HEIGHT), (0, 0, 0))
+    im1 = Image.new("RGB", (SHOW_WIDTH, SHOW_HEIGHT), _hex2rgb(config_obj.diskio_bg_color))
     draw = ImageDraw.Draw(im1)
     # 标签 + 数值（标签用标签色，数值用读/写色）
     for label, value, vcolor, start_y in (
@@ -11331,7 +12156,8 @@ def _show_diskio_classic2(dev, read_s, write_s):
     read_color, write_color, bar1_color, bar2_color = _get_netspeed_colors()
     _render_two_line_bars("读", "写", read_s, write_s,
                           read_color, write_color, bar1_color, bar2_color,
-                          dev.diskio_plot_data, "read", "write")
+                          dev.diskio_plot_data, "read", "write",
+                          back_color=_hex2rgb(config_obj.diskio_bg_color))
 
 
 def show_ping():
@@ -11344,7 +12170,7 @@ def show_ping():
         state_change_clear()
         LCD_ADD(0, 0, SHOW_WIDTH, SHOW_HEIGHT)
     draw_text(str(ping_result), font_size=20)
-    dev.sleep_event.wait(0.5)
+    _power_wait(dev, 0.5)
 
 
 def show_proc():
@@ -11369,15 +12195,16 @@ def show_proc():
     pages = max(1, (len(procs) + per_page - 1) // per_page)
     page = int(time.monotonic() // 3) % pages  # 每3秒翻页
     lines = procs[page * per_page:(page + 1) * per_page]
-    im1 = Image.new("RGB", (SHOW_WIDTH, SHOW_HEIGHT), (0, 0, 0))
+    im1 = Image.new("RGB", (SHOW_WIDTH, SHOW_HEIGHT), _hex2rgb(config_obj.proc_bg_color))
     draw = ImageDraw.Draw(im1)
     font = MiniMark.load_font("./simhei.ttf", 14)
+    proc_color = _hex2rgb(config_obj.proc_text_color)
     for i, (name, rss) in enumerate(lines):
         rank = page * per_page + i + 1
-        draw.text((4, i * 15), "%d.%s %.0fM" % (rank, name[:10], rss / 1048576.0), fill=(255, 255, 255), font=font)
+        draw.text((4, i * 15), "%d.%s %.0fM" % (rank, name[:10], rss / 1048576.0), fill=proc_color, font=font)
     rgb888 = np.asarray(im1, dtype=np.uint32)
     _safe_send_rgb888(rgb888)
-    dev.sleep_event.wait(1.0)
+    _power_wait(dev, 1.0)
 
 
 def show_timer():
@@ -11404,8 +12231,10 @@ def show_timer():
     m = timer_remaining // 60
     s = timer_remaining % 60
     text = ("▶ %02d:%02d" if timer_running else "⏸ %02d:%02d") % (m, s)
-    draw_text(text, font_size=30)
-    dev.sleep_event.wait(0.2)
+    draw_text(text, font_size=30,
+              front_color=_hex2rgb(config_obj.timer_text_color),
+              back_color=_hex2rgb(config_obj.time_bg_color))
+    _power_wait(dev, 0.2)
 
 
 def show_memo():
@@ -11435,14 +12264,15 @@ def show_memo():
         lines.append("%s %d天" % (name[:10], days))
     if not lines:
         lines = ["暂无纪念日"]
-    im1 = Image.new("RGB", (SHOW_WIDTH, SHOW_HEIGHT), (0, 0, 0))
+    im1 = Image.new("RGB", (SHOW_WIDTH, SHOW_HEIGHT), _hex2rgb(config_obj.memo_bg_color))
     draw = ImageDraw.Draw(im1)
     font = MiniMark.load_font("./simhei.ttf", 16)
+    memo_color = _hex2rgb(config_obj.memo_text_color)
     for i, line in enumerate(lines[:4]):
-        draw.text((4, 6 + i * 18), line, fill=(255, 255, 255), font=font)
+        draw.text((4, 6 + i * 18), line, fill=memo_color, font=font)
     rgb888 = np.asarray(im1, dtype=np.uint32)
     _safe_send_rgb888(rgb888)
-    dev.sleep_event.wait(1.0)
+    _power_wait(dev, 1.0)
 
 
 def show_todo():
@@ -11457,14 +12287,15 @@ def show_todo():
     items = [t for t in config_obj.todo_items if t.strip()]
     if not items:
         items = ["暂无待办"]
-    im1 = Image.new("RGB", (SHOW_WIDTH, SHOW_HEIGHT), (0, 0, 0))
+    im1 = Image.new("RGB", (SHOW_WIDTH, SHOW_HEIGHT), _hex2rgb(config_obj.memo_bg_color))
     draw = ImageDraw.Draw(im1)
     font = MiniMark.load_font("./simhei.ttf", 14)
+    todo_color = _hex2rgb(config_obj.todo_text_color)
     for i, line in enumerate(items[:5]):
-        draw.text((4, i * 15), ("□ " + line[:16]), fill=(255, 255, 255), font=font)
+        draw.text((4, i * 15), ("□ " + line[:16]), fill=todo_color, font=font)
     rgb888 = np.asarray(im1, dtype=np.uint32)
     _safe_send_rgb888(rgb888)
-    dev.sleep_event.wait(1.0)
+    _power_wait(dev, 1.0)
 
 
 def show_worldclock():
@@ -11492,15 +12323,16 @@ def show_worldclock():
     pages = max(1, (len(zones) + per_page - 1) // per_page)
     page = int(time.monotonic() // 4) % pages  # 每4秒翻页
     zones_page = zones[page * per_page:(page + 1) * per_page]
-    im1 = Image.new("RGB", (SHOW_WIDTH, SHOW_HEIGHT), (0, 0, 0))
+    im1 = Image.new("RGB", (SHOW_WIDTH, SHOW_HEIGHT), _hex2rgb(config_obj.time_bg_color))
     draw = ImageDraw.Draw(im1)
     font = MiniMark.load_font("./simhei.ttf", 16)
+    clock_color = _hex2rgb(config_obj.clock_text_color)
     for i, (name, offset) in enumerate(zones_page):
         t = now_utc + timedelta(hours=offset)
-        draw.text((4, 4 + i * 19), "%-6s %02d:%02d" % (name, t.hour, t.minute), fill=(255, 255, 255), font=font)
+        draw.text((4, 4 + i * 19), "%-6s %02d:%02d" % (name, t.hour, t.minute), fill=clock_color, font=font)
     rgb888 = np.asarray(im1, dtype=np.uint32)
     _safe_send_rgb888(rgb888)
-    dev.sleep_event.wait(1.0)
+    _power_wait(dev, 1.0)
 
 
 def show_lunar():
@@ -11527,7 +12359,7 @@ def show_lunar():
     draw.text((4, 56), line3, fill=(255, 255, 255), font=font)
     rgb888 = np.asarray(im1, dtype=np.uint32)
     _safe_send_rgb888(rgb888)
-    dev.sleep_event.wait(1.0)
+    _power_wait(dev, 1.0)
 
 
 _HW_CPU_KEYWORDS = ("CPU", "CORE", "RYZEN", "INTEL", "AMD", "PROCESSOR")
@@ -11601,6 +12433,7 @@ def _open_sensor_picker(parent, mode, title, cfg_key, type_filter=None, label_hi
     on_done: 确定保存后回调（用于刷新界面显示）
     """
     global config_obj, hardware_monitor_manager
+    _ensure_hardware_monitor_async()  # 首次打开时后台加载，未就绪则提示等待
     if hardware_monitor_manager is None or hardware_monitor_manager == 1:
         QMessageBox.information(parent, "提示", "硬件监控未就绪，请稍后再试。")
         return
@@ -11700,6 +12533,7 @@ def show_gauge():
     dev = get_current_device()
     if dev is None:
         return
+    _ensure_hardware_monitor_async()  # 首次进入需硬件传感器的页面时后台加载
     if dev.state_change == 1:
         state_change_clear()
         LCD_ADD(0, 0, SHOW_WIDTH, SHOW_HEIGHT)
@@ -11756,7 +12590,7 @@ def show_gauge():
     gauges_page = gauges[page * per_page:(page + 1) * per_page]
     positions = [(40, 52), (120, 52)]
 
-    im1 = Image.new("RGB", (SHOW_WIDTH, SHOW_HEIGHT), (0, 0, 0))
+    im1 = Image.new("RGB", (SHOW_WIDTH, SHOW_HEIGHT), _hex2rgb(config_obj.gauge_bg_color))
     draw = ImageDraw.Draw(im1)
 
     def draw_one(cx, cy, r, value, color, label, max_val=100, unit="%", is_pct=True):
@@ -11770,7 +12604,7 @@ def show_gauge():
             angle = int(180 * ratio)
             draw.arc(bbox, start=180, end=180 + angle, fill=color, width=6)
         font = MiniMark.load_font("./simhei.ttf", 12)
-        draw.text((cx - 28, cy - r - 14), label, fill=(255, 255, 255), font=font)
+        draw.text((cx - 28, cy - r - 14), label, fill=_hex2rgb(config_obj.gauge_label_color), font=font)
         font_v = MiniMark.load_font("./simhei.ttf", 14)
         if value is None:
             text = "--"
@@ -11791,7 +12625,7 @@ def show_gauge():
 
     rgb888 = np.asarray(im1, dtype=np.uint32)
     _safe_send_rgb888(rgb888)
-    dev.sleep_event.wait(0.5)
+    _power_wait(dev, 0.5)
 
 
 def show_hwdetail():
@@ -11800,12 +12634,13 @@ def show_hwdetail():
     dev = get_current_device()
     if dev is None:
         return
+    _ensure_hardware_monitor_async()  # 首次进入需硬件传感器的页面时后台加载
     if dev.state_change == 1:
         state_change_clear()
         LCD_ADD(0, 0, SHOW_WIDTH, SHOW_HEIGHT)
     if hardware_monitor_manager is None or hardware_monitor_manager == 1:
         draw_text("加载中…")
-        dev.sleep_event.wait(0.5)
+        _power_wait(dev, 0.5)
         return
     sel_names = [n.strip() for n in (config_obj.hwdetail_sensor_names or "").split(",") if n.strip()]
     items = []
@@ -11859,14 +12694,15 @@ def show_hwdetail():
     pages = max(1, (len(lines) + per_page - 1) // per_page)
     page = int(time.monotonic() // 4) % pages  # 每4秒翻页
     lines_page = lines[page * per_page:(page + 1) * per_page]
-    im1 = Image.new("RGB", (SHOW_WIDTH, SHOW_HEIGHT), (0, 0, 0))
+    im1 = Image.new("RGB", (SHOW_WIDTH, SHOW_HEIGHT), _hex2rgb(config_obj.hwdetail_bg_color))
     draw = ImageDraw.Draw(im1)
     font = MiniMark.load_font("./simhei.ttf", 14)
+    hwdetail_color = _hex2rgb(config_obj.hwdetail_text_color)
     for i, line in enumerate(lines_page):
-        draw.text((4, i * 15), line, fill=(255, 255, 255), font=font)
+        draw.text((4, i * 15), line, fill=hwdetail_color, font=font)
     rgb888 = np.asarray(im1, dtype=np.uint32)
     _safe_send_rgb888(rgb888)
-    dev.sleep_event.wait(1.0)
+    _power_wait(dev, 1.0)
 
 
 def _http_get(url, headers=None, timeout=8):
@@ -12011,7 +12847,8 @@ def fetch_music():
 
 
 def _refresh_cache_if_needed(cache, fetch_func, ttl=60):
-    """缓存过期时在后台线程触发刷新"""
+    """缓存过期时在后台线程触发刷新（能效模式下 TTL 按等级放大，减少后台网络线程）"""
+    ttl = ttl * _power_factor()
     if cache.get("data") is None or time.monotonic() - cache.get("time", 0) > ttl:
         threading.Thread(target=fetch_func, daemon=True).start()
 
@@ -12039,8 +12876,10 @@ def show_weather():
         _weather_cache["time"] = 0  # 强制刷新
         threading.Thread(target=fetch_weather, daemon=True).start()
     _refresh_cache_if_needed(_weather_cache, fetch_weather)
-    draw_text(str(_weather_cache.get("data") or "获取中…"), font_size=16)
-    dev.sleep_event.wait(0.5)
+    draw_text(str(_weather_cache.get("data") or "获取中…"), font_size=16,
+              front_color=_hex2rgb(config_obj.weather_text_color),
+              back_color=_hex2rgb(config_obj.weather_bg_color))
+    _power_wait(dev, 0.5)
 
 
 def show_crypto():
@@ -12055,14 +12894,15 @@ def show_crypto():
         threading.Thread(target=fetch_crypto, daemon=True).start()
     _refresh_cache_if_needed(_crypto_cache, fetch_crypto)
     lines = _crypto_cache.get("data") or ["获取中…"]
-    im1 = Image.new("RGB", (SHOW_WIDTH, SHOW_HEIGHT), (0, 0, 0))
+    im1 = Image.new("RGB", (SHOW_WIDTH, SHOW_HEIGHT), _hex2rgb(config_obj.weather_bg_color))
     draw = ImageDraw.Draw(im1)
     font = MiniMark.load_font("./simhei.ttf", 16)
+    crypto_color = _hex2rgb(config_obj.crypto_text_color)
     for i, line in enumerate(lines[:4]):
-        draw.text((4, 4 + i * 19), line, fill=(255, 200, 0), font=font)
+        draw.text((4, 4 + i * 19), line, fill=crypto_color, font=font)
     rgb888 = np.asarray(im1, dtype=np.uint32)
     _safe_send_rgb888(rgb888)
-    dev.sleep_event.wait(0.5)
+    _power_wait(dev, 0.5)
 
 
 def show_hotsearch():
@@ -12117,8 +12957,9 @@ def show_hotsearch():
     page = int(time.monotonic() // page_interval) % pages
     lines_page = lines[page * count:(page + 1) * count]
     base = page * count
-    im1 = Image.new("RGB", (SHOW_WIDTH, SHOW_HEIGHT), (0, 0, 0))
+    im1 = Image.new("RGB", (SHOW_WIDTH, SHOW_HEIGHT), _hex2rgb(config_obj.hotsearch_bg_color))
     draw = ImageDraw.Draw(im1)
+    hot_color = _hex2rgb(config_obj.hotsearch_text_color)
     # 自动适配：按最长文本宽度自动缩小字号，保证一页内容全部显示（无需滚动字幕）
     if font_auto:
         while font_size > 8:
@@ -12145,19 +12986,19 @@ def show_hotsearch():
             total_w = tw + 20
             offset = int(time.monotonic() * scroll_speed * 10) % total_w
             x = SHOW_WIDTH - offset
-            draw.text((x, y), text, fill=(255, 255, 255), font=font)
+            draw.text((x, y), text, fill=hot_color, font=font)
             if x + tw < SHOW_WIDTH:
-                draw.text((x + tw + 20, y), text, fill=(255, 255, 255), font=font)
+                draw.text((x + tw + 20, y), text, fill=hot_color, font=font)
         else:
             # 放得下或未开启滚动：超长则截断加省略号
             if tw > SHOW_WIDTH - 4:
                 while text and round(draw.textlength(text + "…", font=font)) > SHOW_WIDTH - 4:
                     text = text[:-1]
                 text += "…"
-            draw.text((4, y), text, fill=(255, 255, 255), font=font)
+            draw.text((4, y), text, fill=hot_color, font=font)
     rgb888 = np.asarray(im1, dtype=np.uint32)
     _safe_send_rgb888(rgb888)
-    dev.sleep_event.wait(0.5)
+    _power_wait(dev, 0.5)
 
 
 def show_battery():
@@ -12172,7 +13013,7 @@ def show_battery():
         threading.Thread(target=fetch_battery, daemon=True).start()
     _refresh_cache_if_needed(_battery_cache, fetch_battery, ttl=300)
     draw_text(str(_battery_cache.get("data") or "获取中…"), font_size=16)
-    dev.sleep_event.wait(0.5)
+    _power_wait(dev, 0.5)
 
 
 def show_music():
@@ -12185,7 +13026,7 @@ def show_music():
         LCD_ADD(0, 0, SHOW_WIDTH, SHOW_HEIGHT)
         threading.Thread(target=fetch_music, daemon=True).start()
     draw_text(str(_music_cache), font_size=16)
-    dev.sleep_event.wait(1.0)
+    _power_wait(dev, 1.0)
 
 
 def show_about():
@@ -12225,28 +13066,61 @@ def show_about():
     rgb888 = np.asarray(im1, dtype=np.uint32)
     _safe_send_rgb888(rgb888)
 
-    dev.sleep_event.wait(3)  # 静态页面，3秒刷新一次即可
+    _power_wait(dev, 3)  # 静态页面，3秒刷新一次即可（五级能效下6秒）
 
 
 def get_formatted_time_string(time):
     return time.strftime("%Y-%m-%d %H:%M:%S")
 
 
+_hw_monitor_lock = threading.Lock()
+_hw_monitor_loading = False  # 惰性加载进行中标志（防重复触发）
+
+
+def _ensure_hardware_monitor_async():
+    """惰性加载 LibreHardwareMonitor：仅当首次显示需要硬件传感器的页面时才在后台线程加载，
+    省去启动时无条件加载 pythonnet/.NET 运行时的内存开销。加载完成前页面显示“加载中…”，
+    完成后下轮刷新自动恢复。返回是否已就绪。"""
+    global hardware_monitor_manager, _hw_monitor_loading
+    if hardware_monitor_manager is not None and hardware_monitor_manager != 1:
+        return True
+    if hardware_monitor_manager == 1 or _hw_monitor_loading:
+        return False
+    with _hw_monitor_lock:
+        if hardware_monitor_manager is not None and hardware_monitor_manager != 1:
+            return True
+        if hardware_monitor_manager == 1 or _hw_monitor_loading:
+            return False
+        _hw_monitor_loading = True
+
+    def _worker():
+        global hardware_monitor_manager, _hw_monitor_loading
+        try:
+            HardwareMonitorManager = load_hardware_monitor()
+            hardware_monitor_manager = HardwareMonitorManager()
+            print("Libre hardware monitor load successed")
+        except Exception as e:
+            hardware_monitor_manager = 1
+            print("Libre hardware monitor 加载失败，%s" % traceback.format_exc())
+        finally:
+            _hw_monitor_loading = False
+
+    threading.Thread(target=_worker, daemon=True).start()
+    return False
+
+
 def load_task():
-    global hardware_monitor_manager, PAGE_ID
+    """后台线程：初始化自定义页面标签排序（硬件监控已改为按需惰性加载，见 _ensure_hardware_monitor_async）"""
+    global PAGE_ID
     try:
-        HardwareMonitorManager = load_hardware_monitor()
-        hardware_monitor_manager = HardwareMonitorManager()
         PAGE_ID[CUSTOM1_PAGE_ID] = PAGE_ID_EN[CUSTOM1_PAGE_ID] if config_obj.language == "English" else PAGE_ID_CN[CUSTOM1_PAGE_ID]
         PAGE_ID[CUSTOM2_PAGE_ID] = PAGE_ID_EN[CUSTOM2_PAGE_ID] if config_obj.language == "English" else PAGE_ID_CN[CUSTOM2_PAGE_ID]
         # 按页面ID排序，保持翻页顺序正确（先备份items再清空，避免clear后items为空）
         new_PAGE_ID = sorted(PAGE_ID.items(), key=lambda a: a[0])
         PAGE_ID.clear()
         PAGE_ID.update(new_PAGE_ID)
-        print("Libre hardware monitor load successed")
     except Exception as e:
-        hardware_monitor_manager = 1
-        print("Libre hardware monitor 加载失败，%s" % traceback.format_exc())
+        print("PAGE_ID 初始化失败，%s" % traceback.format_exc())
 
 
 _force_rescan_now = False  # 手动"连接"按钮置 True，daemon 下一轮立即重扫设备（默认仍自动连接）
@@ -12283,6 +13157,8 @@ def daemon_task():
                             screen_off = True
                             LCD_Color_set(0, 0, device.LCD_MAX_X, device.LCD_MAX_Y, BLACK)
                         if screen_off:
+                            # 息屏：直接 continue 会高频空转烧 CPU，按能效等级放宽等待间隔
+                            _power_wait(device, 1)
                             continue  # 息屏状态下跳过页面渲染
                     MSN_Device_1_State_machine()
             
@@ -12296,7 +13172,7 @@ def daemon_task():
                     set_active_device_config(_primary_device)
                 # 定期重新扫描（可能有新设备插入）；手动"连接"按钮可触发立即重扫
                 now = time.monotonic()
-                if now - last_scan_time < 5 and not _force_rescan_now:
+                if now - last_scan_time < 5 * _power_factor() and not _force_rescan_now:
                     continue
                 last_scan_time = now
                 _force_rescan_now = False
@@ -12312,7 +13188,7 @@ def daemon_task():
 
             if not _auto_connect:
                 # 已关闭自动连接：不扫描新设备，仅渲染已连接设备
-                time.sleep(0.5)
+                time.sleep(0.5 * _power_factor())
                 continue
 
             port_list = list(serial.tools.list_ports.comports())
@@ -12436,14 +13312,15 @@ def manage_task():
     print("Start manager")
     while MG_daemon_running:
         if dev.device_state == 0:
-            time.sleep(0.3)
+            time.sleep(0.3 * _power_factor(dev))
             continue
 
         try:
             now = time.monotonic()
-            # 串口渲染事务中（帧/页面发送期间）跳过按键ADC轮询，避免命令流交错导致画面倾斜
+            # 串口渲染事务中（帧/页面发送期间）跳过按键ADC轮询，避免命令流交错导致画面倾斜；
+            # 能效模式下按等级放宽轮询间隔（1级≈12Hz），降低镜像期间CPU占用
             if getattr(dev, "serial_busy", False):
-                time.sleep(0.02)
+                time.sleep(0.02 * _power_factor(dev))
                 continue
             ADC_ch = Read_ADC_CH(9)
             if ADC_ch == 0:
@@ -12497,7 +13374,7 @@ def manage_task():
                         ADC_det = (ADC_det + ADC_ch - 250) // 2
                         dev.ADC_det = ADC_det
                         print("校正按键检测阈值为：%d" % ADC_det)
-                    time.sleep(0.1)
+                    time.sleep(0.1 * _power_factor(dev))
                 else:
                     if first_press_time != 0:
                         if now - first_press_time > double_key_limit:
@@ -12509,8 +13386,9 @@ def manage_task():
         except Exception as e:
             print("Exception in manage_task, %s" % traceback.format_exc())
         finally:
-            # 限制ADC轮询频率，避免与屏幕镜像的帧发送争抢串口带宽
-            time.sleep(0.05)
+            # 限制ADC轮询频率，避免与屏幕镜像的帧发送争抢串口带宽；
+            # 能效模式下按等级降频（1级≈5Hz），减少串口读与CPU占用
+            time.sleep(0.05 * _power_factor(dev))
 
     print("Stop manager")
 
@@ -12644,6 +13522,11 @@ if __name__ == "__main__":
         migrate_old_config()
         config_file = os.path.normpath(os.path.join(get_config_dir(), os.path.basename(config_file)))
         config_obj = sys_config()
+        _apply_process_priority()  # 启动即按能效等级设置进程优先级（1级为低于正常，让位前台程序）
+        try:
+            psutil.cpu_percent(interval=None)  # 预热非阻塞CPU采样基准，避免首帧显示0%
+        except Exception:
+            pass
         mini_mark_parser = MiniMarkParser()
         default_font = MiniMark.load_font("./simhei.ttf", netspeed_font_size)
         netspeed_font = MiniMark.load_font("resource/Orbitron-Bold.ttf", netspeed_font_size - 4)

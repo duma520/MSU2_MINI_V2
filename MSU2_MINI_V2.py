@@ -36,7 +36,16 @@ from PIL import Image, ImageDraw, ImageFont, ImageOps  # 引入PIL库进行图�
 from PyCameraList import camera_device
 from mss import mss  # 用于桌面截图的备用方案
 
+# ★ v5.25.0：模块级导入 ctypes（单实例保护的 CreateMutexW 需要；
+# 此前 ctypes 只在个别函数内部局部 import，模块级并不存在该名字）
+import ctypes
+
 isWindows = True if os.name == "nt" else False
+
+# 子进程窗口标志（★ v5.23.0）：编译成无控制台 exe 后（--windows-console-mode=disable），
+# 若子进程未带 CREATE_NO_WINDOW，Windows 会为它新建一个控制台窗口（黑框一闪而过）。
+# 源码用 python.exe 运行时子进程继承父控制台，看不到黑框 → 属「仅编译后才出现」的现象。
+_NO_WINDOW_FLAGS = 0x08000000 if isWindows else 0  # subprocess.CREATE_NO_WINDOW
 
 if isWindows:
     from ctypes import windll
@@ -100,11 +109,11 @@ GRAY2 = 0x4208
 # ==================== 程序元数据 ====================
 PROGRAM_TITLE = "USB副屏工具"
 PROGRAM_SUBTITLE = ""
-PROGRAM_VERSION = "5.10.0"
+PROGRAM_VERSION = "5.38.0"
 PROGRAM_AUTHOR = "杜玛"
 PROGRAM_GITHUB = "https://github.com/duma520/MSU2_MINI_V2"
 PROGRAM_LICENSE = "MIT"
-PROGRAM_BUILD_DATE = "2026-08-27"
+PROGRAM_BUILD_DATE = "2026-09-22"
 
 # 整合自以下开源项目（均为MIT协议）
 PROGRAM_SOURCE_PROJECTS = [
@@ -124,6 +133,341 @@ PROGRAM_SOURCE_PROJECTS = [
 
 # 版本更新说明
 PROGRAM_CHANGELOG = """
+v5.38.0 (2026-09-22)
+- 新增/调整：**单位色默认就是五种不同颜色（马卡龙色系）+ 设置里可直接选「色系」**
+  （用户 2026-09-22：默认这五项就应该不同的颜色，默认采用马卡龙色系，也可以直接选择色系，
+   不同色系就直接设置默认的 5 种颜色）
+  · 旧版（v5.37.0）只有 MB 档有颜色、其余 4 档留空 = 用该行原色 —— 打开设置看到 5 格全是同一个颜色
+    （空值回退显示成该行 MB 色），想逐柱变色得手动一个个填。
+  · 新增色系表 `SPEED_UNIT_SCHEMES`（**7 套**：马卡龙（默认）/糖果亮彩/暖色（红橙黄）/冷色（青蓝紫）/
+    高对比（暗底最醒目）/单色·青绿深浅/单色·橙金深浅），每套给「上行/读（bar1）」与「下行/写（bar2）」
+    **各 5 个颜色**，顺序 = `<1K(B)`/`KB`/`MB`/`GB`/`TB`（与 SPEED_UNIT_LABELS 一致）。
+  · `sys_config` 的 10 个单位色字段默认值**直接由 `SPEED_UNIT_SCHEMES[0]`（马卡龙）派生** ——
+    新装/新建设备开箱就是「五档五色 + 上行与下行同单位也不同色」，不用再手配（改默认观感只需改色系表）。
+  · 设置页（设置 → 监控显示）新增 **「色系:」下拉框**：选中哪套就一次性把 10 个颜色写成那套
+    （写盘 + 表格同步刷新）；单格手改后下拉框自动显示「自定义（手动调整）」
+    （由新增的 `_speed_current_scheme()` 按当前 10 色反查，`_speed_scheme_colors()` 按名取色）。
+  · 修掉一个小别扭：色值框改为**显示配置里的真实值**（原来空值会回退显示该行 MB 色，看着像没清掉）；
+    「×」清空仍然 = 该单位用该行原色；老配置文件里已存的颜色不受影响。
+  · `SPEED_UNIT_BAR1_DEFAULT`/`SPEED_UNIT_BAR2_DEFAULT` 改由色系表派生（名字保留，门槛默认颜色/兼容用）。
+  · 验证：`_scaffold/smoke_test_speed_unit_color.py` 扩到 **116 项全过**（新增：默认 5 色互不相同、
+    上下行同单位不同色、色系反查（含「自定义」）、逐档默认取色、默认色下的像素级断言、磁盘读写·
+    网速样式同样生效、UI 色系下拉框（初始回显 / 选中即写入 10 色 / 落盘 / 手改变自定义 / 切回马卡龙））。
+v5.37.0 (2026-09-22)
+- 新增：**「速度单位换色」升级为「单位色 + 换色门槛」**（用户 2026-09-22：KB 是默认色、少于 1K 一个色、
+  兆一个色、G 一个色，不同单位用不同颜色；设置里再加一个「换色门槛」，大于/小于/等于多少时是什么颜色，
+  这种条件可以随意增加删除、可以很多条）
+  · 柱子的颜色改为 **逐根柱子**按优先级求值：①**换色门槛**（自定义条件，可增删任意多条，按列表顺序
+    从上到下匹配、**第一条命中即用**）→ ②**单位色**（<1K(B) / KB / MB / GB / TB，留空=用该行原色）
+    → ③该行**原色**；上行/读（bar1）与下行/写（bar2）各自独立一套。
+  · 门槛条件支持：**大于 / 大于等于 / 小于 / 小于等于 / 等于 / 不等于**；数值 + 单位（B/KB/MB/GB/TB，
+    1024 进制，与文字显示单位同口径）；适用范围可选「两行都适用 / 仅上行·读 / 仅下行·写」。
+    「等于」按 ±0.5% 容差（目标为 0 时精确比较）；颜色留空 / 运算符非法 / 数值非法的条目自动忽略。
+  · 实现：删除旧 `_speed_unit_palette()`/`_speed_unit_bar_color()`，改为
+    `_speed_unit_key()`/`_speed_unit_field()`/`_speed_rule_hit()`/`_speed_rule_unit_scale()`/
+    `_speed_parse_color()`/`_speed_bar_color_resolver(row, base)`（每帧每行只构造一次，柱循环里逐柱调用，
+    不逐柱读配置；开关关闭时直返原色 = 零开销）；两个渲染点（`_render_two_line_bars`、
+    `_show_diskio_netspeed`）改接解析器。MB 单位色仍用老字段名（向后兼容，老配置继续生效）。
+  · 配置新增（随各屏配置自动存盘）：`speed_unit_bar{1,2}_{b,kb,gb,tb}_color`（默认留空）+ `speed_color_rules`
+    （门槛列表，默认空）。
+  · 设置（设置 → 监控显示）：开关文案改为「开启逐柱换色……」，下方新增 **2×5 单位色网格**
+    （每格：色值框 + 「…」取色 + 「×」清空）与 **换色门槛编辑器**（行选择 + 条件 + 数值 + 单位 +
+    「时 →」+ 颜色 + 取色 + 删除；底部「＋ 添加条件」；改动即存，删除/新增即时重建列表）。
+    本页内容变多，因此**整页套了一层滚动容器**（`QScrollArea` + `setWidgetResizable`，无边框）——
+    窗口小时可滚动，不会把下面的子页签（进程/硬件详情/…）裁掉；窗口够大时看不出差别。
+  · 验证：`_scaffold/smoke_test_speed_unit_color.py` 扩到 **90 项全过**（单位划分边界 b/kb/mb/gb/tb、
+    5 种单位色的像素级断言（第 5/25/45/65 根各不同色）、6 种运算符 + 顺序优先 + 行范围 + 单位换算 +
+    非法条目容错 + 规则优先于单位色、两个渲染点的规则色像素断言、UI 添加/删除门槛与落盘）；
+    其余 20 个冒烟测试无回归（`smoke_test_multiscreen.py` 仍为另一条并行线 `_note_backpressure` 问题，与本版无关）。
+v5.36.0 (2026-09-22)
+- 修改：**「速度单位换色」改为逐根柱子判断**（用户 2026-09-22：柱子都是统一颜色，只有发生不同单位的那一根才该换色）
+  · 旧行为（v5.27.0）：按**当前瞬时速度**给**整条色带**换色 —— 一排柱子同时变一个颜色，看不出
+    「哪几根是兆、哪几根是 KB」，用户反馈“柱子都是统一颜色”。
+  · 新行为：**逐根柱子**判断 —— 该柱自身数值 ≥ 1MB/s 就用「兆色」，其余保持原色；上下行（读/写）
+    各有自己的兆色；于是**同一行里可以同时出现原色与兆色**（历史采样里哪几根是兆一眼就能分辨）。
+  · 实现：`_speed_unit_palette(c1, c2)` 返回 (原色1, 兆色1, 原色2, 兆色2)（开关关/配置异常时
+    兆色==原色 → 等于完全不换色）+ `_speed_unit_bar_color(value, 原色, 兆色)` 逐柱判定；
+    接线点 `_render_two_line_bars`（网络流量 / 磁盘读写经典2 共用）与 `_show_diskio_netspeed`
+    （磁盘读写网速样式）；旧的 `_speed_unit_bar_colors()`（整条换色）已移除。
+  · 设置文案同步（设置 → 监控显示）：勾选框改为「柱子的数值达到 MB/s（及以上）时，该根柱子改用
+    下面的『兆色』（逐根判断，其余保持原色）」，提示改为「逐根柱子判断 …… 同一行其余柱子
+    保持原色；上行/读 与 下行/写 各有自己的兆色」。开关与两个兆色仍随设置实时保存（按屏）。
+  · 验证：`_scaffold/smoke_test_speed_unit_color.py` 扩到 **40 项全过**（新增像素级逐柱断言：
+    混值序列下第 5 根=原色、第 39 根=原色、第 45 根=兆色、最后一根=兆色；边界 1MB-1/1MB；
+    开关关时混值也不换色；磁盘读写「网速样式」同样逐柱生效）；既有其它冒烟测试无回归。
+v5.35.0 (2026-09-22)
+- 修复（根治）：**行级地址重锚——任何一次错位的后果被锁死在「一行」以内，整幅斜切在结构上不再可能**（★ 2026-09-22）
+  · 背景：v5.30.0 把“串口事务/静默期”做严后，干扰已经很少，但只要发生一次，后果仍然是**整幅斜切**——
+    因为旧版整帧**只在开头下一次地址窗口**，后面全靠设备自己的线性指针推进：中间任何一处
+    丢/多几个字节或命令被吞，错位就会从那里**一路累积到帧尾**，只能等下一次整帧重绘才恢复。
+  · 根治思路：**让画面的正确性变成「局部」的**（不再依靠长距离指针推进）：
+    ①`_lcd_row_anchor_bytes(row, width)`：每行开头重新下发一次「第 row 行第 0 列、行宽 W」的
+      地址窗口（`LCD_Set_XY` + `LCD_Set_Size(W,1)` + `[2,3,7]`），把写指针**每行重新锚定**；
+    ②`Screen_Date_Process()` 重写为「按行重锚 + 行对齐提交」：每 ROW_GUARD_ROWS 行先下一遍行锚，
+      缓冲提交按行切分（行宽 160 → 128 px + 32 px 两次提交），提交不再跨行；
+      每 128 像素仍保留「背景色 + 只发差异像素」压缩，画面内容与旧版**完全一致**；
+    ③窗口宽度固定 = 图像行宽，因此不论设备以「窗口宽度」还是「面板宽度」作为步长，结果都一致。
+  · **量化结果（虚拟小屏逐包还原帧缓冲，`_scaffold/smoke_test_row_anchor.py`）**：
+    丢一个「提交」包（模拟设备少收一条「写 N 字节」指令）：
+      旧版：**4389 像素错 / 涉及 40 行**（从出错点起整幅斜切）；
+      行级重锚：**143 像素错 / 仅 1 行**，且**出错行之后每一行都像素级完美**（下一行重锚即恢复）。
+    体积开销：帧字节流仅 +8%（19572 vs 18132 字节，一帧一次 `SER_rw` 不变）。
+  · 开关：环境变量 `MSU2_MINI_ROW_GUARD=K`（K=每 K 行重锚一次，默认 1=每行；0=关闭回到旧行为，供 A/B）。
+  · 配合关系：v5.30.0 的串口事务/静默期让干扰**很少发生**，本版的行程重锚让干扰即使发生**也不会累积**；
+    两者叠加 = 「少发生 + 不累积」。（另：`version\` 下的 5.31.0~5.34.0 为另一条并行改动线的备份——
+    设备侧流控「等待传输完成」/串口单消费者队列/端口操作入工人线程/背压，与本版互补，未合入本文件。）
+  · 验证：新增 `_scaffold/smoke_test_row_anchor.py`（**19 项全过**，含虚拟设备逐包还原的像素级损控断言），
+    既有 12 个冒烟测试除 `smoke_test_multiscreen.py`（它引用了另一条并行线的 `_note_backpressure`，与本版无关）
+    全部通过；`py_compile` 通过。
+v5.30.0 (2026-09-21)
+- 修复（继续）：**倾斜仍在 → 把串口使用严格化为「事务模型」+ 帧自愈 + 看门狗收敛**（★ 2026-09-21）
+  · 背景：v5.29.0 让每帧自带地址窗口后，用户实测**画面偶尔倾斜依旧**，而日志里
+    「整屏窗口与帧数据之间被插入命令」仍在计数（插入的是 `Read_ADC_CH(9)` 按键/心跳读）——
+    说明除了「窗口与数据被拆开」之外，**串口上还有别的命令贴近帧数据**同样是倾斜的成因。
+  · 本次六条改动（每条都能单独减少「帧数据被别的命令干扰」的机会）：
+    ①**串口事务**（`_serial_begin`/`_serial_end`/`_serial_transaction_busy`）：帧发送期间 + 发送后
+      一段「静默期」（默认 150ms）内，按键 ADC 轮询 / 通信心跳 / API 一律避让；daemon 把
+      「健康心跳 + 整轮页面渲染」整体作为一个事务（带陈旧保护：标志卡死超过 1.5s 自动忽略；
+      按键轮询另有**饿死保护**：1 秒都没轮到就放行一次，避免渲染+静默期连续时实体按键失灵）。
+    ②**方向重置后静默**（200ms）：`LCD_State` 成功后一段时间不发帧数据/别的命令——
+      设备应用方向需要时间，旧流程是「方向重置 → 清屏 → 立刻写整帧」，这是最易错位的时刻。
+    ③**帧自愈**：帧写失败/写不完整 → **立刻整帧重发一次**（`frame_resend_count`），画面在一帧内
+      自愈，而不是把残缺帧留在设备上「斜到下一次整屏重绘」（旧行为）；失败的尝试不留静默期，
+      重发自身也不会被当成「静默期内插命令」。
+    ④**短写续写**：`SER_Write` 遇短写不再直接抛异常（那会留下残缺帧），改为在 0.6s 时限内续写剩余
+      部分；写异常（拔线等）仍立即上抛，保持快速失败。
+    ⑤**方向看门狗收敛**：清屏后**只对静态页**（照片/关于/纪念日/待办/农历）强制整屏重绘；
+      动态页（网络流量/磁盘读写…）每轮本来就整帧重画，旧代码对所有页都强制 = 每 15 秒额外插一次
+      「清屏 + 立刻整帧」（既黑闪又最易错位）——这正是 v5.26.0 之后倾斜变密集的直接来源。
+    ⑥**观测**：新增 `serial_quiet_violations`（静默期内仍有命令发出 → 计数 + 限频日志），
+      设备信息 → 连接 页同时显示「帧空档」与静默违规。
+  · **现场 A/B 开关（环境变量，不改代码即可逐项定位；不设即上述默认行为）**：
+    `MSU2_MINI_NO_LCD_WATCHDOG=1` 关闭周期方向重置（判断「每 15 秒方向重置」是不是元凶）；
+    `MSU2_MINI_LCD_WATCHDOG_S=30/60` 调方向重置周期；
+    `MSU2_MINI_NO_KEY_POLL=1` 关闭按键 ADC 轮询（按键会失效，仅用于判断「串口另有命令」是否主因）；
+    `MSU2_MINI_FRAME_QUIET_MS=400` 加大帧后静默期；
+    `MSU2_MINI_WRITE_PACE_MS=2` 大块写限速（怀疑设备接收缓冲小/解析慢时用）。
+  · 验证：新增 `_scaffold/smoke_test_serial_transaction.py`（**40 项全过**）——事务语义/静默期/陈旧保护/
+    静默违规统计/帧写异常整帧重发/短写续写/各路径接线与看门狗收敛的源码级断言；
+    `smoke_test_frame_gap.py`（26 项）与既有 10 个测试全部通过（无回归）。
+v5.29.0 (2026-09-21)
+- 修复：**小屏画面偶尔倾斜/斜切（能自己恢复，但比以前密集）——整帧「地址窗口 → 数据」之间有空档**（★ 2026-09-21）
+  · 现象：画面斜一下，下一帧又自己好了；v5.26.0 之后明显变密集。
+  · 根因（程序逻辑问题，不是设备坏了）：设备是按字节流解析命令的，「LCD 地址窗口」之后必须**紧跟**
+    对应的像素数据；旧代码的整帧发送是
+      LCD_ADD(窗口) →（渲染 + 编码：字体/画图/RGB565/Screen_Date_Process，几十毫秒）→ SER_rw(整帧数据)
+    这段空档期里，按键 ADC 轮询（`manage_task`，约 20Hz）、v5.26.0 新增的每 2 秒通信心跳
+    （`_device_health_tick`）、API 调用都会往同一个串口塞命令 → 设备解析错位、像素高低字节错开
+    → **画面倾斜/斜切**（而软件里的实时预览完全正常），要等下一次整屏重绘才恢复。
+    v5.26.0 的方向看门狗每 15 秒强制 `state_change = 1`，把这条路径从「只在切页时走」变成
+    「每 15 秒走一次」→ 于是倾斜明显变密集（本次修复的直接背景）；新增的 2 秒心跳也提高了插入概率。
+  · 修复（从根上消除空档，而不是继续加规避）：
+    ①新增 `_lcd_window_bytes()`：只构造「地址窗口」命令字节、不发送（含防烧屏偏移，与原 LCD_ADD 逐字节一致）。
+    ②新增 `_send_frame_with_window()`：把窗口命令与整帧数据**拼成同一条字节流**，用一次 `SER_rw` 发出
+      —— `SER_lock` 内整段写是原子的，任何线程都插不进来，空档归零。
+    ③接入全部整帧发送：`_safe_send_rgb888()`（网络流量/磁盘读写/系统监控/自定义显示/关于/农历/待办/
+      世界时钟/纪念日/API 投屏/屏号检测/Webhook 叠加…几十个页面共用）与屏幕镜像 `show_PC_Screen()`
+      （按设备实际分辨率）。
+    ④保留观测能力：`frame_window_time`/`frame_gap_count`/`frame_gap_max`/`frame_gap_intrusions`
+      ——「窗口已开、帧数据还没发」的空档期内若有别的命令插入就计数 + 限频日志（10 秒一条），
+      设备信息 → 连接 页显示「帧空档 N 次（最长 x ms）· 空档内被插入命令 M 次」，便于回归观测。
+  · 原有保护全部保留：serial_busy 串口渲染事务标志、LCD_ADD 回显校验、COMM_FAIL_LIMIT 容错、
+    防烧屏偏移、方向看门狗与静态页重绘逻辑、v5.28.0 复位横幅识别与 v5.26.0 画面刷新健康度均未改动。
+  · 验证：新增 `_scaffold/smoke_test_frame_gap.py`（**26 项全过**）——窗口字节与旧实现逐字节一致、
+    「窗口 + 数据」在同一条字节流且中间 **0 字节空档**、空档插入计数与限频、镜像帧自带窗口、
+    serial_busy 复位、空帧/无设备保护、LCD_ADD 行为不变，另附源码级断言（整帧发送统一出口）；
+    既有冒烟测试全部通过（multiscreen 27 / ui_persist 19 / comm_health 33 / device_health /
+    speed_unit_color / static_api / power_opt / settings_persist / ui_visibility / single_instance，无回归）。
+v5.28.0 (2026-09-20)
+- 修复：**「屏幕黑着不显示、软件却一直显示已连接」的真正原因：设备复位后一直回它的上电横幅**（★ 2026-09-20）
+  · 证据（用户控制台日志）：屏幕2(COM34) 之后对每条命令的响应都变成同一串 6 字节 `\x00MSN01`
+    （= 设备上电/复位横幅），于是 LCD_ADD / 方向重置 / ADC 读取全部 failed、画面不再更新；
+    日志里那串永远「屏幕2 通信失败（第 1/3 次，忽略）」就是铁证。
+  · 根因：`SER_Read` 里「只要收到任何字节就把 comm_fail_count 清零」——横幅恰好一直在收
+    → 失败计数永远回到 0 → 永远到不了 COMM_FAIL_LIMIT(3) → **永不判掉线、永不重连**，
+    于是 UI 永远显示「已连接」，而实时预览还在放最后一帧（所以看起来也“正常”）。
+  · 修复（精准只抓铁证，**不收紧原有容错**）：
+    ①上电横幅 `\x00MSNxx` = 设备复位铁证 → **立即**判掉线（`_force_device_reset`，不必等 3 次），
+      daemon 自动重连并重新初始化 LCD；同时写信息框「检测到设备复位…正在重连并重新初始化」。
+      仅在「已连接 + 非烧写中 + 连接稳定 3 秒后」生效，避开连接握手时的残留横幅。
+    ②响应校验（`SER_rw`）：设备回复的是「最后一个子命令」的回显（拼接命令 LCD_ADD 回的是末尾的 `2,3`），
+      回显正确 → `_note_comm_ok` 清零计数；无效响应 → 只限频记日志（不改掉线宽容度）——
+      保留 v5.22.0「收到响应即认为通道可用」，避免高负载下误判掉线、屏幕反复初始化。
+    ③「画面刷新健康度」接入：这类异常帧不再被计为成功，状态栏/设备信息页显示
+      「串口通信异常(N 次)：收到设备复位横幅…」，不再出现「屏黑着但状态显示刷新正常」。
+    ④日志降噪 `_throttled_print`/`_throttled_dev_print`：同类错误每 5~10 秒最多一条
+      （设备异常时旧版每秒刷几十行，把控制台与日志刷爆、真正有用的信息反而被淹没）。
+  · 设备复位后的行为：不再假装正常——立即提示并自动重连；若设备一直不恢复（一直回横幅），
+    则持续显示「未连接」+ 信息框「请拔插该屏的 USB 线（设备可能已复位/死机）」，拔插后自动恢复。
+  · 验证：新增 `_scaffold/smoke_test_comm_health.py`（**33 项全过**）——假串口模拟
+    echo（正常）/ banner（只回上电横幅）/ garbage（无效数据）三种设备，断言：横幅→立即掉线、
+    串口被关闭（可重连）、原因可读、连接稳定期内不误判、非横幅无效响应与瞬时失败仍按 v5.22.0
+    容错（不回归「一块屏老是自动断开」）、信息框提示与限频；`smoke_test_multiscreen` 等 10 个既有测试全过。
+v5.27.0 (2026-09-19)
+- 新增：**速度单位换色**（网络流量 / 磁盘读写 的柱状图，一眼区分兆与 KB）（★ 2026-09-19）
+  · 需求：「现在都是一个颜色」——当某一路速度单位为 MB/s（及以上）时，把那一根柱子换成另一套「兆色」，
+    单位是 KB/s 时保持原来的颜色，直观一看就能分辨；开关要能持久保存，不用每次重设。
+  · 设置位置：设置 → 监控显示 顶部新增分组「速度单位换色（网络流量 / 磁盘读写 的柱状图）」：
+    ①勾选框「速度单位达到 MB/s（及以上）时柱状图改用下面的兆色」（`speed_unit_color_enable`，默认关）；
+    ②「上行/读 兆色:`speed_unit_bar1_color`（默认亮橙 `#ff9f1c`）与「下行/写 兆色:`speed_unit_bar2_color`
+    （默认青绿 `#2ec4b6`），两个输入框均带调色板与配色方案色块下拉。
+  · 判定口径：与文字显示用的 `sizeof_fmt(…, base=1024)` 完全一致——`≥ 1024*1024 B/s`（即显示为 MB/s）
+    即为「兆」（`SPEED_UNIT_MB_BYTES`，见 `_speed_unit_is_mb`）；**上下行（读写）各自独立判断**，
+    例如「下载 5MB/s、上传 200KB/s」时只有下载那根柱子换色。
+  · 实现：新增 `_speed_unit_bar_colors(v1, v2, c1, c2)`（开关关/配置异常时原样返回，绝不影响原有观感；
+    配置取本屏「当前渲染设备」的配置），在两个画柱点接入：共用函数 `_render_two_line_bars`（网络流量 +
+    磁盘读写经典2 样式）与 `_show_diskio_netspeed`（磁盘读写网速样式）。磁盘读写「经典」模式无柱状图，不受影响。
+  · 保存：3 个字段随设置**实时保存**到本屏配置文件（`save_config` 延迟写盘+快照，重启自动沿用），
+    无需每次启动重新设置；也可用 `/api/config/set` 修改（已加入 `_API_CONFIG_WRITABLE`）。
+  · 注意：与其他显示颜色一样是**按屏独立**的（每块屏一份配置），两块屏要分别勾选一次。
+  · 验证：新增 `_scaffold/smoke_test_speed_unit_color.py`（**30 项全过**）——配置默认值/阈值边界（999KB、
+    1MB-1 字节、1MB、9.5MB、2GB、非法值）、配色组合（关、单路兆、双路兆、非法颜色回退）、
+    **真实渲染像素级**断言（_render_two_line_bars 与 _show_diskio_netspeed 画出来的像素颜色确实按单位换了）、
+    设置页 UI（开关与两个兆色输入框存在、勾选即写配置并**落盘**、取消勾选回 0）；
+    另附预览图脚本 `_scaffold/preview_speed_unit_color.py` → `_scaffold/_speed_unit_color_preview.png`。
+v5.26.0 (2026-09-19)
+- 修复：**长时间挂机后「一块屏不显示，但软件显示已连接、实时预览也正常、切页也不恢复」**（★ 2026-09-19）
+  · 现象：屏幕2 像没连接一样不显示，软件里两块屏都显示「已连接」，主控页实时预览也正常。
+  · 根因（多条并存，全部修掉）：
+    ①daemon 渲染循环**一个 try 包住整个 for**：某块屏渲染抛异常会直接中断整轮循环被外层 except
+      接走（屏幕1 排在 dict 前面已渲染完 → 只有屏幕2 黑），旧代码该异常只在控制台打印，界面上毫无提示。
+    ②**预览是在发送之前保存的**（`screen_process_task` 入队前 / `_safe_send_rgb888` 发送前）——
+      「预览正常」只能证明截图+编码在跑，证明不了画面真的发到屏上。
+    ③整帧页发送走 `SER_rw(..., read=False)` **不回读响应**，写失败被 `SER_rw` 内部吞掉（只 print），
+      而 `set_device_state(0)` 前 2 次失败又被忽略 → 屏幕不响应也永远「已连接」；按键/ADC 心跳
+      `manage_task` **只绑定了主设备一块屏**，第二块屏没有任何活性检测。
+    ④每 15 秒的方向看门狗会重发 `LCD_State`，它成功后会**清屏为黑**且不设 `state_change` →
+      静态页（照片/关于/农历/纪念日/待办）内容指纹没变就不再重绘，屏会一直黑着。
+    ⑤`screen_shot_thread`/`screen_process_thread` 异常退出后**没有任何重启机制**（旧函数
+      `screenshot_panic` 全工程从未被调用 = 死代码）。
+  · 修复：
+    ①daemon 改为**逐屏 try/except**：单屏渲染异常只累计该屏 `render_error_count`/`last_render_error`
+      并写入信息框（第 1/10 次与之后每 100 次提示），绝不影响其它屏。
+    ②新增**画面刷新健康度**（`ScreenDevice.last_frame_ok_time`/`frame_fail_count`/`write_error_seq`/
+      `last_write_error`）：`_mark_frame_sent()` 与 `_note_picture_ok()` 只在「这次真的写成功」时
+      才更新时间戳，`device_frame_status()` 输出「画面刷新正常（x.x 秒前）/ 画面停滞 N 秒 /
+      串口写入失败(…)：原因」，状态栏与「设备信息 → 连接」页直接显示。
+    ③新增**每屏独立的 daemon 健康检查 `_device_health_tick()`**：通信心跳（每 2 秒对该屏做一次
+      ADC 读，连续失败由 `Read_ADC_CH` 的 10 次机制判掉线→自动重连，非主屏掉线从此能被发现）、
+      线程看护（每 5 秒检查截屏/处理线程，退出即自动 `start_threads()`）、画面停滞提示（超过阈值
+      没有成功送出画面 → 信息框提示一次，恢复后自动复位，阈值按能效等级放大避免误报）。
+    ④方向看门狗重置后补置 `state_change = 1`，让页面重走「LCD_ADD + 整帧重绘」分支，静态页不再黑。
+  · 新增脚手架 `_scaffold/run_dev_with_log.bat`：开发运行并把全部输出落到 `_scaffold/run_log.txt`，
+    便于挂机后回溯（关键字 `Exception in daemon_task` / `渲染异常` / `串口读写异常` / `画面停滞` / `线程已退出`）。
+v5.25.0 (2026-09-13)
+- 新增：**单实例保护**（★ 2026-09-13，彻底避免“两个实例各抢一块屏”）
+  · 背景：程序对两块小屏的串口没有互斥，同时运行两个实例（源码版与 exe、两个 exe、
+    开机自启动与手动启动）会先打开哪个 COM 口就拥有哪块屏，另一个实例里那块屏永远
+    「像没连接」——正是「一个屏正常、另一个像没连接」的成因。
+  · 做法：命名互斥体 `MSU2_MINI_V2_single_instance`（本会话唯一，进程退出自动释放，
+    不会留死锁）；**检查放在 `__main__` 最前面**（串口/后台线程初始化之前）。
+  · 已在运行时的行为：按窗口标题前缀找到已运行实例的**可见**主窗口 → `ShowWindow(SW_RESTORE)`
+    + `SetForegroundWindow` 切到前台（窗口在托盘/隐藏状态时不强拉，而是弹提示说明）；
+    找不到窗口则弹 `QMessageBox` 提示“程序已经在运行”。
+  · 例外：命令行参数 `--allow-multiple`（或环境变量 `MSU2_MINI_ALLOW_MULTIPLE=1`）可跳过单实例检查
+    （确需两个实例分别驱动两组小屏时用，会提示“多实例会各抢一块屏”）；
+    `--quiet`（或 `MSU2_MINI_QUIET`）则静默退出不弹窗。
+  · 新增冒烟测试 `_scaffold/smoke_test_single_instance.py`。
+v5.24.0 (2026-09-13)
+- 新增：无控制台运行的日志文件 + 串口连不上原因提示（★ 2026-09-13，为排查「编译后一块屏连不上」）——
+  · 背景：编译成无控制台 exe 后 `print` 全部进 NUL，出现「两块屏一块正常、另一块像没连接」时
+    既没日志也没提示，无法判断是串口被占用、设备无响应还是别的原因。
+  · 日志文件：检测到没有真实控制台（编译后的 exe、pythonw 运行）时，把 `sys.stdout`/`sys.stderr`
+    同时写入程序目录 `MSU2_MINI_log.txt`（滚动：超过 2MB 自动把旧文件滚为 `.1`；每次启动写一行分隔，
+    含版本/PID/程序目录）；有真实控制台（源码运行、attach 模式）时不写文件；环境变量 `MSU2_MINI_NO_LOG=1` 可关闭。
+  · 串口失败原因记录与提示：`Get_MSN_Device` 记录每个串口最近一次失败原因（串口打开失败 / 设备无响应 /
+    设备校验失败），daemon 每轮扫描经 `_report_connect_failures`（限频 30 秒）汇总到信息框，例如
+    「以下串口未连接：COM4：串口打开失败（可能被其他程序或另一个实例占用）：...」——同类现象一眼可判。
+- 提醒：本程序**没有单实例保护**，同时运行两个程序（源码版与 exe、或两个 exe）会各占一块屏，
+  表现为「一个屏正常、另一个像没连接」（先抢到串口的实例先占）。出现该现象请先在任务管理器确认只有一个实例。
+v5.23.0 (2026-09-13)
+- 修复：编译（Nuitka）后的 exe 与源码运行行为不一致的 3 处「只在编译后才出现」的问题（★ 2026-09-13）：
+  · 子进程弹出黑框：`ping_worker`（网络延迟页每秒 ping 一次）与 `fetch_battery`（powercfg 电池报告）
+    调用 subprocess 时未带 `CREATE_NO_WINDOW`。源码用 python.exe 运行时子进程继承父控制台、看不到黑框；
+    编译成无控制台 exe（--windows-console-mode=disable）后，Windows 会为每个子进程新建控制台窗口 →
+    显示「网络延迟」页时每秒闪一个黑框、电池页也会闪。新增模块常量 `_NO_WINDOW_FLAGS`(0x08000000)
+    并在这两处子进程调用上补齐，编译后不再出现黑框。
+  · 开机自启动注册命令错误：`set_auto_start` 用 `getattr(sys, "frozen", False)` 判断是否已打包，
+    而 **Nuitka 不设 sys.frozen**（只注入 `__compiled__`，Nuitka 4.0.7 实测 `sys.frozen` 为 MISSING）→
+    编译后走的是「源码分支」，把注册表 Run 项写成 `"<exe>" "<exe路径>"`（把 exe 自己当参数传给自己）。
+    已改为 `getattr(sys, "frozen", False) or "__compiled__" in globals()`，编译后注册成正确的 `"<exe>"`。
+  · 排查依据（实测）：`__file__` 在 Nuitka 下解析为「exe 所在目录」（`os.path.dirname(sys.argv[0])` + 模块相对路径），
+    故 `HardwareMonitor` 找 LibreHardwareMonitor DLL、`_get_resource` 找 resource/ 都正常；
+    无控制台时 `sys.stdout/stderr` 是 NUL 设备包装器（print 不报错但看不到）。
+- 完善编译脚本 `0_nuitka_build.bat`（★ 2026-09-13）：
+  · 开头 `cd /d "%~dp0"`：不再要求「必须在项目目录执行」，避免 resource\icon.ico 等相对路径找不到。
+  · 新增控制台模式变量 `CONSOLE_MODE`（默认 disable=正式发布；改成 attach 后，从 cmd 运行 exe 就能看到日志，
+    双击仍无控制台，便于排查「编译后才有」的问题）。
+  · 新增 exe 版本信息（--company-name / --product-name / --file-description / --file-version / --product-version），
+    属性页不再是空白；版本号由脚本顶部 `APP_VER` 统一维护。
+  · 补打包 `LibreHardwareMonitor.NET.10`（缺少 .NET Framework/8 的机器上作为 DLL 回退，约 18MB）。
+  · 编译后自动把发布目录变成「可整体拷走」的目录：创建 `hotfolder`、把本机 `config\*.json`（每屏设置/电视墙/界面状态）
+    按较新原则同步进去、`.env` 缺失时复制（DeepSeek 等密钥），避免换目录/换电脑后设置与密钥“全部丢失”。
+  · 结束提示改为：发布要拷贝**整个 `build_output\MSU2_MINI_V2.dist\` 目录**，不能只拷 exe。
+v5.22.0 (2026-09-11)
+- 修复：「显示信息框」设置没有持续保存（★ 2026-09-11）——关闭后重启又自动显示（勾选框也被重新勾上）。
+  · 根因：`_ui_load_state` 用 `int(data.get("show_info", 1) or 1)` 读取，保存的 0 被 `or 1` 当成假值回退成 1，
+    所以“下次启动沿用上次设置”对该开关无效。
+  · 修复：改为 `_show_info_state = 1 if int(data.get("show_info", 1)) else 0`，并新增 `_apply_show_info_state()`
+    （配 `_show_info_widgets` / `_show_info_cbs` 注册表）统一同步信息框显隐与各屏设置页勾选框状态；
+    勾选/取消勾选仍实时写入 `config/MSU2_MINI_ui.json` 的 show_info（设置实时自动保存）。
+  · 同类缺陷一并修复：电视墙 `wall_show_live`（在显示器标签内显示实时内容）原为
+    `bool(int(data.get("wall_show_live", 1) or 1))`，关闭后重启同样会被强制打开。
+- 修复：两块小屏总有一块自动断开（★ 2026-09-11，程序逻辑问题）——
+  · 端口归属（关键）：daemon 扫描改为「按 COM 端口复用『已登记该端口』的设备对象」，新设备索引改取 `max(keys)+1`。
+    旧逻辑用 `_primary_device`（主设备槽位）决定端口归属，而 UI 切屏（顶部下拉/屏幕标签/API `/api/device/select`）会改写
+    `_primary_device`：此时若两块屏同时掉线重连，daemon 会把第一个扫到的端口连进「另一块屏的设备对象」——
+    设备身份/标签/配置文件错乱，原对象因端口被占用而永远不会再被扫描 → 那块屏就“永久掉线”。
+  · 新增 `set_default_device()`：「默认活跃屏」与「主设备槽位」分离；UI/API 切屏只改默认活跃屏，
+    `_primary_device` 只由 daemon 扫描/连接维护（端口扫描、断线重连依赖它稳定）。
+  · 通信失败容错：LCD/SFR 命令单次失败不再立即 `set_device_state(0)`（关串口→掉线→重连初始化→画面重置），
+    改为累计 `COMM_FAIL_LIMIT`(3) 次才判掉线，任意一次成功通信（`SER_Read` 收到响应）清零计数；
+    真正拔线时所有命令均失败，连续 3 次后仍能正常判掉线并自动重连。
+  · `manage_task` 线程启动时显式绑定设备（`set_current_device(dev)`），避免本线程无绑定回退到
+    “当前默认屏”后出现「检查 A 屏状态、却读写 B 屏串口」→ 误判掉线/误触发按键动作。
+- 新增冒烟测试：`_scaffold/smoke_test_ui_persist.py`（18 项：show_info 恢复/实时写盘/电视墙开关）、
+  `_scaffold/smoke_test_multiscreen.py`（27 项：假串口双设备跑真实 daemon，验证端口归属/双屏重连不产生“屏幕3”/失败阈值）；
+  同步修正 `_scaffold/smoke_test_ui_visibility.py`（配置目录隔离）、`smoke_test_settings_persist.py`（UTF-8 输出）。
+  既有 14 个冒烟测试全部通过（无回归）
+v5.21.0 (2026-08-28)
+- 优化：DeepSeek 余额 字号自适应改为「基于内容实际宽高」（★ 2026-08-28）——开启自适应后：①高度：行数*(字号+2) <= 屏高 → 最大字号 = 屏高//行数-2；②宽度：最长行 <= 屏宽-4，从①的上限往下找能放下的最大字号；③单行/少行时字号上限 50（内容短可用大号，如 130.31 可到 40+），内容长/多行自动缩小（4 行 18 / 5 行 14）。此前按行数固定上限（24）导致单行短内容字号偏小、显得“没自适应”。冒烟测试同步更新（45 项全过：含高度/宽度/上限 50 断言）
+v5.20.0 (2026-08-28)
+- 修复：DeepSeek 余额 自定义模板后字体“不自适应”（★ 2026-08-28）——自定义模板后若只显示少量项（如仅「总余额 %1」一行），自适应字号冲到上限 32（行高 34 几乎占满 80px 整屏，看起来像没自适应）。已将自适应字号上限从 32 调整为 24，单行/少行时更协调，多行仍按行数自动缩小；长文本自动缩小逻辑对自定义模板同样生效（如「自定义 %1 元」这类长模板会自动缩小）。冒烟测试同步更新（43 项全过：含渲染字号断言）
+v5.19.0 (2026-08-28)
+- 新增：DeepSeek 余额 显示项自定义模板（★ 2026-08-28）——设置 → 页面内容 → DeepSeek余额 每个显示项（总余额/赠送/充值/币种/可用）后新增自定义模板输入框：模板支持 `%1`=该显示项值（数值或文本）、`%2`=币种，如「自定义 %1 元」→「自定义 80.00 元」；留空用默认格式（余额/赠送/充值/币种/可用）。新增 `deepseek_custom_templates`（dict，按设备保存）；渲染 `_deepseek_build_lines` 增加 custom_templates 参数。冒烟测试同步更新（41 项全过：含自定义模板/混合/回退/默认字段）
+v5.18.0 (2026-08-28)
+- 新增：DeepSeek 余额 对齐方式（★ 2026-08-28）——设置 → 页面内容 → DeepSeek余额 新增「对齐方式」下拉：垂直居中（默认）/ 向上对齐。新增 `deepseek_align` 字段（center/top）并加入 `/api/config/set` 白名单；渲染按对齐计算起始行（居中=(SHOW_HEIGHT-行数*行高)//2，向上=顶部 2px）。冒烟测试同步更新（35 项全过：含对齐默认字段）
+v5.17.0 (2026-08-28)
+- 修复：主控页控件启动时显示全局默认值、需重新选择（★ 2026-08-28）——根因：index0 主控页在设备连接前用全局默认配置构建（`_build_main_tab` 的 `_cfg()` 解析为全局 config），连接后 `_rebuild_main_tabs` 因 index 已存在而跳过重建，且无任何按设备配置刷新路径（此前维护记忆中的 `_apply_main_ui_to_config` 实际不存在）。修复：
+  · 新增 `_apply_main_ui_to_config(dev)`：设备配置就绪/变化时，把该设备的配置刷回主控页控件（RGB 滑块/填充适应/动图间隔/FPS/相机/镜像窗口/屏幕分辨率下拉），全部 blockSignals 防误触发保存。
+  · `_periodic_refresh` 检测设备配置签名（id(dev.config)）变化即触发刷新（修复 index0 及切换设备后的控件显示）。
+  · 屏幕分辨率下拉 `lcd_size_var` 构建时直接读 `config.lcd_size` 回填（此前用全局 LCD_MAX_X/Y 拼字符串，恒显示 160x80）。
+  · ctx 补充 `_sliders`/`_radio_fill`/`_refresh_cameras`/`_refresh_windows` 控件引用。
+  · 冒烟测试同步更新（31 项全过）。既有 11 个冒烟测试全部通过（无回归）
+v5.16.0 (2026-08-28)
+- 修复：设置持久化遗漏全面修复（★ 2026-08-28）——
+  · 显示信息框（show_info）：改用独立状态变量 `_show_info_state` 记录，不再用 `Text1.isHidden()` 判断（主窗口最小化到托盘时 isHidden 恒为 True，会把关闭状态误存为显示，导致“每次都要重新设置”）。
+  · 设为自动连接（auto_connect）：新增程序级持久化（存 MSU2_MINI_ui.json），切换即保存、启动自动恢复。
+  · 屏幕分辨率（lcd_size）：手动设置的分辨率持久化到配置（sys_config.lcd_size），Detect_LCD_Size 启动/连接时优先应用已保存值，不再被自动检测覆盖。
+  · API/MQTT 字段即时自动保存：api_enable/port/token/overlay/api_protocols/mqtt_* 改动即落盘（_autosave_api），不再依赖「应用并重启」按钮才保存（按钮仍负责即时重启生效）。
+  · DeepSeek API Key 输入框失焦自动写入 .env（无需手动点「保存到 .env」）。
+  · 新增 _scaffold/smoke_test_settings_persist.py 冒烟测试（24 项全过）。既有 11 个冒烟测试全部通过（无回归）
+v5.15.0 (2026-08-28)
+- 新增：DeepSeek 余额 字体大小设置（★ 2026-08-28）——设置 → 页面内容 → DeepSeek余额 新增「字体自适应屏幕」开关（默认开启）与「手动字号」输入：自适应按行数自动推算字号，并长文本自动缩小保证一屏放得下；关闭自适应时用手动字号（8~72，默认 13）。新增 `deepseek_font_auto` / `deepseek_font_size` 字段并加入 `/api/config/set` 白名单。冒烟测试同步更新（34 项全过：含字体默认字段）
+v5.14.0 (2026-08-28)
+- 调整：DeepSeek 余额改为仅显示官方接口真实返回字段（★ 2026-08-28）——官方 GET /user/balance 返回 is_available + balance_infos（currency / total_balance / granted_balance / topped_up_balance），按需求去掉「累计消费（估算）」项（原用「累计充值总额 - 总余额」估算，官方不返回该字段，不做任何估算）。显示项固定为官方字段：总余额 / 赠送余额 / 充值余额 / 币种 / 账户是否可用，可多选勾选实时保存；移除 deepseek_topup_total 配置字段与设置项（累计充值总额输入框）、_parse_deepseek_balance 不再接收/计算估算、_API_CONFIG_WRITABLE 同步去掉该字段。冒烟测试同步更新（32 项全过：仅官方字段解析/显示项组合/打桩抓取/未配置 Key/网络兜底/.env 往返/默认字段）
+v5.13.0 (2026-08-28)
+- 新增：DeepSeek API 余额显示页（★ 2026-08-28）——新增第 28 个显示页面「DeepSeek余额」（DEEPSEEK_PAGE_ID=27）。官方接口 GET https://api.deepseek.com/user/balance（Authorization: Bearer <key>）返回 is_available + balance_infos（currency/total_balance/granted_balance/topped_up_balance）。
+  · 自定义显示项：设置 → 页面内容 → DeepSeek余额 勾选显示官方接口真实返回的字段——总余额/赠送余额/充值余额/币种/账户是否可用，可多选、实时保存（deepseek_show_items）。
+  · 仅显示官方返回字段：官方 GET /user/balance 返回 is_available + balance_infos（currency/total_balance/granted_balance/topped_up_balance），不做任何估算。
+  · API Key 存程序目录 .env 的 DEEPSEEK_API_KEY（设置页可填写并写入，密钥不入源码/配置 JSON，符合维护约定第 8 条）；新增 _load_env_file/_save_env_key。
+  · 后台线程抓取 + TTL 自动刷新（deepseek_refresh_interval 默认 300s，可配置/关闭）；背景/字体颜色可配（含配色方案）。
+  · 新增 fetch_deepseek_balance/_parse_deepseek_balance/_deepseek_build_lines/show_deepseek_balance。
+  · 新增 _scaffold/smoke_test_deepseek.py 冒烟测试（35 项全过：解析/估算/显示项组合/打桩抓取/未配置 Key/网络兜底/.env 往返/默认字段/页面注册）。既有 10 个冒烟测试全部通过（无回归）
+v5.12.0 (2026-08-28)
+- 新增：硬件监控数据源「系统原生」（★ 2026-08-28）——设置 → 监控显示 → 硬件监控数据源 新增第三项「系统原生（无需任何后台程序，覆盖有限）」：程序内直接读取，彻底不依赖 AIDA64 或任何后台进程。覆盖：CPU 使用率/频率、内存、磁盘、电池（psutil）、CPU 温度（WMI 热区 MSAcpi_ThermalZoneTemperature，视主板支持，5 秒缓存）、NVIDIA GPU 温度/负载/显存/功耗（pynvml，可选，无则跳过）。新增 load_system_monitor / SystemMonitorManager（与 HardwareMonitorManager 接口鸭子兼容），硬件详情/仪表盘/传感器选择框全部复用。三数据源：LibreHardwareMonitor（默认，无需后台程序，覆盖广）/ AIDA64（需后台运行并开启共享内存，覆盖最全）/ 系统原生（零后台，覆盖有限）。新增 _scaffold/smoke_test_system_monitor.py 冒烟测试
+v5.11.0 (2026-08-28)
+- 新增：硬件监控数据源可选 AIDA64（★ 2026-08-28）——设置 → 监控显示 → 顶部「硬件监控数据源」下拉，可切换 LibreHardwareMonitor（默认，推荐）或 AIDA64。AIDA64 方式：需 AIDA64 在后台运行（可最小化到系统托盘），并在 AIDA64 → 文件 → 设置 → 硬件监视 → LCD 中勾选「启用共享内存(Shared Memory)」；本程序用 ctypes 读取 Windows 共享内存 "AIDA64_SensorValues"（无 pythonnet/.NET 依赖、无需额外 DLL），实时获取 CPU/GPU/主板/内存/风扇等全部传感器。新增 load_aida64_monitor / Aida64MonitorManager（读取共享内存+类型/硬件推断，接口与 HardwareMonitorManager 鸭子类型兼容：sensors / get_value / get_value_formatted / list_sensors / update_hardwares），硬件详情、仪表盘、自定义显示、传感器选择框全部复用；切换数据源自动重置已加载管理器，下次进入硬件页面生效；AIDA64 未运行或未开启共享内存时打印提示，页面显示“未找到传感器”。新增 _scaffold/smoke_test_aida64.py 冒烟测试
 v5.10.0 (2026-08-27)
 - 新增：MQTT 全面接入（★ 2026-08-27）——新增附加接入协议 MQTT（设置 → API接入 → 附加接入协议 勾选「MQTT 客户端…」后启用，默认关闭）：以 paho-mqtt 客户端连接外部 Broker（可配地址/端口/用户名/密码），订阅命令主题执行投屏命令（JSON 与 HTTP/TCP/UDP 完全一致，响应发回响应主题），并低频推送屏幕帧（RGB888 原始字节到帧主题，有变化才发、≥0.5s 节流）；未安装 paho-mqtt 自动跳过并提示（与 pyzmq/grpcio 一致）。设置新增「MQTT 接入」分组：Broker 地址/端口/用户名/密码/命令主题/响应主题/帧主题，实时自动保存。同步：/api/protocols 自动发现、OpenAPI info、API 文档页第 8 节、Web 控制台文档标签、程序头变更记录
 v5.9.0 (2026-08-27)
@@ -715,6 +1059,7 @@ HOTSEARCH_PAGE_ID = 23  # 热搜
 BATTERY_PAGE_ID = 24   # 电池
 MUSIC_PAGE_ID = 25     # 音乐
 API_PAGE_ID = 26       # API 投屏
+DEEPSEEK_PAGE_ID = 27  # DeepSeek 余额（★ v5.13.0）
 PAGE_ID = {
     GIF_PAGE_ID: "动图",
     PCTIME_PAGE_ID: "时间",
@@ -740,6 +1085,7 @@ PAGE_ID = {
     BATTERY_PAGE_ID: "电池",
     MUSIC_PAGE_ID: "音乐",
     API_PAGE_ID: "API投屏",
+    DEEPSEEK_PAGE_ID: "DeepSeek余额",
 }
 
 # 多语言：页面名称中英映射
@@ -777,6 +1123,7 @@ PAGE_ID_EN = {
     BATTERY_PAGE_ID: "Battery",
     MUSIC_PAGE_ID: "Music",
     API_PAGE_ID: "API Screen",
+    DEEPSEEK_PAGE_ID: "DeepSeek Balance",
 }
 
 LCD_STATE_MESSAGE = [
@@ -837,21 +1184,82 @@ IMAGE_FILE_TYPES = [
 _device_context = threading.local()
 # 所有已连接设备的字典 {device_id: ScreenDevice}
 all_devices = {}
-# 主设备（单屏模式下的默认设备，向后兼容）
+# 主设备槽位（index 0，单屏兼容）。★ v5.22.0：只由 daemon 扫描/连接维护，UI 切屏不再改写它
 _primary_device = None
+# 默认/当前活跃设备（UI 选中的那块屏；未显式指定目标的操作默认作用于它）
+_default_device = None
+# 通信命令（LCD/SFR）连续失败多少次才判定掉线（★ v5.22.0 新增，见 set_device_state）
+COMM_FAIL_LIMIT = 3
+
+
+# ==================== 串口事务 / 帧发送时序（★ v5.30.0）====================
+# 为什么需要（用户 2026-09-21 反馈：“v5.29.0 修复后画面偶尔倾斜依旧”）：
+#   这是一块「字节流解析 + 内部缓冲」的小屏，一帧就是一大串字节（160x80 ≈ 26KB）。
+#   即使每帧自带窗口（v5.29.0），**只要串口上还有别的命令贴近帧数据**（帧前/帧后/方向重置前后），
+#   设备也可能把帧解析错位 → 画面倾斜/斜切。所以这里把串口使用严格化为「事务模型」：
+#     ①帧发送期间（serial_busy）+ 发送后一小段「静默期」：其它线程（按键 ADC 轮询、通信心跳、API）不发命令；
+#     ②方向重置（LCD_State）后同样静默一段（设备应用方向需要时间），期间不发帧数据；
+#     ③帧写失败/写不完整 → **立刻整帧重发一次**（画面在一帧内自愈，而不是等下一次整屏重绘）；
+#     ④daemon 把「健康心跳 + 整轮页面渲染」整体作为一个事务（期间按键轮询一律避让）。
+# 三个环境变量可现场 A/B 定位（不改代码就能缩小范围，默认值即上述行为）：
+#   MSU2_MINI_FRAME_QUIET_MS  帧发送后静默期毫秒（默认 150）
+#   MSU2_MINI_WRITE_PACE_MS   大块写的分块间隔毫秒（默认 0=不额外限速；若怀疑设备接收跟不上可试 1~3）
+#   MSU2_MINI_NO_KEY_POLL=1   关闭按键 ADC 轮询（只用于排查「串口上另有命令」是不是主因，按键会失效）
+def _env_int(name, default, lo=0, hi=100000):
+    try:
+        val = int(os.environ.get(name, "") or default)
+    except Exception:
+        val = default
+    return max(lo, min(hi, val))
+
+
+SERIAL_QUIET_AFTER_FRAME = _env_int("MSU2_MINI_FRAME_QUIET_MS", 150, 0, 2000) / 1000.0
+SERIAL_QUIET_AFTER_DIRCHANGE = max(SERIAL_QUIET_AFTER_FRAME, 0.2)   # 方向重置后的静默期
+SERIAL_WRITE_PACE = _env_int("MSU2_MINI_WRITE_PACE_MS", 0, 0, 50) / 1000.0
+SERIAL_WRITE_CHUNK = 1024     # 大块写的分块大小（分块本身是为了避免单次 write 超时）
+SERIAL_WRITE_RESUME_DEADLINE = 0.6   # 出现短写后「续写剩余部分」的时限（秒）；超时才算写失败
+# ★ v5.31.0：行级地址重锚——每 K 行重新下发一次「从第 row 行第 0 列开始、行宽 W」的地址窗口。
+#   1=每行都重锚（默认，最稳）；0=关闭（退化为整帧只下一个窗口 = 旧行为，供 A/B 对比）。
+ROW_GUARD_ROWS = _env_int("MSU2_MINI_ROW_GUARD", 1, 0, 500)
+KEY_POLL_DISABLED = (os.environ.get("MSU2_MINI_NO_KEY_POLL", "") not in ("", "0"))
+SERIAL_BUSY_STALE = 1.5      # 事务标志持有超过该秒数视为卡死（防异常路径导致按键彻底失灵）
+SERIAL_KEY_POLL_MAX_GAP = 1.0   # 按键轮询最长间隔（秒）：超过则强制放行一次（饿死保护）
+
+# 方向看门狗（定期重设 LCD 方向，防硬件漂移）。★ v5.30.0：周期可调、可整体关闭（定位用）
+LCD_WATCHDOG_SECONDS = _env_int("MSU2_MINI_LCD_WATCHDOG_S", 15, 5, 3600)
+LCD_WATCHDOG_DISABLED = (os.environ.get("MSU2_MINI_NO_LCD_WATCHDOG", "") not in ("", "0"))
+
+
+def _is_static_redraw_page(page_id):
+    """该页面是否属于「内容不变就不重绘」的静态页（清屏后需要强制整屏重绘一次，见方向看门狗）"""
+    try:
+        return page_id in (PHOTO_PAGE_ID, ABOUT_PAGE_ID, MEMO_PAGE_ID, TODO_PAGE_ID, LUNAR_PAGE_ID)
+    except Exception:
+        return False
 
 
 def get_current_device():
-    """获取当前线程活跃的ScreenDevice，无则返回主设备"""
+    """获取当前线程活跃的ScreenDevice，无则返回默认活跃设备/主设备"""
     dev = getattr(_device_context, 'device', None)
     if dev is not None:
         return dev
-    return _primary_device
+    return _default_device or _primary_device
 
 
 def set_current_device(device):
-    """设置当前线程活跃的ScreenDevice"""
+    """设置当前线程活跃的ScreenDevice（线程本地：各屏工作线程互不干扰）"""
     _device_context.device = device
+
+
+def set_default_device(device):
+    """设置默认活跃设备（UI 当前选中的屏）。
+    ★ v5.22.0：不再改写主设备槽位 `_primary_device` —— daemon 的端口扫描/重连逻辑
+    依赖「槽位 0 = 主设备」不变。此前 UI 切屏会改写它，daemon 会把新端口连进另一块
+    屏的设备对象（设备身份/标签/配置错乱），且旧设备对象会因端口被占用而永远无法
+    重连——表现为「两块小屏总有一块自动断开」。"""
+    global _default_device
+    if device is not None:
+        _default_device = device
 
 
 class ScreenDevice:
@@ -875,6 +1283,11 @@ class ScreenDevice:
         # --- 状态机 ---
         self.state_machine = SCREEN_PAGE_ID  # 当前页面
         self.serial_busy = False  # 帧/页面渲染串口发送中标志（供按键线程避让，防命令流交错导致画面倾斜）
+        self.serial_busy_since = 0.0      # ★ v5.30.0：事务开始时刻（用于陈旧保护，防标志卡住）
+        self.serial_quiet_until = 0.0    # ★ v5.30.0：静默截止时刻（帧/方向重置后不打扰设备）
+        self.frame_resend_count = 0      # ★ v5.30.0：整帧重发次数（写失败自愈）
+        self.serial_quiet_violations = 0  # ★ v5.30.0：静默期内仍发出命令的次数（正常应恒为 0）
+        self.last_key_poll_time = 0.0     # ★ v5.30.0：最近一次按键 ADC 轮询时刻（饿死保护用）
         
         # --- 截图流水线 ---
         self.screen_shot_queue = queue.Queue(2)
@@ -915,6 +1328,43 @@ class ScreenDevice:
         self.msn_data = None
         self.ADC_det = 0
         self.adc_fail_count = 0  # ADC读取连续失败计数
+        self.comm_fail_count = 0  # LCD/SFR 命令连续失败计数（★ v5.22.0：连续多次才判掉线）
+
+        # --- 画面刷新健康度（★ v5.26.0：「已连接」≠「真的在刷新」）---
+        # 为什么需要：整帧页发送不回读响应、写失败被 SER_rw 吞掉、非主屏没有 ADC 心跳，
+        # 于是「屏黑着不显示」时软件里依旧显示「已连接」、预览还停在最后一帧，无从判断。
+        self.last_frame_ok_time = 0.0     # 最近一次真的把画面写进串口的时间（monotonic）
+        self.last_frame_fail_time = 0.0   # 最近一次帧发送失败时间
+        self.frame_fail_count = 0         # 帧发送失败次数
+        self.write_error_seq = 0          # 串口写失败累计序号（判断某次发送是否成功）
+        self.last_write_error = ""        # 最近一次串口写失败原因
+        self.last_write_error_time = 0.0
+        self.render_error_count = 0       # 状态机渲染异常次数（★ 逐屏隔离后按屏统计）
+        self.last_render_error = ""
+        self.last_heartbeat_time = 0.0    # 本屏通信心跳（daemon 健康检查用）
+        self.last_heartbeat_ok_time = 0.0
+        self.last_thread_watch_time = 0.0
+        self._frame_stall_notified = False
+        self._frame_baseline_time = 0.0   # 从未送出过画面时的计时基准（避免刚连接就误报停滞）
+
+        # --- 通信有效性（★ v5.28.0）---
+        # 为什么需要：设备复位后会持续回上电横幅（\x00MSNxx），所有命令失效；旧逻辑
+        # 「收到任何字节就当作通信正常」会把失败计数清零 → 永不判掉线 → 屏幕黑着却显示已连接。
+        self.comm_ok_time = 0.0           # 最近一次收到「有效回显」的时间
+        self.last_comm_note = ""          # 最近一次通信异常原因（复位横幅/响应无效）
+        self.comm_note_time = 0.0
+        self.reset_banner_count = 0       # 收到的设备复位（上电）横幅次数
+        self.connected_time = 0.0         # 标记为「已连接」的时刻（复位横幅判定用的稳定期基准）
+
+        # --- 画面空档观测（★ v5.29.0：「窗口 → 帧数据」空档是画面倾斜的直接成因）---
+        # 为什么需要：设备按字节流解析命令，「LCD 地址窗口」之后必须紧跟对应的像素数据；
+        # 只要中间插进任何一条别的命令（按键 ADC 轮询、通信心跳、API 调用…），解析就错位，
+        # 像素高低字节错开 → 画面倾斜/斜切（软件预览却完全正常）。
+        # 修复后整帧自带窗口（见 _send_frame_with_window），空档不再影响画面，此处仅保留统计。
+        self.frame_window_time = 0.0      # 「整屏地址窗口已下发、帧数据尚未发送」的时刻（0=无空档）
+        self.frame_gap_count = 0          # 出现空档（>50ms）的次数
+        self.frame_gap_max = 0.0          # 最长空档（秒）
+        self.frame_gap_intrusions = 0     # 空档期内被其它命令插入的次数
 
         # --- 设备硬件/固件信息（连接时采集缓存，供“设备信息”标签页展示） ---
         self.usb_info = {}           # USB描述符信息（端口/VID/PID/SN/制造商/产品/位置等）
@@ -957,6 +1407,8 @@ class ScreenDevice:
         """设置设备连接状态"""
         if self.device_state != state:
             self.device_state = state
+            if state == 1:
+                self.connected_time = time.monotonic()   # ★ v5.28.0：连接时刻（复位横幅判定要跳过握手残留）
             if state == 0 and self.ser is not None and self.ser.is_open:
                 try:
                     self.ser.close()
@@ -998,10 +1450,11 @@ class ScreenDevice:
 
 def _init_single_device():
     """初始化主设备（单屏兼容模式）"""
-    global _primary_device
+    global _primary_device, _default_device
     if _primary_device is None:
         _primary_device = ScreenDevice(0, "")
         all_devices[0] = _primary_device
+        _default_device = _primary_device
 
 
 def get_all_cameras():
@@ -1823,6 +2276,133 @@ def on_lcd_direction_select(index=-1):
         pass
 
 
+def _note_write_error(device, msg):
+    """记录一次串口写失败（★ v5.26.0）。仅登记不判掉线——瞬时失败仍交给 Read_ADC_CH
+    连续失败(10次)机制处理（旧代码在 SER_rw 里不 set_device_state(0) 就是这个原因）。
+    登记后「画面刷新健康度」就能区分「这次帧到底写出去没有」。"""
+    if device is None:
+        return
+    device.write_error_seq = getattr(device, "write_error_seq", 0) + 1
+    device.last_write_error = "%s" % msg
+    device.last_write_error_time = time.monotonic()
+
+
+def _note_frame_gap_intrusion(device, data):
+    """★ v5.29.0 观测：「整屏地址窗口已下发、帧数据还没开始发送」的空档期内，
+    又有一条串口命令要发出去 —— 这正是画面倾斜（斜切）的直接成因：设备解析命令流错位，
+    像素高低字节错开。修复后整帧自带窗口（_send_frame_with_window），空档不再影响画面，
+    这里只做计数 + 限频提示，用于回归观测（设备信息页也会显示）。"""
+    t = getattr(device, "frame_window_time", 0.0) or 0.0
+    if not t:
+        return
+    if time.monotonic() - t > 1.0:      # 超过 1 秒视为无关（页面切换/长时间渲染），清掉标记
+        device.frame_window_time = 0.0
+        return
+    device.frame_gap_intrusions = getattr(device, "frame_gap_intrusions", 0) + 1
+    try:
+        head = bytes(bytearray(data)[:6])
+    except Exception:
+        head = b""
+    _throttled_dev_print(device, "frame_gap",
+                         "整屏窗口与帧数据之间被插入命令 %s（累计 %d 次；v5.29.0 起整帧自带窗口，"
+                         "不再造成画面倾斜）" % (head, device.frame_gap_intrusions), 10.0)
+
+
+# ==================== 通信有效性判定（★ v5.28.0）====================
+# 背景（真实案例，用户控制台日志）：某块屏的固件复位后会**持续回它的上电横幅** `\x00MSN01`，
+# 于是所有命令的响应都变成这 6 个字节（LCD_ADD / 方向重置 / ADC 读取全部 failed），画面从此不再更新。
+# 而旧逻辑有两处让程序「永远发现不了」，屏幕黑着却一直显示「已连接」：
+#   ①`SER_Read` 里「只要收到任何字节就把 comm_fail_count 清零」——设备一直在回横幅，
+#     于是计数永远回到 0、永远到不了 COMM_FAIL_LIMIT(3) → 永不判掉线、永不重连
+#     （日志里那串永远「通信失败（第 1/3 次，忽略）」就是铁证）；
+#   ②回显不校验：写类命令只看 len(recv)>0，收到 6 字节横幅也算成功。
+# 现在：只有「响应前 2 字节与命令一致」才算通信正常（设备确实会原样回显命令的前 2 字节，
+# 各命令自己的成功判定就是这么写的）；收到上电横幅 `\x00MSNxx` 直接上报「设备复位」。
+_log_throttle_time = {}   # {key: 上次打印时间} 同类错误限频，避免设备异常时刷爆控制台/日志
+
+
+def _throttled_print(key, msg, interval=5.0):
+    """同类错误限频打印（★ v5.28.0）：同一 key 每 interval 秒最多一条，返回是否真的打印了"""
+    now = time.monotonic()
+    if now - _log_throttle_time.get(key, 0.0) < interval:
+        return False
+    _log_throttle_time[key] = now
+    try:
+        print(msg)
+    except Exception:
+        pass
+    return True
+
+
+def _throttled_dev_print(device, key, msg, interval=5.0):
+    """带设备名的限频打印（输出形如「屏幕2 …」）"""
+    if device is None:
+        device = get_current_device()
+    name = getattr(device, "device_name", "设备")
+    return _throttled_print((key, name), "%s %s" % (name, msg), interval)
+
+
+def _looks_like_boot_banner(data):
+    """是否是设备上电/复位横幅：`\x00MSN` + 两个数字（如 \x00MSN01）"""
+    try:
+        b = bytes(data)
+    except Exception:
+        return False
+    i = b.find(b"\x00MSN")
+    return i >= 0 and len(b) >= i + 6 and 48 <= b[i + 4] <= 57 and 48 <= b[i + 5] <= 57
+
+
+def _note_comm_ok(device):
+    """命令得到有效回显：清零连续失败计数"""
+    if device is None:
+        return
+    device.comm_fail_count = 0
+    device.adc_fail_count = 0
+    device.comm_ok_time = time.monotonic()
+    device.last_comm_note = ""
+
+
+def _force_device_reset(device, banner_bytes):
+    """设备复位（收到上电横幅 `\x00MSNxx`）→ **立即**判掉线，交给 daemon 重新连接并把 LCD 重新初始化。
+    ★ v5.28.0：为何要“立即”——真实案例里设备复位后一直回横幅，所有命令失效、画面不再更新，
+    而旧逻辑「收到字节就算通信正常」会把失败计数清零 → 永远到不了 COMM_FAIL_LIMIT(3) → 既不入线也不重连，
+    UI 一直显示「已连接」（用户看到的就是「屏幕黑了但显示已连接、预览还正常」）。
+    横幅是设备复位的铁证，不必等 3 次；真拔线/无响应依旧走原来的 COMM_FAIL_LIMIT 机制。
+    仅在「已连接 + 非烧写中 + 连接稳定 3 秒后」才生效，避免连接握手阶段的握手残留误判。"""
+    if device is None or getattr(device, "device_state", 0) != 1:
+        return False
+    try:
+        if write_path_index != 0:      # 烧写过程中设备本来就会重启，不能当作故障
+            return False
+    except Exception:
+        pass
+    if time.monotonic() - (getattr(device, "connected_time", 0.0) or 0.0) < 3.0:
+        return False
+    device.reset_banner_count = getattr(device, "reset_banner_count", 0) + 1
+    _note_comm_fail(device, "收到设备复位横幅 %s，命令未生效" % bytes(banner_bytes))
+    print("%s 检测到设备复位（上电横幅 %s，第 %d 次）：立即重新连接并重新初始化 LCD"
+          % (device.device_name, bytes(banner_bytes), device.reset_banner_count))
+    try:
+        insert_text_message("%s 检测到设备复位（上电横幅 %s）\n已按掉线处理，正在自动重连并重新初始化…"
+                            % (device.device_name, bytes(banner_bytes)))
+    except Exception:
+        pass
+    device.set_device_state(0)     # 直接断开（不走 3 次容错），daemon 会重新握手/初始化
+    return True
+
+
+def _note_comm_fail(device, reason):
+    """通信异常登记（★ v5.28.0）：记录原因，并让「画面刷新健康度」把这类帧也算失败
+    ——否则屏黑着但「每次都写成功」，状态栏还会显示刷新正常。
+    注意：**不改 comm_fail_count**，掉线判定仍交给 _force_device_reset（横幅铁证）
+    与原有的 COMM_FAIL_LIMIT / ADC 连续失败机制，保持 v5.22.0 对瞬时失败的宽容度。"""
+    if device is None:
+        return
+    device.last_comm_note = "%s" % reason
+    device.comm_note_time = time.monotonic()
+    _note_write_error(device, reason)
+
+
 # 由于设备不支持多线程访问，请不要直接使用SER_Write，应使用SER_rw方法
 def SER_Write(Data_U0):
     device = get_current_device()
@@ -1839,30 +2419,30 @@ def SER_Write(Data_U0):
     data_len = len(Data_U0)
     # 大块数据分块写入：单次write大块数据可能触发write_timeout导致部分写入
     # （命令流截断→硬件解析错位→画面倾斜）。分块写入每块都校验完整性。
-    CHUNK_SIZE = 1024
-    if data_len <= CHUNK_SIZE:
-        written = ser.write(Data_U0)
-        if written != data_len:
-            print("SER_Write: 写入不完整 expected=%d actual=%d" % (data_len, written))
-            raise IOError("串口写入不完整")
-    else:
-        total = 0
-        while total < data_len:
-            # 写入前再次确认串口仍打开，避免其他线程关闭串口后写入失败
-            if not ser.is_open:
-                raise IOError("串口已关闭")
-            end = min(total + CHUNK_SIZE, data_len)
-            chunk = Data_U0[total:end]
-            written = ser.write(chunk)
-            if written != len(chunk):
-                print("SER_Write: 分块写入不完整 chunk=%d actual=%d (已写%d/%d)"
-                      % (len(chunk), written, total, data_len))
-                raise IOError("串口分块写入不完整")
+    # ★ v5.30.0：短写不再直接抛异常（那会留下「残缺帧」→ 画面错位），改为在超时内续写剩余部分；
+    #   可选限速（MSU2_MINI_WRITE_PACE_MS）用于设备接收缓冲小的场景。
+    deadline = time.monotonic() + SERIAL_WRITE_RESUME_DEADLINE
+    total = 0
+    while total < data_len:
+        if not ser.is_open:
+            raise IOError("串口已关闭")
+        end = min(total + SERIAL_WRITE_CHUNK, data_len)
+        written = ser.write(Data_U0[total:end])   # 写异常（拔线/句柄失效等）直接上抛 → 快速失败
+        if written:
             total += written
+        if total >= data_len:
+            break
+        # 短写/零写：在时限内继续写剩余部分。
+        # （旧代码这里直接 raise → 整帧被截断 → 设备上留下「残缺帧」→ 画面错位/斜切，
+        #   而且只能等下一次整屏重绘才恢复；见 _send_frame_with_window 的整帧重发。）
+        if time.monotonic() > deadline:
+            print("SER_Write: 写入未完成 expected=%d actual=%d" % (data_len, total))
+            raise IOError("串口写入未完成（已写 %d/%d）" % (total, data_len))
+        time.sleep(SERIAL_WRITE_PACE if SERIAL_WRITE_PACE > 0 else 0.002)
     ser.flush()
     # 大块数据发送后短暂排空：USB适配器flush()返回后可能仍在发送末尾字节，
     # 紧接着的下一条命令会与末尾字节在适配器内部交错，造成硬件解析错位→倾斜
-    if data_len > CHUNK_SIZE:
+    if data_len > SERIAL_WRITE_CHUNK:
         time.sleep(0.1)
 
 
@@ -1879,7 +2459,7 @@ def SER_Read():
     try:
         while len(recv) == 0:
             if time.monotonic() >= deadline:
-                print("SER_Read timeout")
+                _throttled_dev_print(device, "read_timeout", "SER_Read 超时（设备无响应）", 5.0)
                 return 0
             n = ser.in_waiting
             if n > 0:
@@ -1897,6 +2477,14 @@ def SER_Read():
             recv.extend(ser.read(ser.in_waiting))
     except Exception:
         pass
+    # ★ v5.28.0：保留 v5.22.0 的容错——「收到响应即认为通道可用，清零连续失败计数」，
+    # 避免瞬时失败累积造成误判掉线（高负载下会反复重连、屏幕反复初始化）。
+    # 但**设备复位另有铁证**：上电横幅 `\x00MSNxx` → 直接按掉线处理并重连（见 _force_device_reset），
+    # 那才是「屏幕黑了却一直显示已连接」的真正原因。
+    if _looks_like_boot_banner(recv):
+        _force_device_reset(device, recv[:8])
+    elif getattr(device, "comm_fail_count", 0):
+        device.comm_fail_count = 0
     return recv
 
 
@@ -1910,14 +2498,21 @@ def SER_rw(data, read=True, size=0):
     try:
         if not ser.is_open:
             print("设备未连接，取消串口读写")
+            _note_write_error(device, "串口未打开")
             return result
+
+        # ★ v5.29.0 观测：整屏「地址窗口」与「帧数据」之间的空档期内，别的命令插进来了吗？
+        #   （历史上这就是画面倾斜的成因之一；整帧自带窗口后仅作计数，不再影响画面）
+        _note_frame_gap_intrusion(device, data)
+        # ★ v5.30.0 观测：静默期（刚发完一帧/刚做完方向重置）内仍发命令 → 设备容易被再次打扰
+        _note_serial_quiet_violation(device, data)
 
         try:
             SER_Write(data)  # 发出指令
         except Exception as e:
             # 写失败可能只是设备瞬时繁忙（如正在渲染帧/命令流拥塞），
             # 等待后重试一次，避免一次瞬时故障就误判掉线、断开设备重连。
-            print("串口写入异常(%s)，等待后重试一次…" % e)
+            _throttled_dev_print(device, "write_retry", "串口写入异常(%s)，等待后重试一次…" % e, 5.0)
             time.sleep(0.1)
             if not ser.is_open:
                 raise
@@ -1930,11 +2525,25 @@ def SER_rw(data, read=True, size=0):
                 return result
             result.extend(recv)
             if len(result) >= size:
-                return result
+                break   # ★ v5.28.0：不再直接 return，先做回显校验再返回
+        # ★ v5.28.0 响应校验（**只观测，不改判掉线的宽容度**）：
+        # 设备回复的是「最后一个子命令」的回显（拼接命令如 LCD_ADD 回的是末尾的 2,3，
+        # 而不是整条命令的头两字节）；回显正确→清零失败计数；收到复位横幅→按设备复位处理；
+        # 其它无效响应只限频记日志（保留 v5.22.0 对瞬时失败的容错，避免高负载下误判掉线）。
+        if _looks_like_boot_banner(result):
+            _force_device_reset(device, result[:8])
+        elif len(result) >= 2 and (list(result[:2]) == list(data[:2])
+                                   or bytes(result[:2]) in bytes(data)):
+            _note_comm_ok(device)
+        else:
+            _throttled_dev_print(device, "badresp",
+                                 "通信异常：命令 %s 的响应无效 %s（设备可能已复位）"
+                                 % (bytes(data[:2]), bytes(result[:8])), 5.0)
     except Exception as e:  # 出现异常
         # 不 ser.close()/set_device_state(0)：瞬时异常(超时/底层竞争)会误判掉线，
         # 导致 daemon 反复重连→屏幕重新初始化→闪烁。真正拔线由 Read_ADC_CH 连续失败(10次)检测。
-        print("串口读写异常，%s" % e)
+        _throttled_dev_print(device, "serial_exc", "串口读写异常，%s" % e, 5.0)
+        _note_write_error(device, e)   # ★ v5.26.0：登记写失败，供「画面刷新健康度」判断
     finally:
         SER_lock.release()
     return result
@@ -1953,7 +2562,7 @@ def Read_M_u8(add):  # 读取主机u8寄存器（MSC设备编码，Add）
     if len(recv) > 5:
         return recv[5]
     else:
-        print("Read_M_u8 failed: %s" % recv)
+        _throttled_dev_print(device, "sfr_r8", "SFR u8 读取失败: %s" % recv, 5.0)
         set_device_state(0)
         return 0
 
@@ -1971,7 +2580,7 @@ def Read_M_u16(add):  # 读取主机u8寄存器（MSC设备编码，Add）
     if len(recv) > 5:
         return recv[4] * 256 + recv[5]
     else:
-        print("Read_M_u16 failed: %s" % recv)
+        _throttled_dev_print(device, "sfr_r16", "SFR u16 读取失败: %s" % recv, 5.0)
         set_device_state(0)
         return 0
 
@@ -1989,7 +2598,7 @@ def Write_M_u8(add, data_w):  # 修改主机u8寄存器（MSC设备编码，Add�
     if len(recv) > 0:
         return 1
     else:
-        print("Write_M_u8 failed: %s" % recv)
+        _throttled_dev_print(device, "sfr_w8", "SFR u8 写入失败: %s" % recv, 5.0)
         set_device_state(0)
         return 0
 
@@ -2007,7 +2616,7 @@ def Write_M_u16(add, data_w):  # 修改主机u8寄存器（MSC设备编码，Add
     if len(recv) > 0:
         return 1
     else:
-        print("Write_M_u16 failed: %s" % recv)
+        _throttled_dev_print(device, "sfr_w16", "SFR u16 写入失败: %s" % recv, 5.0)
         set_device_state(0)
         return 0
 
@@ -2035,12 +2644,14 @@ def Read_ADC_CH(ch):  # 读取主机ADC寄存器数值（ADC通道）
         if device is not None:
             device.adc_fail_count = fail_count
         if fail_count >= 10:
-            print("Read_ADC_CH 连续失败%d次，触发重连" % fail_count)
+            _throttled_dev_print(device, "adc_fail10", "连续 %d 次 ADC 读取失败，触发重连%s"
+                                 % (fail_count, ("：" + device.last_comm_note)
+                                    if getattr(device, "last_comm_note", "") else ""), 5.0)
             set_device_state(0)
             if device is not None:
                 device.adc_fail_count = 0
         elif fail_count == 1:
-            print("Read_ADC_CH failed (第1次，忽略): %s" % recv)
+            _throttled_dev_print(device, "adc_fail1", "ADC 读取失败（第 1 次，忽略）：%s" % recv, 5.0)
         return 0
 
 
@@ -2406,9 +3017,10 @@ def LCD_Photo(Page_Add):
 
     recv = SER_rw(hex_use)  # 发出指令
     if len(recv) > 1 and recv[0] == hex_use[0] and recv[1] == hex_use[1]:
+        _note_picture_ok()   # ★ v5.26.0：动图/照片页的画面送出也算“在刷新”
         return 1
     else:
-        print("LCD_Photo failed: %s" % recv)
+        _throttled_dev_print(None, "lcd_photo", "LCD_Photo failed: %s（设备未正常响应）" % recv)
         set_device_state(0)
         return 0
 
@@ -2435,11 +3047,20 @@ def update_burn_offset():
         idx = int(now // BURN_INTERVAL) % len(BURN_OFFSETS)
         dev.burn_offset_x, dev.burn_offset_y = BURN_OFFSETS[idx]
 
-def LCD_ADD(LCD_X, LCD_Y, LCD_X_Size, LCD_Y_Size):
-    # 防烧屏：微调显示位置
-    update_burn_offset()
+def _lcd_window_bytes(LCD_X, LCD_Y, LCD_X_Size, LCD_Y_Size):
+    """构造「LCD 地址窗口」命令字节（含防烧屏偏移），**只返回字节、不发送**。
+
+    ★ v5.29.0：为什么要把窗口命令与整帧数据拼在一条字节流里（见 _send_frame_with_window）——
+      设备按字节流解析命令，窗口命令之后必须**紧跟**对应的像素数据。旧代码是
+      「LCD_ADD(窗口) →（渲染+编码，几十毫秒）→ SER_rw(整帧数据)」，中间那段空档里
+      按键 ADC 轮询（约 20Hz）、通信心跳（每 2 秒）、API 调用随时会插进一条命令，
+      设备解析随即错位、像素高低字节错开 → **画面倾斜/斜切**（软件预览却完全正常），
+      直到下一次整屏重绘才恢复（= 用户看到的「倾斜了但能恢复，而且越来越密集」）。
+    """
+    update_burn_offset()      # 防烧屏：微调显示位置
     dev = get_current_device()
-    if dev is None: return 0
+    if dev is None:
+        return bytearray()
     x = max(0, LCD_X + dev.burn_offset_x)
     y = max(0, LCD_Y + dev.burn_offset_y)
     hex_use = LCD_Set_XY(x, y)
@@ -2450,14 +3071,25 @@ def LCD_ADD(LCD_X, LCD_Y, LCD_X_Size, LCD_Y_Size):
     hex_use.append(0)
     hex_use.append(0)
     hex_use.append(0)
+    return hex_use
+
+
+def LCD_ADD(LCD_X, LCD_Y, LCD_X_Size, LCD_Y_Size):
+    dev = get_current_device()
+    if dev is None: return 0
+    hex_use = _lcd_window_bytes(LCD_X, LCD_Y, LCD_X_Size, LCD_Y_Size)
 
     recv = bytearray()
     for attempt in range(2):  # 容错：一次失败可能是设备瞬时繁忙，重试一次
         recv = SER_rw(hex_use)  # 发出指令
         if len(recv) > 1 and recv[0] == 2 and recv[1] == 3:
+            _note_picture_ok(dev)   # ★ v5.26.0：写明地址窗口成功 = 本屏在刷新（画面类命令，不含纯清屏）
+            # ★ v5.29.0：标记「窗口已开、等待帧数据」——这段空档里若有别的命令插进来，
+            #   SER_rw 会统计到（见 _note_frame_gap_intrusion）；整帧自带窗口后只是观测数据。
+            dev.frame_window_time = time.monotonic()
             return 1
         time.sleep(0.02)
-    print("LCD_ADD failed: %s" % recv)
+    _throttled_dev_print(dev, "lcd_add", "LCD_ADD failed: %s（设备未正常响应）" % recv)
     set_device_state(0)
     return 0
 
@@ -2480,10 +3112,14 @@ def LCD_State(LCD_S):
             w = dev.LCD_MAX_X if dev is not None else SHOW_WIDTH
             h = dev.LCD_MAX_Y if dev is not None else SHOW_HEIGHT
             LCD_Color_set(0, 0, w, h, (0, 0, 0))
+            # ★ v5.30.0：方向刚变过，设备需要时间应用；这段静默期内不要发帧数据/别的命令
+            #   （否则新一帧可能在设备还没切好方向时到达 → 画面错位/斜切）
+            if dev is not None:
+                dev.serial_quiet_until = time.monotonic() + SERIAL_QUIET_AFTER_DIRCHANGE
             # print("LCD towards change to: %s" % LCD_S)
             return 1
         time.sleep(0.1)
-    print("LCD towards change failed: %s" % recv)
+    _throttled_dev_print(None, "lcd_state", "LCD 方向重置失败: %s（设备未正常响应）" % recv)
     set_device_state(0)
     return 0
 
@@ -2749,7 +3385,7 @@ def LCD_ASCII_32X64(LCD_X, LCD_Y, Txt, Num_Page):
     if len(recv) > 1 and recv[0] == 2 and recv[1] == 3:
         return 1
     else:
-        print("LCD_ASCII_32X64 failed: %s" % recv)
+        _throttled_dev_print(None, "lcd_ascii32", "LCD_ASCII_32X64 failed: %s" % recv)
         set_device_state(0)  # 接收出错
         return 0
 
@@ -2768,7 +3404,7 @@ def LCD_GB2312_16X16(LCD_X, LCD_Y, Txt):
     if len(recv) > 1 and recv[0] == 2 and recv[1] == 3:
         return 1
     else:
-        print("LCD_GB2312_16X16 failed: %s" % recv)
+        _throttled_dev_print(None, "lcd_gb16", "LCD_GB2312_16X16 failed: %s" % recv)
         set_device_state(0)  # 接收出错
         return 0
 
@@ -2787,7 +3423,7 @@ def LCD_Photo_wb_MIX(LCD_X, LCD_Y, LCD_X_Size, LCD_Y_Size, Page_Add):
     if len(recv) > 1 and recv[0] == 2 and recv[1] == 3:
         return 1
     else:
-        print("LCD_Photo_wb_MIX failed: %s" % recv)
+        _throttled_dev_print(None, "lcd_photowb", "LCD_Photo_wb_MIX failed: %s" % recv)
         set_device_state(0)  # 接收出错
         return 0
 
@@ -2818,7 +3454,7 @@ def LCD_GB2312_16X16_MIX(LCD_X, LCD_Y, Txt):
     if len(recv) > 1 and recv[0] == 2 and recv[1] == 3:
         return 1
     else:
-        print("LCD_GB2312_16X16_MIX failed: %s" % recv)
+        _throttled_dev_print(None, "lcd_gb16mix", "LCD_GB2312_16X16_MIX failed: %s" % recv)
         set_device_state(0)  # 接收出错
         return 0
 
@@ -2839,7 +3475,7 @@ def LCD_Color_set(LCD_X, LCD_Y, LCD_X_Size, LCD_Y_Size, F_Color):
     if len(recv) > 1 and recv[0] == 2 and recv[1] == 3:
         return 1
     else:
-        print("LCD_Color_set failed: %s" % recv)
+        _throttled_dev_print(None, "lcd_colorset", "LCD_Color_set failed: %s" % recv)
         set_device_state(0)  # 接收出错
         return 0
 
@@ -2892,7 +3528,7 @@ def show_PC_state(FC, BC):  # 显示PC状态
         hex_use = LCD_Photo_wb(0, 0, SHOW_WIDTH, SHOW_HEIGHT, photo_add)  # 放置背景
         recv = SER_rw(hex_use)  # 发出指令
         if len(recv) == 0 or recv[0] != 2 or recv[1] != 3:
-            print("show_PC_state failed: %s" % recv)
+            _throttled_dev_print(dev, "pc_state1", "系统监控页背景写入失败: %s" % recv, 5.0)
             set_device_state(0)  # 接收出错
 
     # CPU（interval=None 非阻塞采样，避免每次刷新阻塞0.5s；启动时已预热基准）
@@ -2978,7 +3614,7 @@ def show_PC_state(FC, BC):  # 显示PC状态
     hex_use.extend(LCD_Photo_wb(56, 47, 24, 33, (FRQ % 10) + num_add))
     recv = SER_rw(hex_use, size=6 * 12)  # 发出指令
     if len(recv) == 0 or recv[0] != 2 or recv[1] != 3:
-        print("show_PC_state failed: %s" % recv)
+        _throttled_dev_print(dev, "pc_state2", "系统监控页频率写入失败: %s" % recv, 5.0)
         set_device_state(0)  # 接收出错
 
     # 实时预览：软件渲染系统状态
@@ -3091,53 +3727,81 @@ def digit_to_ints(di):
     return [(di >> 24) & 0xFF, (di >> 16) & 0xFF, (di >> 8) & 0xFF, di & 0xFF]
 
 
-def Screen_Date_Process(Photo_data):  # 对数据进行转换处理
-    total_data_size = len(Photo_data)  # SHOW_WIDTH * SHOW_HEIGHT ?
-    # 防御：校验输入数据长度与LCD分辨率匹配
-    expected_pixels = LCD_MAX_X * LCD_MAX_Y
-    if total_data_size != expected_pixels:
-        print("Screen_Date_Process: 数据长度异常 actual=%d expected=%d (LCD %dx%d), 返回空数据"
-              % (total_data_size, expected_pixels, LCD_MAX_X, LCD_MAX_Y))
+def _lcd_row_anchor_bytes(row, width):
+    """★ v5.31.0：构造「把写指针锚定到第 row 行、行宽 width」的地址窗口命令字节（不发送）。
+
+    为什么要每行重锚（画面倾斜的根治点）：
+      设备按字节流解析命令；旧版整帧只在开头下一次地址窗口，后面完全靠设备自己的线性指针推进。
+      一旦中间任何一处被干扰（丢/多几个字节、命令被吞进数据、设备内部错位），**错位会从那里
+      一路累积到帧尾** —— 画面就表现为「从某一行起整幅斜切」，而且只能等下一次整帧重绘才恢复。
+      改成每行开头都重下一遍「第 row 行第 0 列、行宽 W」的窗口后，指针每行都被重新锚定：
+      任何一次错位的后果**最多是当前这一行**（下一行立刻恢复正确位置），整幅偏移在结构上不再可能。
+      窗口宽度固定 = 图像行宽，所以不论设备是以「窗口宽度」还是「面板宽度」作为步长，结果都一致。
+    """
+    dev = get_current_device()
+    ox = getattr(dev, "burn_offset_x", 0) if dev is not None else 0
+    oy = getattr(dev, "burn_offset_y", 0) if dev is not None else 0
+    hex_use = LCD_Set_XY(max(0, ox), max(0, row + oy))
+    hex_use.extend(LCD_Set_Size(width, 1))
+    hex_use.append(2)  # 对LCD多次写入
+    hex_use.append(3)  # 设置指令
+    hex_use.append(7)  # 载入地址（指针回到该行行首）
+    hex_use.append(0)
+    hex_use.append(0)
+    hex_use.append(0)
+    return hex_use
+
+
+def Screen_Date_Process(Photo_data, row_width=None):  # 对数据进行转换处理
+    """把 RGB565 数组编码为可直接发送到小屏的字节流（★ v5.31.0 改为「按行重锚」）。
+
+    与旧版的区别（只为抗干扰，画面内容完全一致）：
+      · 每 ROW_GUARD_ROWS 行先下发一次「第 row 行、行宽 row_width」的地址窗口（行级重锚）；
+      · 缓冲提交（`[2,3,8,hi,lo,0]`）按行对齐切分（行宽 160 时 = 128 px + 32 px 两次提交），
+        因此每次提交都落在某一行内，不会跨越行边界；
+      · 每 128 像素仍做一次「背景色 + 只发差异像素」压缩（与原逻辑一致）。
+    效果：任何单点错位最多影响 1 行（下一行重锚即恢复），不会出现整幅斜切。
+    """
+    total_data_size = len(Photo_data)
+    row_w = int(row_width or LCD_MAX_X)
+    if row_w <= 0 or total_data_size % row_w != 0:
+        print("Screen_Date_Process: 数据长度/行宽异常 actual=%d row_width=%d（LCD %dx%d）"
+              % (total_data_size, row_w, LCD_MAX_X, LCD_MAX_Y))
         return bytearray()
-    data_per_page = 128
-    data_page1 = 0
-    data_page2 = 0
+    rows = total_data_size // row_w
+    per_commit = 128          # 设备缓冲 256B = 128 个 RGB565 像素
+    guard = ROW_GUARD_ROWS
     hex_use = bytearray()
-    for j in range(0, total_data_size // data_per_page):  # 每次写入一个Page
-        data_page1 = data_page2
-        data_page2 += data_per_page
-        data_w = Photo_data[data_page1: data_page2]
-        # 将相邻两个 RGB565 像素打包为一个 32 位值（高16位=偶数像素，低16位=奇数像素）。
-        # 必须先提升为 uint32 再左移：uint16 << 16 会溢出归零，
-        # 导致偶数像素颜色全部丢失，画面出现栅栏/斜切（小屏倾斜而预览正常）。
-        cmp_use = (data_w[::2].astype(np.uint32) << 16) | data_w[1::2].astype(np.uint32)
+    for r in range(0, rows):
+        if guard > 0 and (r % guard == 0):
+            hex_use.extend(_lcd_row_anchor_bytes(r, row_w))
+        row = Photo_data[r * row_w:(r + 1) * row_w]
+        for start in range(0, row_w, per_commit):
+            chunk = np.asarray(row[start:start + per_commit])
+            if chunk.size <= 0:
+                continue
+            if chunk.size % 2:                     # 防御：奇数字节无法两两打包，补一个背景像素
+                chunk = np.append(chunk, np.uint16(0))
+            # 将相邻两个 RGB565 像素打包为一个 32 位值（高16位=偶数像素，低16位=奇数像素）。
+            # 必须先提升为 uint32 再左移：uint16 << 16 会溢出归零，
+            # 导致偶数像素颜色全部丢失，画面出现栅栏/斜切（小屏倾斜而预览正常）。
+            cmp_use = (chunk[::2].astype(np.uint32) << 16) | chunk[1::2].astype(np.uint32)
 
-        # 找最频繁的颜色作为背景色填充整个区域
-        u, c = np.unique(cmp_use, return_counts=True)
-        result = u[c.argmax()]
-        hex_use.extend([2, 4])
-        hex_use.extend(digit_to_ints(result))
+            # 找最频繁的颜色作为背景色填充整个区域
+            u, c = np.unique(cmp_use, return_counts=True)
+            result = u[c.argmax()]
+            hex_use.extend([2, 4])
+            hex_use.extend(digit_to_ints(result))
 
-        # 填充与背景色不同的像素
-        for i, cmp_value in enumerate(cmp_use):
-            if cmp_value != result:
-                hex_use.extend([4, i])
-                hex_use.extend(digit_to_ints(cmp_value))
+            # 填充与背景色不同的像素
+            for i, cmp_value in enumerate(cmp_use):
+                if cmp_value != result:
+                    hex_use.extend([4, i])
+                    hex_use.extend(digit_to_ints(cmp_value))
 
-        # Append footer
-        hex_use.extend([2, 3, 8, 1, 0, 0])
-
-    remaining_data_size = total_data_size % data_per_page
-    if remaining_data_size != 0:  # 还存在没写完的数据
-        data_w = Photo_data[-remaining_data_size:]  # 取最后的没有写的
-        # 补全128个 uint16
-        data_w = np.append(data_w, np.full(data_per_page - remaining_data_size, 0xFF, dtype=np.uint32))
-        # 同上：提升为 uint32，避免 uint16 左移溢出导致偶数像素丢失
-        cmp_use = (data_w[::2].astype(np.uint32) << 16) | data_w[1::2].astype(np.uint32)
-        for i, cmp_value in enumerate(cmp_use):
-            hex_use.extend([4, i])
-            hex_use.extend(digit_to_ints(cmp_value))
-        hex_use.extend([2, 3, 8, 0, remaining_data_size * 2, 0])
+            # 提交本块（字节数 = 像素数 × 2）
+            size = int(chunk.size) * 2
+            hex_use.extend([2, 3, 8, size // 256, size % 256, 0])
     return hex_use
 
 
@@ -3664,7 +4328,7 @@ def screen_process_task(device=None):
             # 转化为可直接写入小屏幕的格式
             rgb565 = rgb888_to_rgb565(im1)
             # arr = np.frombuffer(rgb565.flatten().tobytes(),dtype=np.uint16).astype(np.uint32)
-            hexstream = Screen_Date_Process(rgb565.flatten())
+            hexstream = Screen_Date_Process(rgb565.flatten(), row_width=LCD_MAX_X)
 
             # 防御：校验hexstream合理性（不应为空，也不应异常巨大）
             if len(hexstream) == 0:
@@ -3712,18 +4376,213 @@ def screenshot_panic(clean_queue=True):
     dev.screen_process_thread.start()
 
 
+# ==================== 画面刷新健康度（★ v5.26.0）====================
+# 背景：「屏黑着不显示、软件却显示已连接、实时预览也正常」最难排查，因为
+#   ①预览是在发送之前保存的（_safe_send_rgb888 / screen_process_task），只能证明截图+编码在跑；
+#   ②连接状态 device_state 只在 LCD/SFR 命令连续失败 COMM_FAIL_LIMIT(3) 次后才翻转，而整帧页发送
+#     走 SER_rw(read=False) 不回读响应，写失败又被 SER_rw 内部吞掉；
+#   ③按键/ADC 心跳 manage_task 只绑定主设备一块屏，第二块屏没有任何活性检测。
+# 这里给每块屏记录「最近一次真的把画面写进串口的时间」与「写失败次数」，供状态栏/信息框/
+# 设备信息页显示，把「已连接」与「真的在刷新」分开（只观测，不改变原有发送逻辑）。
+FRAME_STALL_SECONDS = 20.0       # 超过该秒数没有成功送出画面 → 判定「画面停滞」（按能效等级放大）
+DEVICE_HEARTBEAT_SECONDS = 2.0   # 每块屏独立的通信心跳间隔（非主屏靠它才能发现掉线）
+THREAD_WATCH_SECONDS = 5.0       # 截屏/处理线程看护检查间隔
+
+
+def _note_picture_ok(dev=None):
+    """记录一次成功的「画面类」命令（LCD_ADD 地址窗口 / 图库照片 / 整帧发送）。
+    专不含纯清屏（LCD_Color_set）——这样「被看门狗清屏后一直没重绘」也能被判为画面停滞。"""
+    if dev is None:
+        dev = get_current_device()
+    if dev is not None:
+        dev.last_frame_ok_time = time.monotonic()
+
+
+# ==================== 串口事务（★ v5.30.0）====================
+# 约定：一次「事务」= 帧数据发送（或整轮页面渲染）期间 + 之后一小段静默期。事务期间/静默期内，
+# 按键轮询、通信心跳、API 等一律不往该屏串口发命令 —— 设备是小缓冲的字节流解析器，
+# 帧数据前后紧贴着别的命令时容易解析错位（画面倾斜/斜切）。
+def _serial_begin(dev):
+    """开始一次串口事务（其它线程应通过 _serial_transaction_busy 避让）"""
+    if dev is None:
+        return
+    dev.serial_busy = True
+    dev.serial_busy_since = time.monotonic()
+
+
+def _serial_end(dev, quiet=True):
+    """结束事务；quiet=True 时再设一段「静默期」（帧发完设备还要消化一会，别马上打扰它）"""
+    if dev is None:
+        return
+    dev.serial_busy = False
+    dev.serial_busy_since = 0.0
+    if quiet:
+        dev.serial_quiet_until = time.monotonic() + SERIAL_QUIET_AFTER_FRAME
+
+
+def _serial_transaction_busy(dev):
+    """该屏是否处于「串口事务 / 静默期」（其它线程应避让）。
+    带陈旧保护：事务标志被异常路径卡住超过 SERIAL_BUSY_STALE 秒即忽略，避免按键彻底失灵。"""
+    if dev is None:
+        return False
+    if getattr(dev, "serial_busy", False):
+        since = getattr(dev, "serial_busy_since", 0.0) or 0.0
+        if since and (time.monotonic() - since) > SERIAL_BUSY_STALE:
+            dev.serial_busy = False
+            dev.serial_busy_since = 0.0
+            _throttled_dev_print(dev, "busy_stale",
+                                 "串口事务标志超时未复位（已达 %.1f 秒），已强制忽略" % (time.monotonic() - since),
+                                 30.0)
+        else:
+            return True
+    return time.monotonic() < (getattr(dev, "serial_quiet_until", 0.0) or 0.0)
+
+
+def _key_poll_should_wait(dev):
+    """按键轮询是否应该让位（串口事务/静默期）。
+    ★ v5.30.0：加「饿死保护」——渲染 + 静默期连成一片时（例如镜像高帧率），按键轮询可能长时间
+    轮不到；超过 SERIAL_KEY_POLL_MAX_GAP 就放行一次（一条 6 字节命令，影响很小），
+    因为「实体按键彻底失灵」比偶尔一次扰动更不可接受。"""
+    if not _serial_transaction_busy(dev):
+        return False
+    gap = time.monotonic() - (getattr(dev, "last_key_poll_time", 0.0) or 0.0)
+    if gap > SERIAL_KEY_POLL_MAX_GAP:
+        _throttled_dev_print(dev, "key_starve",
+                             "按键轮询已 %.1f 秒没轮到（渲染+静默期连续），本次放行一次" % gap, 10.0)
+        return False
+    return True
+
+
+def _note_serial_quiet_violation(dev, data):
+    """★ v5.30.0 观测：静默期内（刚发完一帧 / 刚做完方向重置）还有命令要发 —— 记录 + 限频提示。
+    正常情况下这计数会一直是 0（各发送方都已避让）；不为 0 说明还有绕过避让的发送路径。"""
+    if dev is None:
+        return
+    if time.monotonic() >= (getattr(dev, "serial_quiet_until", 0.0) or 0.0):
+        return
+    dev.serial_quiet_violations = getattr(dev, "serial_quiet_violations", 0) + 1
+    try:
+        head = bytes(bytearray(data)[:6])
+    except Exception:
+        head = b""
+    _throttled_dev_print(dev, "quiet_violation",
+                         "静默期内仍有命令发出 %s（累计 %d 次；帧前后尽量别发别的命令）"
+                         % (head, dev.serial_quiet_violations), 10.0)
+
+
+def _mark_frame_sent(dev, err_seq_before):
+    """一次整帧发送结束后调用：与发送前的写失败序号比较，确认这次到底有没有写出去。
+    只有写成功才刷新 last_frame_ok_time —— 「画面刷新」必须反映真实发送结果。"""
+    if dev is None:
+        return
+    now = time.monotonic()
+    if getattr(dev, "write_error_seq", 0) == err_seq_before:
+        dev.last_frame_ok_time = now
+    else:
+        dev.frame_fail_count = getattr(dev, "frame_fail_count", 0) + 1
+        dev.last_frame_fail_time = now
+
+
+def _close_frame_window_gap(dev):
+    """★ v5.29.0：关闭「整屏窗口已开、帧数据未发」的空档标记并统计时长
+    （整帧发送前调用；最长空档 + 空档内被插入命令次数会显示在设备信息页）。"""
+    if dev is None:
+        return
+    t = getattr(dev, "frame_window_time", 0.0) or 0.0
+    if not t:
+        return
+    gap = time.monotonic() - t
+    if gap > 0.05:
+        dev.frame_gap_count = getattr(dev, "frame_gap_count", 0) + 1
+        dev.frame_gap_max = max(getattr(dev, "frame_gap_max", 0.0), gap)
+        if gap > 0.5:
+            _throttled_dev_print(dev, "frame_gap_long",
+                                 "整屏窗口与帧数据之间空档 %.0f ms（旧版本这里被插入命令就会画面倾斜，"
+                                 "v5.29.0 已从根上消除影响）" % (gap * 1000.0), 30.0)
+    dev.frame_window_time = 0.0
+
+
+def _send_frame_with_window(dev, hexstream, w=None, h=None):
+    """★ v5.29.0 ★核心修复★：把「整屏 LCD 地址窗口」拼到整帧数据前面，用**同一次** SER_rw 发出。
+
+    为什么必须这样做（画面倾斜/斜切的根因之一）：
+      设备是按字节流解析命令的，窗口命令（载入地址）之后必须紧跟对应的像素数据。旧代码是
+        LCD_ADD(窗口) → [渲染+编码：加载字体、画图、RGB565、Screen_Date_Process，几十毫秒] → SER_rw(整帧)
+      中间这段空档里，按键 ADC 轮询（约 20Hz，manage_task）、通信心跳（每 2 秒，
+      _device_health_tick）、API 调用随时会往同一个串口塞一条命令；设备解析随即错位，
+      像素高低字节错开 → 画面出现倾斜/斜切（而软件里的实时预览完全正常），
+      要等下一次「整屏重绘」才恢复 —— 正是反复出现的「倾斜一下又自己好了」。
+      v5.26.0 起方向看门狗每 15 秒强制 state_change=1，让这条「窗口 →（空档）→ 数据」路径
+      从「只在切页时走」变成「每 15 秒走一次」，于是倾斜明显变密集（本次修复的直接背景），
+      新增的 2 秒通信心跳也增加了空档期内的命令插入概率。
+    修复①（v5.29.0）：窗口命令与帧数据本来就在同一条字节流里 —— 直接拼在一起、一次写出去，
+      空档期归零，任何线程都插不进来（SER_lock 内整段写是原子的）。
+    修复②（v5.30.0）：帧发送期间 + 发送后静默期纳入「串口事务」（_serial_begin/_serial_end），
+      使帧数据前后不再有其它命令；帧写失败/写不完整时**立刻整帧重发一次**（一帧内自愈）。
+    """
+    if dev is None or not hexstream:
+        return False
+    _close_frame_window_gap(dev)
+    for attempt in range(2):
+        frame = _lcd_window_bytes(0, 0, w or SHOW_WIDTH, h or SHOW_HEIGHT)
+        frame.extend(hexstream)
+        err_seq = getattr(dev, "write_error_seq", 0)
+        _serial_begin(dev)
+        ok = False
+        try:
+            SER_rw(frame, read=False)
+            ok = (getattr(dev, "write_error_seq", 0) == err_seq)   # 写失败会被登记 → 本次不算成功
+            _mark_frame_sent(dev, err_seq)   # ★ v5.26.0：只有这次真的写成功才更新「画面刷新」
+        except Exception as e:
+            _note_write_error(dev, e)
+            _throttled_dev_print(dev, "frame_exc", "整帧发送异常(%s)，将整帧重发" % e, 5.0)
+        finally:
+            _serial_end(dev, quiet=ok)   # 只有真发成功才进入静默期（失败的尝试不留静默期，免得拖慢重发）
+        if ok:
+            return True
+        # ★ v5.30.0：帧写失败/写不完整会导致设备上留下一个「残缺帧」（画面错位、斜切），
+        #   旧代码只能等下一次整屏重绘才恢复；这里立刻整帧重发（带上地址窗口，等于重新对齐）。
+        dev.frame_resend_count = getattr(dev, "frame_resend_count", 0) + 1
+        _throttled_dev_print(dev, "frame_resend", "整帧发送失败，立即整帧重发（累计 %d 次）"
+                             % dev.frame_resend_count, 5.0)
+        dev.serial_quiet_until = 0.0    # 重发自身不应被当成「静默期内插命令」
+        time.sleep(0.05)
+    return False
+
+
+def device_frame_status(dev):
+    """本屏画面刷新状态短文本（状态栏 / 信息框 / 设备信息页共用）"""
+    if dev is None:
+        return "-"
+    ok = getattr(dev, "last_frame_ok_time", 0.0) or 0.0
+    err_t = getattr(dev, "last_write_error_time", 0.0) or 0.0
+    err_s = getattr(dev, "last_write_error", "") or ""
+    if err_s and err_t > ok:
+        note = getattr(dev, "last_comm_note", "") or ""
+        note_t = getattr(dev, "comm_note_time", 0.0) or 0.0
+        if note and (time.monotonic() - note_t) < 60:
+            return "串口通信异常(%d 次)：%s" % (getattr(dev, "write_error_seq", 0), note)
+        return "串口通信异常(%d 次)：%s" % (getattr(dev, "write_error_seq", 0), err_s)
+    if ok <= 0:
+        return "尚无画面送出（等待首帧）"
+    age = time.monotonic() - ok
+    if age > FRAME_STALL_SECONDS * max(1.0, _power_factor(dev)):
+        return "画面停滞 %.0f 秒（无成功刷新）" % age
+    return "画面刷新正常（%.1f 秒前）" % age
+
+
 def show_PC_Screen():  # 显示屏幕镜像 / 相机视频
     dev = get_current_device()
     if dev is None: return
     # 串口渲染事务标志：LCD_ADD与帧数据之间/帧发送期间阻止按键ADC插入，防命令流交错导致画面倾斜
-    dev.serial_busy = True
+    _serial_begin(dev)
     try:
         if dev.state_change == 1:
             state_change_clear()
             # 切换后彻底重置：清空处理队列，丢弃切换前生成的旧帧
             clear_queue(dev.screen_process_queue)
             if not LCD_ADD(0, 0, dev.LCD_MAX_X, dev.LCD_MAX_Y):
-                print("show_PC_Screen: LCD_ADD失败, 触发LCD方向重置")
+                _throttled_dev_print(dev, "mirror_add", "屏幕镜像写地址窗口失败，触发 LCD 方向重置", 5.0)
                 dev.force_lcd_reset = True
                 return
 
@@ -3740,8 +4599,11 @@ def show_PC_Screen():  # 显示屏幕镜像 / 相机视频
         if len(hexstream) == 0:
             print("show_PC_Screen: 收到空数据，跳过发送")
             return
+        # ★ v5.29.0：镜像帧同样把「整屏地址窗口」拼进同一次写里发出。
+        #   旧代码只在切页时 LCD_ADD 一次，然后等队列里的帧（可能等几百毫秒）才发送，
+        #   这段空档全靠 serial_busy 挡住按键 ADC；现在数据自带窗口，空档彻底不存在。
         try:
-            SER_rw(hexstream, read=False)
+            _send_frame_with_window(dev, hexstream, dev.LCD_MAX_X, dev.LCD_MAX_Y)
         except Exception as e:
             print("show_PC_Screen: 发送失败 %s, 触发LCD方向重置" % e)
             dev.force_lcd_reset = True
@@ -3751,7 +4613,7 @@ def show_PC_Screen():  # 显示屏幕镜像 / 相机视频
         if dev.state_change == 1 or dev.force_lcd_reset:
             return
     finally:
-        dev.serial_busy = False
+        _serial_end(dev)
 
 
 def sizeof_fmt(num, suffix="B", base=1024.0):
@@ -3788,17 +4650,14 @@ def _safe_send_rgb888(rgb888_array):
             _preview_rgb = dev.last_preview_rgb  # 全局兼容
     try:
         rgb565 = rgb888_to_rgb565(rgb888_array)
-        hex_use = Screen_Date_Process(rgb565.flatten())
+        hex_use = Screen_Date_Process(rgb565.flatten(), row_width=SHOW_WIDTH)
         if len(hex_use) == 0:
             print("_safe_send_rgb888: Screen_Date_Process返回空数据, 触发LCD方向重置")
             dev.force_lcd_reset = True
             return
-        # 串口渲染事务标志：发送期间阻止按键ADC命令插入，避免命令流交错导致画面倾斜
-        dev.serial_busy = True
-        try:
-            SER_rw(hex_use, read=False)
-        finally:
-            dev.serial_busy = False
+        # ★ v5.29.0：整屏「地址窗口 + 帧数据」拼成一次 SER_rw 发出（消除空档 → 不再出现倾斜/斜切）。
+        #   必须在编码（rgb565 / Screen_Date_Process）全部完成之后拼接，保证两者紧邻。
+        _send_frame_with_window(dev, hex_use)
     except ValueError as e:
         print("_safe_send_rgb888: 编码异常 %s, 触发LCD方向重置" % e)
         dev.force_lcd_reset = True
@@ -4124,6 +4983,7 @@ _API_CONFIG_WRITABLE = {
     "text_color_r": "int", "text_color_g": "int", "text_color_b": "int",
     "netspeed_mode": "str", "netspeed_up_color": "str", "netspeed_down_color": "str",
     "netspeed_bar1_color": "str", "netspeed_bar2_color": "str", "netspeed_bg_color": "str",
+    "speed_unit_color_enable": "int", "speed_unit_bar1_color": "str", "speed_unit_bar2_color": "str",
     "diskio_mode": "str", "diskio_show_title": "int", "diskio_font_auto": "int",
     "diskio_font_size": "int", "diskio_title_color": "str", "diskio_read_color": "str",
     "diskio_write_color": "str", "diskio_label_color": "str", "diskio_value_auto": "int",
@@ -4136,6 +4996,11 @@ _API_CONFIG_WRITABLE = {
     "proc_bg_color": "str", "proc_text_color": "str",
     "hwdetail_bg_color": "str", "hwdetail_text_color": "str",
     "gauge_bg_color": "str", "gauge_label_color": "str",
+    "deepseek_show_items": "str",
+    "deepseek_auto_refresh": "int", "deepseek_refresh_interval": "int",
+    "deepseek_bg_color": "str", "deepseek_text_color": "str",
+    "deepseek_font_auto": "int", "deepseek_font_size": "int",
+    "deepseek_align": "str",
 }
 
 
@@ -4435,11 +5300,10 @@ def api_apply_marquee(data, device=None):
 
 def api_apply_device_select(data):
     """切换当前活跃屏（多屏时改变主控/API 作用的设备）"""
-    global _primary_device
     name = str(data.get("device", "") or "")
     for dev in all_devices.values():
         if dev.device_name == name:
-            old = _primary_device
+            old = get_current_device()
             if old is not None and old != dev:
                 # 旧设备页面同步到其自身配置（不读全局 config_obj，避免串扰）
                 if old.config is not None:
@@ -4447,7 +5311,7 @@ def api_apply_device_select(data):
                 else:
                     old.state_machine = config_obj.state_machine
             set_current_device(dev)
-            _primary_device = dev
+            set_default_device(dev)  # ★ v5.22.0：只改默认活跃屏，不改主设备槽位
             set_active_device_config(dev)
             # 新设备页面同步到其自身配置（不经过全局 config_obj）
             if dev.config is not None:
@@ -7208,6 +8072,227 @@ def show_api():
     _power_wait(dev, 1)
 
 
+# ==================== 速度单位换色（★ v5.27.0 新增；★ v5.37.0 单位色+门槛；★ v5.38.0 默认马卡龙五色+色系）====================
+# 需求：柱状图的颜色按**每一根柱子自身的数值**决定（逐柱）：
+#   ① 换色门槛（自定义条件，可增删，按顺序第一条命中即用）→ ② 单位色（<1K / KB / MB / GB / TB）→ ③ 该行原色。
+# 单位色**默认就是五种不同的马卡龙色**（opening 不再需要手动一个个填），并可在设置里直接换整套「色系」。
+# 开关与颜色随设置实时保存（写在本屏配置文件），不用每次重设。
+SPEED_UNIT_MB_BYTES = 1024 * 1024        # 与 sizeof_fmt(…, base=1024) 口径一致：≥ 1MB/s 时显示单位就是 "MB/s"
+# 单位色 / 默认色 / 色系表见下方「★ v5.38.0 色系表」区块（要改配色改那里）
+
+
+def _render_cfg():
+    """渲染时取本屏配置（daemon 会逐屏切换全局 config_obj，优先用设备自己的）"""
+    dev = get_current_device()
+    if dev is not None and getattr(dev, "config", None) is not None:
+        return dev.config
+    return config_obj
+
+
+def _speed_unit_is_mb(value):
+    """该数值当前显示单位是否已是 MB/s 及以上（与 sizeof_fmt 的 1024 进制口径一致）"""
+    try:
+        return abs(float(value)) >= SPEED_UNIT_MB_BYTES
+    except Exception:
+        return False
+
+
+# ★ v5.37.0：单位划分 / 换色门槛规则
+#   单位键按 sizeof_fmt(base=1024) 的切换点：<1024=B、<1MB=KB、<1GB=MB、<1TB=GB、否则 TB
+SPEED_UNIT_KEYS = ("b", "kb", "mb", "gb", "tb")
+SPEED_UNIT_LABELS = (("b", "<1K(B)"), ("kb", "KB"), ("mb", "MB"), ("gb", "GB"), ("tb", "TB"))
+SPEED_UNIT_SCALE = {"B": 1.0, "KB": 1024.0, "MB": 1024.0 ** 2, "GB": 1024.0 ** 3, "TB": 1024.0 ** 4}
+SPEED_RULE_OPS = ((">", "大于"), (">=", "大于等于"), ("<", "小于"), ("<=", "小于等于"),
+                  ("==", "等于"), ("!=", "不等于"))
+SPEED_RULE_ROWS = (("both", "两行都适用"), ("bar1", "仅上行/读"), ("bar2", "仅下行/写"))
+SPEED_RULE_EQ_TOL = 0.005   # 「等于」按 ±0.5% 容差比较（目标为 0 时精确比较）
+
+# ★ v5.38.0：**色系表** —— 每套色系给「上行/读（bar1）」与「下行/写（bar2）」各 5 个颜色，
+#   顺序与 SPEED_UNIT_LABELS 一致（<1K(B) / KB / MB / GB / TB）；默认第一套 = 马卡龙。
+#   设置页「色系」下拉框选中哪套，就一次性把 10 个颜色写成那套；单格手改后显示「自定义」。
+#   改动这里 = 改所有新装/清空配置后的默认观感（老配置文件里已存的值不受影响）。
+SPEED_UNIT_SCHEMES = (
+    ("马卡龙（默认）",
+     ("#f7a1b5", "#ffc09f", "#ffe08a", "#9fe2bf", "#a4d8f0"),      # 上行/读：粉 → 蜜桃 → 鹅黄 → 薄荷绿 → 天蓝
+     ("#d3bce8", "#7ec8e3", "#a8e6a1", "#f6a192", "#c8a2c8")),     # 下行/写：淡紫 → 湖水蓝 → 抹茶绿 → 珊瑚 → 藕荷紫
+    ("糖果亮彩",
+     ("#ff6b6b", "#ffa94d", "#ffd43b", "#51cf66", "#4dabf7"),
+     ("#f783ac", "#ff922b", "#94d82d", "#38d9a9", "#748ffc")),
+    ("暖色（红橙黄）",
+     ("#e03131", "#f76707", "#f59f00", "#fab005", "#ffd43b"),
+     ("#c92a2a", "#d9480f", "#e8590c", "#f08c00", "#fcc419")),
+    ("冷色（青蓝紫）",
+     ("#22b8cf", "#4dabf7", "#5c7cfa", "#845ef7", "#9775fa"),
+     ("#0c8599", "#1971c2", "#3b5bdb", "#6741d9", "#7048e8")),
+    ("高对比（暗底最醒目）",
+     ("#ffffff", "#ffff00", "#00ff00", "#00ffff", "#ff00ff"),
+     ("#ff3b30", "#ff9500", "#a0e000", "#00e0a0", "#00a0ff")),
+    ("单色·青绿深浅",
+     ("#99e9f2", "#66d9e8", "#3bc9db", "#22b8cf", "#15aabf"),
+     ("#c3fae8", "#96f2d7", "#63e6be", "#38d9a9", "#20c997")),
+    ("单色·橙金深浅",
+     ("#ffe8cc", "#ffd8a8", "#ffc078", "#ffa94d", "#ff922b"),
+     ("#fff3bf", "#ffec99", "#ffe066", "#ffd43b", "#fcc419")),
+)
+SPEED_UNIT_SCHEME_NAME = SPEED_UNIT_SCHEMES[0][0]
+SPEED_UNIT_BAR1_DEFAULT = SPEED_UNIT_SCHEMES[0][1][2]   # 上行/读 的 MB 档默认色（旧名字保留：门槛默认色/兼容）
+SPEED_UNIT_BAR2_DEFAULT = SPEED_UNIT_SCHEMES[0][2][2]   # 下行/写 的 MB 档默认色
+SPEED_UNIT_SCHEME_CUSTOM = "自定义（手动调整）"
+
+
+def _speed_scheme_colors(name):
+    """按名字取色系 → (bar1 五色, bar2 五色)；找不到返回 None"""
+    for _n, _c1, _c2 in SPEED_UNIT_SCHEMES:
+        if _n == name:
+            return _c1, _c2
+    return None
+
+
+def _speed_current_scheme():
+    """按当前配置的 10 个颜色反查色系名；对不上任何一套 → "自定义"（设置页下拉框用它回显）"""
+    try:
+        cfg = _render_cfg()
+    except Exception:
+        return SPEED_UNIT_SCHEME_CUSTOM
+    for name, c1, c2 in SPEED_UNIT_SCHEMES:
+        matched = True
+        for row_key, cols in (("bar1", c1), ("bar2", c2)):
+            for (unit_key, _lb), color in zip(SPEED_UNIT_LABELS, cols):
+                cur = str(getattr(cfg, _speed_unit_field(row_key, unit_key), "") or "").strip().lower()
+                if cur != color.lower():
+                    matched = False
+                    break
+            if not matched:
+                break
+        if matched:
+            return name
+    return SPEED_UNIT_SCHEME_CUSTOM
+
+
+def _speed_unit_key(value):
+    """该数值所属单位键：b(<1K) / kb / mb / gb / tb（与文字单位口径一致）"""
+    try:
+        v = abs(float(value))
+    except Exception:
+        return "kb"
+    if v < SPEED_UNIT_SCALE["KB"]:
+        return "b"
+    if v < SPEED_UNIT_SCALE["MB"]:
+        return "kb"
+    if v < SPEED_UNIT_SCALE["GB"]:
+        return "mb"
+    if v < SPEED_UNIT_SCALE["TB"]:
+        return "gb"
+    return "tb"
+
+
+def _speed_unit_field(row_key, unit_key):
+    """单位色的配置字段名（MB 沿用 v5.27.0 的旧字段名，保证老配置继续生效）"""
+    if unit_key == "mb":
+        return "speed_unit_%s_color" % row_key
+    return "speed_unit_%s_%s_color" % (row_key, unit_key)
+
+
+def _speed_rule_hit(op, value, target):
+    """门槛条件是否命中（value 为柱子的数值，target 已换算成字节/秒）"""
+    try:
+        v = float(value)
+        t = float(target)
+    except Exception:
+        return False
+    if op == ">":
+        return v > t
+    if op == ">=":
+        return v >= t
+    if op == "<":
+        return v < t
+    if op == "<=":
+        return v <= t
+    tol = max(1e-9, abs(t) * SPEED_RULE_EQ_TOL)
+    if op == "==":
+        return abs(v - t) <= tol
+    if op == "!=":
+        return abs(v - t) > tol
+    return False
+
+
+def _speed_rule_unit_scale(unit):
+    """门槛里的单位换算成字节/秒（非法值按 KB）"""
+    return SPEED_UNIT_SCALE.get(str(unit or "KB").strip().upper(), SPEED_UNIT_SCALE["KB"])
+
+
+def _speed_rule_list():
+    """读本屏的换色门槛列表（容错：非列表/坏条目都忽略）"""
+    try:
+        cfg = _render_cfg()
+        rules = getattr(cfg, "speed_color_rules", None)
+        if isinstance(rules, (list, tuple)):
+            return [r for r in rules if isinstance(r, dict)]
+    except Exception:
+        pass
+    return []
+
+
+def _speed_parse_color(raw):
+    """解析单位色/门槛颜色：空串 → None（表示“用该行原色”）；支持 #rgb 简写；非法回退白色"""
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    body = text.lstrip('#')
+    if len(body) == 3:
+        text = "#" + "".join(c * 2 for c in body)
+    return _diskio_hex2rgb(text)
+
+
+def _speed_bar_color_resolver(row_key, base_color):
+    """★ v5.37.0 核心：为某一行（bar1=上行/读、bar2=下行/写）构造「逐柱取色」函数。
+
+    取值优先级（逐根柱子、每个采样值各算一次）：
+      ① 用户自定义**换色门槛**（可按顺序配很多条：大于/大于等于/小于/小于等于/等于/不等于）→ 命中即用；
+      ② **单位色**：<1K(B) / KB / MB / GB / TB（留空表示该单位用原色）；
+      ③ 该行**原始柱色**。
+    开关关闭时直接返回原色（零开销）。每帧每行只构造一次，柱循环里逐柱调用，不逐柱读配置。
+    """
+    try:
+        cfg = _render_cfg()
+    except Exception:
+        cfg = None
+    if cfg is None or not getattr(cfg, "speed_unit_color_enable", 0):
+        return lambda value, _c=base_color: _c
+
+    # ② 单位色预解析（空/非法 → None 表示“用原色”）
+    unit_rgb = {}
+    for unit_key in SPEED_UNIT_KEYS:
+        unit_rgb[unit_key] = _speed_parse_color(getattr(cfg, _speed_unit_field(row_key, unit_key), ""))
+
+    # ① 门槛规则预解析（跳过与本行无关/颜色为空/数值非法的条目）
+    parsed = []
+    for rule in _speed_rule_list():
+        try:
+            row = str(rule.get("row", "both") or "both")
+            if row not in ("both", row_key):
+                continue
+            color = _speed_parse_color(rule.get("color", ""))
+            if color is None:
+                continue
+            op = str(rule.get("op", ">") or ">")
+            if op not in tuple(o for o, _n in SPEED_RULE_OPS):
+                continue
+            target = float(rule.get("value", 0) or 0) * _speed_rule_unit_scale(rule.get("unit", "KB"))
+            parsed.append((op, target, color))
+        except Exception:
+            continue
+
+    def _resolve(value, _base=base_color, _unit=unit_rgb, _rules=tuple(parsed)):
+        for op, target, color in _rules:
+            if _speed_rule_hit(op, value, target):
+                return color
+        color = _unit.get(_speed_unit_key(value))
+        return color if color is not None else _base
+
+    return _resolve
+
+
 def _render_two_line_bars(up_label, down_label, up_value, down_value,
                           up_color, down_color, bar1_color, bar2_color,
                           plot_data, key1, key2, back_color=(0, 0, 0)):
@@ -7222,9 +8307,15 @@ def _render_two_line_bars(up_label, down_label, up_value, down_value,
     text = "%s %9s/s" % (down_label, sizeof_fmt(down_value))
     draw.text((0, SHOW_HEIGHT // 2), text, fill=down_color, font=default_font)
 
+    # ★ v5.36.0/v5.37.0：逐柱取色 —— 每根柱子按自身数值走「换色门槛规则 → 单位色 → 原色」
+    #   （旧版按瞬时速度给整条色带换色，一排柱子同色、看不出差异）
+    resolve1 = _speed_bar_color_resolver("bar1", bar1_color)
+    resolve2 = _speed_bar_color_resolver("bar2", bar2_color)
+
     min_draw = 1
-    for start_y, key, color in zip([SHOW_HEIGHT // 4 - 1, SHOW_HEIGHT - SHOW_HEIGHT // 4 - 1],
-                                   [key1, key2], [bar1_color, bar2_color]):
+    for start_y, key, resolve in zip(
+            [SHOW_HEIGHT // 4 - 1, SHOW_HEIGHT - SHOW_HEIGHT // 4 - 1],
+            [key1, key2], [resolve1, resolve2]):
         values = plot_data[key]
         max_value = max(min_draw, max(values))
         x0 = -BAR_WIDTH
@@ -7236,7 +8327,7 @@ def _render_two_line_bars(up_label, down_label, up_value, down_value,
             x0 += BAR_WIDTH
             x1 += BAR_WIDTH
             y0 = y1 - bar_height
-            draw.rectangle([x0, y0, x1, y1], fill=color)
+            draw.rectangle([x0, y0, x1, y1], fill=resolve(sent))
 
     rgb888 = np.asarray(im1, dtype=np.uint32)
     _safe_send_rgb888(rgb888)
@@ -7399,6 +8490,390 @@ def load_hardware_monitor():
                     for name, (hw, s) in self.sensors.items()]
 
     return HardwareMonitorManager
+
+
+# ============================================================
+# AIDA64 硬件监控读取器（共享内存方式，★ v5.11.0）
+# 需 AIDA64 在后台运行（可最小化到托盘），并在 AIDA64 → 文件 → 设置 →
+# 硬件监视 → LCD 中勾选「启用共享内存(Shared Memory)」。AIDA64 会把传感器
+# 实时写入 Windows 共享内存 "AIDA64_SensorValues"，本程序用 ctypes 打开并
+# 读取，无需额外 DLL，也无需 AIDA64 常驻前台。
+# 接口与 HardwareMonitorManager 鸭子类型兼容（sensors / get_value /
+# get_value_formatted / list_sensors / update_hardwares）。
+# ============================================================
+_AIDA64_MEMORY_NAME = "AIDA64_SensorValues"
+
+
+def load_aida64_monitor():
+    """构建 AIDA64 硬件监控管理器类（读取共享内存，无 pythonnet/.NET 依赖）。
+    共享内存布局：偏移 0=总大小(DWORD)、4=产品类型、8=产品版本、12=构建号、
+    16=实例数、20 起=传感器值字符串（"名称:值,名称:值,..."，NUL 结尾）。"""
+    import ctypes
+    import re as _re
+
+    _FILE_MAP_READ = 0x0004
+    _NUM_RE = _re.compile(r"[-+]?\d+\.?\d*")
+
+    # 传感器类型 → 显示单位（与 LibreHardwareMonitor SensorType 语义对齐）
+    _TYPE_UNIT = {
+        "Temperature": "°C",
+        "Load": "%",
+        "Fan": " RPM",
+        "Voltage": " V",
+        "Power": " W",
+        "Current": " A",
+        "Clock": " MHz",
+        "Throughput": " MB/s",
+        "Data": "",
+    }
+
+    def _read_aida64_values():
+        """打开 AIDA64 共享内存，读取传感器值字符串，失败返回 None"""
+        try:
+            kernel32 = ctypes.windll.kernel32
+            h_map = kernel32.OpenFileMappingW(_FILE_MAP_READ, False, _AIDA64_MEMORY_NAME)
+            if not h_map:
+                return None
+            try:
+                p_buf = kernel32.MapViewOfFile(h_map, _FILE_MAP_READ, 0, 0, 0)
+                if not p_buf:
+                    return None
+                try:
+                    size = ctypes.c_uint32.from_address(p_buf).value
+                    if not (0 < size <= 65536):
+                        size = 2048
+                    raw = ctypes.string_at(p_buf, size)
+                    vals_raw = raw[20:]  # 传感器值字符串从偏移 20 开始
+                    nul = vals_raw.find(b"\x00")
+                    if nul >= 0:
+                        vals_raw = vals_raw[:nul]
+                    return vals_raw.decode("utf-8", errors="replace")
+                finally:
+                    kernel32.UnmapViewOfFile(p_buf)
+            finally:
+                kernel32.CloseHandle(h_map)
+        except Exception:
+            return None
+
+    def _parse_number(vstr):
+        m = _NUM_RE.search(vstr or "")
+        if not m:
+            return None
+        try:
+            return float(m.group(0))
+        except Exception:
+            return None
+
+    def _infer_type(vstr):
+        """从 AIDA64 值字符串推断内部传感器类型（与 SensorType 字符串对齐）"""
+        low = (vstr or "").strip().lower()
+        if "°c" in low or "°f" in low or low.endswith(" c") or low.endswith(" f"):
+            return "Temperature"
+        if "rpm" in low:
+            return "Fan"
+        if low.endswith("%"):
+            return "Load"
+        if "/s" in low:
+            return "Throughput"
+        for u in ("ghz", "mhz", "khz", "hz"):
+            if low.endswith(u):
+                return "Clock"
+        if low.endswith("v") or low.endswith(" v"):
+            return "Voltage"
+        if low.endswith("w") or low.endswith("mw"):
+            return "Power"
+        if low.endswith("a") or low.endswith("ma"):
+            return "Current"
+        for u in ("gb", "mb", "kb", "tb"):
+            if low.endswith(u) or (" " + u) in low:
+                return "Data"
+        return "Data"
+
+    def _classify_hardware(name):
+        """从传感器名推断硬件类别，返回 (硬件名, 硬件类型字符串)"""
+        n = (name or "").upper()
+        if "CPU" in n:
+            return "CPU", "Cpu"
+        if "GPU" in n:
+            return "GPU", "Gpu"
+        if "MEMORY" in n or "RAM" in n:
+            return "内存", "Memory"
+        if "MOTHERBOARD" in n or "SYSTEM" in n:
+            return "主板", "Motherboard"
+        if "FAN" in n:
+            return "风扇", "Fan"
+        return (name.split(" ")[0] or "其他"), "Other"
+
+    class _AidaHardware(object):
+        """占位硬件对象：提供 Name / HardwareType（供 _find_sensor_value 识别 CPU/GPU）"""
+        __slots__ = ("Name", "HardwareType")
+
+        def __init__(self, name, hw_type):
+            self.Name = name
+            self.HardwareType = hw_type
+
+    class _AidaSensor(object):
+        """占位传感器对象：提供 Name / Value / SensorType（字符串）"""
+        __slots__ = ("Name", "Value", "SensorType")
+
+        def __init__(self, name, value, sensor_type):
+            self.Name = name
+            self.Value = value
+            self.SensorType = sensor_type
+
+    class Aida64MonitorManager(object):
+        """AIDA64 共享内存监控管理器（与 HardwareMonitorManager 接口兼容）"""
+
+        def __init__(self):
+            self.sensors = {}
+            self.last_error = ""
+            self._refresh()
+
+        def _refresh(self):
+            """读取 AIDA64 共享内存，重建传感器列表（AIDA64 自行持续刷新数据）"""
+            new_map = {}
+            try:
+                raw = _read_aida64_values()
+                if raw is None:
+                    self.last_error = (
+                        "AIDA64 未运行或未开启共享内存"
+                        "（AIDA64→文件→设置→硬件监视→LCD→勾选「启用共享内存」）"
+                    )
+                    self.sensors = new_map
+                    return
+                for item in raw.split(","):
+                    item = item.strip()
+                    if not item or ":" not in item:
+                        continue
+                    name, valstr = item.split(":", 1)
+                    name = name.strip()
+                    valstr = valstr.strip()
+                    if not name:
+                        continue
+                    num = _parse_number(valstr)
+                    stype = _infer_type(valstr)
+                    hw_name, hw_type = _classify_hardware(name)
+                    hw = _AidaHardware(hw_name, hw_type)
+                    sensor = _AidaSensor(name, num, stype)
+                    new_map[name] = (hw, sensor)
+                self.last_error = ""
+                self.sensors = new_map
+            except Exception as e:
+                self.last_error = str(e)
+                self.sensors = new_map
+
+        def get_hardware(self, sensor_name):
+            pair = self.sensors.get(sensor_name)
+            return pair[0] if pair else None
+
+        def update_hardwares(self, hardwares):
+            """LHM 语义=刷新硬件读数；AIDA64 每次读共享内存即最新值，这里顺带刷新一次"""
+            self._refresh()
+
+        def get_value(self, sensor_name):
+            pair = self.sensors.get(sensor_name)
+            return pair[1].Value if pair else None
+
+        def get_value_formatted(self, sensor_name):
+            pair = self.sensors.get(sensor_name)
+            if not pair:
+                return None, "--"
+            s = pair[1]
+            if s.Value is None:
+                return None, "--"
+            return s.Value, "%.1f%s" % (s.Value, _TYPE_UNIT.get(s.SensorType, ""))
+
+        def list_sensors(self):
+            """返回所有传感器：[(全名, hardware, sensor, 类型字符串, 当前值), ...]"""
+            return [(n, hw, s, s.SensorType, s.Value)
+                    for n, (hw, s) in self.sensors.items()]
+
+    return Aida64MonitorManager
+
+
+def load_system_monitor():
+    """系统原生硬件监控（★ v5.12.0）：无需任何后台程序，程序内直接读取。
+    覆盖：CPU 使用率/频率、内存、磁盘、电池（psutil）；CPU 温度（WMI 热区，视主板支持）；
+    NVIDIA GPU 温度/负载/显存/功耗（pynvml，可选，无则跳过）。
+    接口与 HardwareMonitorManager 鸭子兼容。"""
+    _TYPE_UNIT = {
+        "Temperature": "°C", "Load": "%", "Fan": " RPM", "Voltage": " V",
+        "Power": " W", "Current": " A", "Clock": " MHz", "Data": "", "Level": "%",
+    }
+
+    # GPU 句柄缓存（pynvml 初始化较重，仅首次/失败后不再重复尝试）
+    _nv = {"ready": False, "handles": [], "names": []}
+
+    def _nv_init():
+        if _nv["ready"]:
+            return True
+        try:
+            import pynvml
+            pynvml.nvmlInit()
+            count = pynvml.nvmlDeviceGetCount()
+            _nv["handles"] = [pynvml.nvmlDeviceGetHandleByIndex(i) for i in range(count)]
+            _nv["names"] = [pynvml.nvmlDeviceGetName(h) for h in _nv["handles"]]
+            _nv["ready"] = True
+            return True
+        except Exception:
+            _nv["ready"] = True
+            return False
+
+    # WMI CPU 温度缓存（WMI 查询较慢，5 秒缓存）
+    _cpu_temp_cache = {"value": None, "time": 0.0}
+
+    def _get_cpu_temp():
+        now = time.monotonic()
+        if now - _cpu_temp_cache["time"] < 5.0:
+            return _cpu_temp_cache["value"]
+        v = None
+        try:
+            import wmi
+            w = wmi.WMI(namespace="root\\wmi")
+            temps = w.MSAcpi_ThermalZoneTemperature()
+            if temps:
+                try:
+                    v = round(float(temps[0].CurrentTemperature) / 10.0 - 273.15, 1)
+                except Exception:
+                    v = None
+        except Exception:
+            v = None
+        _cpu_temp_cache["value"] = v
+        _cpu_temp_cache["time"] = now
+        return v
+
+    class _SysHardware(object):
+        """占位硬件对象：提供 Name / HardwareType（供 _find_sensor_value 识别 CPU/GPU）"""
+        __slots__ = ("Name", "HardwareType")
+
+        def __init__(self, name, hw_type):
+            self.Name = name
+            self.HardwareType = hw_type
+
+    class _SysSensor(object):
+        """占位传感器对象：提供 Name / Value / SensorType（字符串）"""
+        __slots__ = ("Name", "Value", "SensorType")
+
+        def __init__(self, name, value, sensor_type):
+            self.Name = name
+            self.Value = value
+            self.SensorType = sensor_type
+
+    class SystemMonitorManager(object):
+        """系统原生监控管理器（与 HardwareMonitorManager 接口兼容，零后台进程）"""
+
+        def __init__(self):
+            self.sensors = {}
+            self.last_error = ""
+            self._refresh()
+
+        def _refresh(self):
+            new_map = {}
+
+            def _put(name, val, stype, hw_name, hw_type):
+                if val is None:
+                    return
+                new_map[name] = (_SysHardware(hw_name, hw_type), _SysSensor(name, val, stype))
+
+            try:
+                # CPU 使用率（非阻塞）/ 频率
+                try:
+                    _put("CPU Usage", psutil.cpu_percent(interval=None), "Load", "CPU", "Cpu")
+                except Exception:
+                    pass
+                try:
+                    f = psutil.cpu_freq()
+                    if f is not None:
+                        _put("CPU Frequency", f.current, "Clock", "CPU", "Cpu")
+                except Exception:
+                    pass
+                # CPU 温度（WMI 热区）
+                _put("CPU Temperature", _get_cpu_temp(), "Temperature", "CPU", "Cpu")
+                # 内存
+                try:
+                    vm = psutil.virtual_memory()
+                    _put("Memory Usage", vm.percent, "Load", "内存", "Memory")
+                    _put("Memory Used", vm.used / (1024.0 ** 3), "Data", "内存", "Memory")
+                except Exception:
+                    pass
+                # 磁盘
+                try:
+                    _put("Disk Usage", psutil.disk_usage("/").percent, "Load", "磁盘", "Storage")
+                except Exception:
+                    pass
+                # 电池
+                try:
+                    b = psutil.sensors_battery()
+                    if b is not None:
+                        _put("Battery", b.percent, "Load", "电池", "Battery")
+                except Exception:
+                    pass
+                # NVIDIA GPU（pynvml，可选）
+                if _nv_init():
+                    try:
+                        import pynvml
+                        n = len(_nv["handles"])
+                        for i in range(n):
+                            h = _nv["handles"][i]
+                            hw_name = "GPU" if n == 1 else ("GPU %d" % i)
+                            try:
+                                _put("%s Temperature" % hw_name,
+                                     pynvml.nvmlDeviceGetTemperature(h, pynvml.NVML_TEMPERATURE_GPU),
+                                     "Temperature", hw_name, "Gpu")
+                            except Exception:
+                                pass
+                            try:
+                                _put("%s Load" % hw_name,
+                                     pynvml.nvmlDeviceGetUtilizationRates(h).gpu,
+                                     "Load", hw_name, "Gpu")
+                            except Exception:
+                                pass
+                            try:
+                                mi = pynvml.nvmlDeviceGetMemoryInfo(h)
+                                _put("%s Memory Used" % hw_name, mi.used / (1024.0 ** 3),
+                                     "Data", hw_name, "Gpu")
+                            except Exception:
+                                pass
+                            try:
+                                _put("%s Power" % hw_name, pynvml.nvmlDeviceGetPowerUsage(h) / 1000.0,
+                                     "Power", hw_name, "Gpu")
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+                self.last_error = ""
+                self.sensors = new_map
+            except Exception as e:
+                self.last_error = str(e)
+                self.sensors = new_map
+
+        def get_hardware(self, sensor_name):
+            pair = self.sensors.get(sensor_name)
+            return pair[0] if pair else None
+
+        def update_hardwares(self, hardwares):
+            """刷新一次读数（psutil/WMI/pynvml 均为按需直读，无需后台进程）"""
+            self._refresh()
+
+        def get_value(self, sensor_name):
+            pair = self.sensors.get(sensor_name)
+            return pair[1].Value if pair else None
+
+        def get_value_formatted(self, sensor_name):
+            pair = self.sensors.get(sensor_name)
+            if not pair:
+                return None, "--"
+            s = pair[1]
+            if s.Value is None:
+                return None, "--"
+            return s.Value, "%.1f%s" % (s.Value, _TYPE_UNIT.get(s.SensorType, ""))
+
+        def list_sensors(self):
+            """返回所有传感器：[(全名, hardware, sensor, 类型字符串, 当前值), ...]"""
+            return [(n, hw, s, s.SensorType, s.Value)
+                    for n, (hw, s) in self.sensors.items()]
+
+    return SystemMonitorManager
 
 
 def get_draw_text(text, font_size=20, front_color=None, back_color=(0, 0, 0)):
@@ -7693,6 +9168,243 @@ def get_base_config_dir():
     return os.path.dirname(os.path.realpath(sys.argv[0]))
 
 
+def _load_env_file():
+    """读取程序目录 .env（KEY=VALUE，支持 # 注释与引号），加载到 os.environ（不覆盖已有变量）。
+    ★ v5.13.0：DeepSeek 等 API Key 一律放 .env（不入源码/配置 JSON，见维护约定第 8 条）。"""
+    try:
+        path = os.path.join(get_base_config_dir(), ".env")
+        if not os.path.exists(path):
+            return
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                k = k.strip()
+                v = v.strip().strip('"').strip("'")
+                if k and k not in os.environ:
+                    os.environ[k] = v
+    except Exception:
+        pass
+
+
+def _save_env_key(key, value):
+    """把键值写入程序目录 .env（已有则替换该行，没有则追加），返回是否成功"""
+    try:
+        path = os.path.join(get_base_config_dir(), ".env")
+        lines = []
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                lines = f.read().splitlines()
+        found = False
+        for i, ln in enumerate(lines):
+            if ln.strip().startswith(key + "="):
+                lines[i] = "%s=%s" % (key, value)
+                found = True
+                break
+        if not found:
+            lines.append("%s=%s" % (key, value))
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+        return True
+    except Exception:
+        return False
+
+
+# 启动即加载 .env（DeepSeek 等密钥），后续 os.environ.get 直接可用
+_load_env_file()
+
+
+# ==================== 运行日志文件（★ v5.24.0）====================
+# 为什么需要：编译成无控制台 exe（--windows-console-mode=disable）后，print 全部写进 NUL、
+# 屏幕上什么都看不到，出问题时（如“一块屏连不上”）无从下手。
+# 这里在没有真实控制台时把 stdout/stderr 同时写入程序目录的 MSU2_MINI_log.txt（滚动，最大 2MB），
+# 便于事后排查「只在编译后出现」的问题。
+_LOG_MAX_BYTES = 2 * 1024 * 1024   # 日志单文件上限，超出后把旧文件滚动为 .1
+_log_lock = threading.Lock()
+_log_path_used = None
+
+
+class _TeeWriter:
+    """把写入同时送到原输出流与日志文件（原流为空时只写文件）。"""
+
+    def __init__(self, stream):
+        self._stream = stream
+
+    def write(self, data):
+        try:
+            if self._stream is not None:
+                self._stream.write(data)
+        except Exception:
+            pass
+        try:
+            with _log_lock:
+                if _log_path_used and os.path.getsize(_log_path_used) > _LOG_MAX_BYTES:
+                    try:
+                        os.replace(_log_path_used, _log_path_used + ".1")
+                    except Exception:
+                        pass
+                if _log_path_used:
+                    with open(_log_path_used, "a", encoding="utf-8", errors="replace") as f:
+                        f.write(data)
+        except Exception:
+            pass
+        return len(data)
+
+    def flush(self):
+        try:
+            if self._stream is not None:
+                self._stream.flush()
+        except Exception:
+            pass
+
+    def isatty(self):
+        return False
+
+    def __getattr__(self, name):
+        # 其余属性（encoding/fileno 等）转发给原输出流
+        stream = object.__getattribute__(self, "_stream")
+        if stream is not None:
+            return getattr(stream, name)
+        raise AttributeError(name)
+
+
+def _setup_log_file():
+    """无真实控制台运行时启用日志文件（返回路径；有控制台则返回 None）。
+    `MSU2_MINI_NO_LOG=1` 可完全关闭。"""
+    global _log_path_used
+    if _log_path_used:
+        return _log_path_used
+    try:
+        out = sys.stdout
+        if out is not None and hasattr(out, "isatty") and out.isatty():
+            return None  # 有真实控制台（源码运行 / attach 模式）：直接看控制台即可
+        if os.environ.get("MSU2_MINI_NO_LOG"):
+            return None
+        path = os.path.join(get_base_config_dir(), "MSU2_MINI_log.txt")
+        with open(path, "a", encoding="utf-8", errors="replace") as f:
+            f.write("\n===== %s 启动 v%s（PID %s，程序目录 %s）=====\n"
+                    % (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), PROGRAM_VERSION,
+                       os.getpid(), get_base_config_dir()))
+        _log_path_used = path
+        sys.stdout = _TeeWriter(out)
+        sys.stderr = _TeeWriter(sys.stderr)
+        print("日志文件：%s（无控制台运行时的输出都会写入这里）" % path)
+        return path
+    except Exception:
+        _log_path_used = None
+        return None
+
+
+_setup_log_file()
+
+
+# ==================== 单实例保护（★ v5.25.0）====================
+# 为什么需要：两块小屏的串口没有互斥，同时运行两个实例会「各抢一块屏」——先打开哪个 COM 口
+# 就拥有哪块屏，另一个实例里那块屏永远「像没连接」（编译成 exe 后最容易出现：源码版与 exe 并存、
+# 两个 exe、开机自启动与手动启动同时跑）。
+# 做法：命名互斥体（本会话唯一，进程退出自动释放，不会留死锁）+ 把已运行实例的窗口切到前台。
+_SINGLE_INSTANCE_NAME = "MSU2_MINI_V2_single_instance"   # 不带 Global\：普通用户也能创建
+_single_instance_handle = None
+
+
+def acquire_single_instance():
+    """获取单实例锁：True=可以运行（首个实例）/ False=已有实例在运行。
+    非 Windows 不做限制；`--allow-multiple` 或环境变量 `MSU2_MINI_ALLOW_MULTIPLE=1` 可跳过。"""
+    global _single_instance_handle
+    try:
+        if not isWindows:
+            return True
+        if os.environ.get("MSU2_MINI_ALLOW_MULTIPLE"):
+            return True
+        if "--allow-multiple" in sys.argv:
+            print("已指定 --allow-multiple：跳过单实例检查（多实例会各抢一块屏，请确认不是误用）")
+            return True
+        if _single_instance_handle:
+            return True   # 本进程已持有
+        # 用 WinDLL(use_last_error=True) + ctypes.get_last_error() 读取错误码：
+        # 直接用 windll.kernel32.GetLastError() 不可靠（ctypes 内部调用可能已把 last error 改写）。
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        create_mutex = kernel32.CreateMutexW
+        create_mutex.argtypes = (ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p)
+        create_mutex.restype = ctypes.c_void_p
+        handle = create_mutex(None, False, _SINGLE_INSTANCE_NAME)
+        err = ctypes.get_last_error()
+        if not handle:
+            return True   # 创建失败：宁可允许运行，也不要因保护而打不开
+        if err == 183:   # ERROR_ALREADY_EXISTS（互斥体已存在=已有实例在运行）
+            try:
+                kernel32.CloseHandle(ctypes.c_void_p(handle))
+            except Exception:
+                pass
+            return False
+        _single_instance_handle = handle
+        return True
+    except Exception as e:
+        # 保护失败不阻挠启动（宁可多开也不因保护而打不开），但要把原因打出来/记进日志
+        print("单实例检查失败（忽略并继续启动）：%s" % e)
+        return True
+
+
+def _find_running_main_window():
+    """按窗口标题前缀查找已运行实例的主窗口（只看可见窗口，托盘/隐藏状态的不动它）"""
+    try:
+        user32 = ctypes.windll.user32
+        found = []
+        WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p)
+
+        def _cb(hwnd, lparam):
+            try:
+                if not user32.IsWindowVisible(hwnd):
+                    return 1
+                n = user32.GetWindowTextLengthW(hwnd)
+                if n <= 0:
+                    return 1
+                buf = ctypes.create_unicode_buffer(n + 1)
+                user32.GetWindowTextW(hwnd, buf, n + 1)
+                if buf.value.startswith(PROGRAM_TITLE):
+                    found.append(hwnd)
+                    return 0
+            except Exception:
+                pass
+            return 1
+
+        user32.EnumWindows(WNDENUMPROC(_cb), None)
+        return found[0] if found else None
+    except Exception:
+        return None
+
+
+def notify_already_running():
+    """已有实例在运行：把它的窗口切到前台；找不到窗口则弹提示说明。"""
+    if os.environ.get("MSU2_MINI_QUIET") or "--quiet" in sys.argv:
+        print("程序已在运行（单实例保护），本次启动退出")
+        return
+    hwnd = _find_running_main_window()
+    if hwnd:
+        try:
+            user32 = ctypes.windll.user32
+            user32.ShowWindow(hwnd, 9)          # SW_RESTORE
+            user32.SetForegroundWindow(hwnd)
+            print("程序已在运行，已把已有窗口切到前台，本次启动退出")
+            return
+        except Exception:
+            pass
+    try:
+        app = QApplication.instance() or QApplication(sys.argv)
+        QMessageBox.information(
+            None, PROGRAM_TITLE,
+            "程序已经在运行（同一时间只允许一个实例）。\n\n"
+            "已运行的程序窗口未找到——它可能在系统托盘里（右键托盘图标可恢复），\n"
+            "或者正处于最小化状态。\n\n"
+            "为什么限制：同时运行两个实例会各占用一块小屏的串口，\n"
+            "表现为「一块屏正常、另一块像没连接」。\n"
+            "如确实需要同时跑两个实例，请用命令行参数 --allow-multiple 启动。")
+    except Exception as e:
+        print("提示已运行实例失败：%s" % e)
+
+
 def get_config_dir():
     """配置保存目录：程序目录下的 config 子目录（集中存放，避免丢失/与程序文件混淆）"""
     d = os.path.join(get_base_config_dir(), "config")
@@ -7832,7 +9544,10 @@ def set_auto_start(enable):
                              r"Software\Microsoft\Windows\CurrentVersion\Run",
                              0, winreg.KEY_SET_VALUE)
         if enable:
-            if getattr(sys, "frozen", False):
+            # 打包判断（★ v5.23.0）：PyInstaller 会设 sys.frozen；Nuitka（本项目的编译方式）**不设**
+            # sys.frozen，只注入 `__compiled__`（Nuitka 4.0.7 实测 sys.frozen 为 MISSING）。
+            # 只判 sys.frozen 会走 else 分支 → 编译后把 Run 项注册成 '"<exe>" "<exe路径>"'（自己当参数传给自己）。
+            if getattr(sys, "frozen", False) or "__compiled__" in globals():
                 cmd = '"%s"' % os.path.realpath(sys.executable)
             else:
                 cmd = '"%s" "%s"' % (sys.executable, os.path.realpath(sys.argv[0]))
@@ -8345,6 +10060,19 @@ class sys_config(object):
         self.hotsearch_page_interval = 3  # 翻页间隔(秒)
         # --- 硬件详情监控类型 ---
         self.hwdetail_types = "Temperature,Fan"  # 逗号分隔，可含Temperature/Fan/Voltage/Load/Power
+        # --- 硬件监控数据源（★ v5.12.0） ---
+        self.hardware_source = "libre"  # 硬件监控数据源：libre=LibreHardwareMonitor(默认,无后台) / aida64=AIDA64(需后台运行并开启共享内存) / system=系统原生(psutil/WMI/nvidia,零后台,覆盖有限)
+        self.lcd_size = ""   # 手动设置的屏幕分辨率（如"160x80 (默认)"，空=自动检测，★ v5.16.0 持久化）
+        # --- DeepSeek 余额（★ v5.13.0） ---
+        self.deepseek_show_items = "total_balance,topped_up_balance"  # 显示项（官方接口真实返回字段）：total_balance总余额/granted_balance赠送/topped_up_balance充值/currency币种/available可用
+        self.deepseek_auto_refresh = 1   # 自动刷新：0=关闭 1=开启
+        self.deepseek_refresh_interval = 300  # 刷新间隔(秒)
+        self.deepseek_bg_color = "#000000"   # 背景颜色
+        self.deepseek_text_color = "#ffffff" # 字体颜色
+        self.deepseek_font_auto = 1   # 字体自适应屏幕：0=手动 1=自适应（默认）
+        self.deepseek_font_size = 13  # 手动字号（自适应关闭时生效）
+        self.deepseek_align = "center"  # 对齐方式：center=垂直居中(默认) / top=向上对齐
+        self.deepseek_custom_templates = {}  # 各显示项自定义模板 {item: 模板}，%1=值 %2=币种，留空用默认格式（★ v5.19.0）
         # --- 传感器自由选择（LibreHardwareMonitor 全部传感器可选） ---
         self.hwdetail_sensor_names = ""   # 硬件详情：逗号分隔传感器全名（空=按类型自动选择）
         self.gauge_cpu_temp_sensor = ""   # 仪表盘CPU温度传感器全名（空=自动识别）
@@ -8373,6 +10101,19 @@ class sys_config(object):
         self.netspeed_down_color = "#00ffff"  # 网络流量：下载文字颜色
         self.netspeed_bar1_color = "#eb8b8b"  # 网络流量：上传柱状图颜色
         self.netspeed_bar2_color = "#92d3d9"  # 网络流量：下载柱状图颜色
+        # --- 速度单位换色（★ v5.27.0 新增；★ v5.36.0 逐柱判断；★ v5.37.0 单位色 + 换色门槛；★ v5.38.0 默认马卡龙五色）---
+        # 柱子的颜色按**自身数值**决定：①先匹配用户自定义的换色门槛（大于/小于/等于…，可增删任意多条，
+        # 按列表顺序命中即用）→ ②再按单位（<1K / KB / MB / GB / TB）取色 → ③都没命中就用该行原始柱色。
+        self.speed_unit_color_enable = 0        # 1=开启（默认关，不影响原有观感）
+        # ★ v5.38.0：**五个单位默认就是五种不同的马卡龙色**（由 `SPEED_UNIT_SCHEMES[0]` 派生 —— 想改默认观感改色系表即可）。
+        #   留空仍表示「该单位用该行原色」（设置页每格有「×」清空）；MB 档沿用老字段名 → 老配置继续生效。
+        for _rk, _cols in (("bar1", SPEED_UNIT_SCHEMES[0][1]), ("bar2", SPEED_UNIT_SCHEMES[0][2])):
+            for (_uk, _lb), _cv in zip(SPEED_UNIT_LABELS, _cols):
+                setattr(self, _speed_unit_field(_rk, _uk), _cv)
+        # 自定义换色门槛：[{"row":"both|bar1|bar2", "op":">|>=|<|<=|==|!=",
+        #                "value": 1, "unit": "B|KB|MB|GB|TB", "color": "#rrggbb"}, …]
+        # 逐柱求值时**按列表顺序**匹配，第一条命中即用（可在设置里随意增删）。
+        self.speed_color_rules = []
         # --- 页面内容：背景/字体颜色（可配配色方案/存为新方案） ---
         self.marquee_bg_color = "#000000"     # 跑马灯背景颜色
         self.weather_bg_color = "#000000"     # 天气/行情背景颜色
@@ -8424,11 +10165,32 @@ class sys_config(object):
 # ==================== LCD 屏幕分辨率检测 ====================
 
 def Detect_LCD_Size():
-    """自动检测小屏幕尺寸（尝试从设备SFR读取LCD分辨率）"""
+    """自动检测小屏幕尺寸（尝试从设备SFR读取LCD分辨率）；若用户手动保存过分辨率则优先应用"""
     global LCD_MAX_X, LCD_MAX_Y
     dev = get_current_device()
     if dev is None:
         return False
+
+    # ★ v5.16.0：若用户手动保存过分辨率，优先应用（不再自动检测覆盖）
+    try:
+        saved_lcd = (dev.config.lcd_size if dev.config is not None else "") or ""
+    except Exception:
+        saved_lcd = ""
+    if saved_lcd:
+        _manual_map = {
+            '160x80 (默认)': (160, 80),
+            '128x64 (0.96寸OLED)': (128, 64),
+            '240x240 (1.54寸)': (240, 240),
+            '320x240 (2.4寸)': (320, 240),
+            '240x320 (竖屏)': (240, 320),
+        }
+        if saved_lcd in _manual_map:
+            LCD_MAX_X, LCD_MAX_Y = _manual_map[saved_lcd]
+            if dev is not None:
+                dev.LCD_MAX_X = LCD_MAX_X
+                dev.LCD_MAX_Y = LCD_MAX_Y
+            insert_text_message('屏幕分辨率: %dx%d (手动设置)' % (LCD_MAX_X, LCD_MAX_Y))
+            return True
 
     lcd_w_names = [b'Lcd_X', b'LCD_X', b'LCD_W', b'MSN_LCD_W', b'LCD_Width',
                    b'LCD_X_Max', b'LCD_Max_X', b'LCD_Size_X', b'LCD_Pixel_X', b'LCD_Col']
@@ -8579,6 +10341,13 @@ def Set_LCD_Size_Manual(*args):
             dev.LCD_MAX_X = LCD_MAX_X
             dev.LCD_MAX_Y = LCD_MAX_Y
             dev.state_change = 1
+        # ★ v5.16.0：持久化手动分辨率，下次启动自动恢复（Detect_LCD_Size 优先应用）
+        try:
+            cc = dev.config if (dev is not None and dev.config is not None) else config_obj
+            cc.lcd_size = size_str
+            save_config()
+        except Exception:
+            pass
         msg = '手动设置屏幕分辨率: ' + str(LCD_MAX_X) + 'x' + str(LCD_MAX_Y)
         print(msg)
         insert_text_message(msg)
@@ -8662,9 +10431,9 @@ def UI_Page():  # PySide6 (Qt) 主界面
 
     def on_device_select(index=-1):
         """切换当前活跃设备（每屏独立配置/页面）"""
-        global config_obj, _primary_device
+        global config_obj
         name = device_selector.currentText()
-        old = _primary_device
+        old = get_current_device()
         for dev in all_devices.values():
             if dev.device_name == name and dev.device_state == 1:
                 if old is not None and old != dev:
@@ -8673,7 +10442,7 @@ def UI_Page():  # PySide6 (Qt) 主界面
                     else:
                         old.state_machine = config_obj.state_machine
                 set_current_device(dev)
-                _primary_device = dev
+                set_default_device(dev)  # ★ v5.22.0：只改默认活跃屏，不改主设备槽位
                 set_active_device_config(dev)
                 if dev.config is not None:
                     dev.config.state_machine = getattr(dev, "state_machine", SCREEN_PAGE_ID)
@@ -8715,6 +10484,10 @@ def UI_Page():  # PySide6 (Qt) 主界面
         global _auto_connect
         _auto_connect = bool(val)
         insert_text_message("已开启自动连接（默认）" if _auto_connect else "已关闭自动连接（需手动点击\"连接\"）")
+        try:
+            _ui_save_state()  # ★ v5.16.0：设为自动连接 状态即时持久化（ui.json 程序级）
+        except Exception:
+            pass
 
     auto_cb.toggled.connect(_toggle_auto)
     status_bar.addWidget(auto_cb)
@@ -8736,6 +10509,9 @@ def UI_Page():  # PySide6 (Qt) 主界面
     Text1.setReadOnly(True)
     Text1.setMaximumHeight(90)
     root_lay2.addWidget(Text1)
+    # ★ v5.22.0：登记信息框控件，供 _apply_show_info_state() 按 show_info 设置同步显隐
+    _show_info_widgets.clear()
+    _show_info_widgets.extend([info_lbl, Text1])
 
     def apply_color_preset(event=None):
         pass
@@ -9757,9 +11533,13 @@ def UI_Page():  # PySide6 (Qt) 主界面
         lcd_size_var = QComboBox()
         lcd_size_options = ['160x80 (默认)', '128x64 (0.96寸OLED)', '240x240 (1.54寸)',
                             '320x240 (2.4寸)', '240x320 (竖屏)']
-        cur_size = "%dx%d (默认)" % (LCD_MAX_X, LCD_MAX_Y)
-        if cur_size not in lcd_size_options:
-            lcd_size_options.insert(0, cur_size)
+        saved_lcd = getattr(_cfg(), "lcd_size", "") or ""
+        if saved_lcd in lcd_size_options:
+            cur_size = saved_lcd
+        else:
+            cur_size = "%dx%d (默认)" % (LCD_MAX_X, LCD_MAX_Y)
+            if cur_size not in lcd_size_options:
+                lcd_size_options.insert(0, cur_size)
         lcd_size_var.addItems(lcd_size_options)
         lcd_size_var.setCurrentText(cur_size)
         lcd_size_var.currentIndexChanged.connect(lambda _=0: Set_LCD_Size_Manual())
@@ -9793,6 +11573,10 @@ def UI_Page():  # PySide6 (Qt) 主界面
             'lcd_size_var': lcd_size_var,
             'interval_var': interval_edit,
             'fps_var': fps_edit,
+            '_sliders': sliders,
+            '_radio_fill': radio_fill,
+            '_refresh_cameras': _update_camera_list,
+            '_refresh_windows': _update_windows_list,
             'label3': Label3, 'label4': Label4, 'label5': Label5, 'label6': Label6,
             'preview_title': preview_title,
             'preview_label': preview_label,
@@ -9909,14 +11693,15 @@ def UI_Page():  # PySide6 (Qt) 主界面
         common_lay.addWidget(preview_cb)
 
         show_info_cb = QCheckBox("显示信息框（底部消息记录，关闭后隐藏）")
-        show_info_cb.setChecked(not Text1.isHidden())
+        show_info_cb.setChecked(bool(_show_info_state))
+        _show_info_cbs.append(show_info_cb)  # ★ v5.22.0：多屏设置页共享该项，勾选状态需同步
 
         def _chg_show_info():
-            vis = show_info_cb.isChecked()
-            info_lbl.setVisible(vis)
-            Text1.setVisible(vis)
+            global _show_info_state
+            _show_info_state = 1 if show_info_cb.isChecked() else 0
+            _apply_show_info_state()  # 立即生效（信息框显隐 + 其它屏设置页勾选框同步）
             try:
-                _ui_save_state()
+                _ui_save_state()  # 立即持久化到 MSU2_MINI_ui.json（重启按 show_info 恢复）
             except Exception:
                 pass
 
@@ -10169,13 +11954,14 @@ def UI_Page():  # PySide6 (Qt) 主界面
         mrow4.addStretch(1)
         api_lay.addWidget(mqtt_box)
 
-        def _restart_api():
+        def _autosave_api(*_a):
+            """★ v5.16.0：API/MQTT 字段即时保存到配置（不重启服务器；「应用并重启」按钮负责即时生效）"""
             _lock()
             config_obj.api_enable = 1 if api_enable_cb.isChecked() else 0
             try:
                 config_obj.api_port = int(api_port_edit.text())
             except ValueError:
-                config_obj.api_port = 8632
+                pass
             config_obj.api_token = api_token_edit.text().strip()
             config_obj.api_overlay = 1 if overlay_cb.isChecked() else 0
             config_obj.api_protocols = ",".join(k for k, cbx in _proto_cbs.items() if cbx.isChecked())
@@ -10183,13 +11969,31 @@ def UI_Page():  # PySide6 (Qt) 主界面
             try:
                 config_obj.mqtt_port = int(mqtt_port_edit.text())
             except ValueError:
-                config_obj.mqtt_port = 1883
+                pass
             config_obj.mqtt_username = mqtt_user_edit.text().strip()
             config_obj.mqtt_password = mqtt_pass_edit.text()
             config_obj.mqtt_command_topic = mqtt_cmd_edit.text().strip() or "msu2/command"
             config_obj.mqtt_response_topic = mqtt_resp_edit.text().strip() or "msu2/response"
             config_obj.mqtt_frame_topic = mqtt_frame_edit.text().strip() or "msu2/frame"
             save_config()
+
+        # API/MQTT 字段即时保存（改动即落盘，防止不点「应用并重启」直接退出丢失）
+        api_enable_cb.toggled.connect(_autosave_api)
+        api_port_edit.editingFinished.connect(_autosave_api)
+        api_token_edit.editingFinished.connect(_autosave_api)
+        overlay_cb.toggled.connect(_autosave_api)
+        for _cbx in _proto_cbs.values():
+            _cbx.toggled.connect(_autosave_api)
+        mqtt_host_edit.editingFinished.connect(_autosave_api)
+        mqtt_port_edit.editingFinished.connect(_autosave_api)
+        mqtt_user_edit.editingFinished.connect(_autosave_api)
+        mqtt_pass_edit.editingFinished.connect(_autosave_api)
+        mqtt_cmd_edit.editingFinished.connect(_autosave_api)
+        mqtt_resp_edit.editingFinished.connect(_autosave_api)
+        mqtt_frame_edit.editingFinished.connect(_autosave_api)
+
+        def _restart_api():
+            _autosave_api()
             try:
                 stop_api_server()
             except Exception:
@@ -10550,6 +12354,149 @@ def UI_Page():  # PySide6 (Qt) 主界面
         ]
         _make_scheme_row(hl, hotsearch_fields, dev)
         hl.addStretch(1)
+
+        # ---- DeepSeek 余额（★ v5.13.0） ----
+        ds = QWidget()
+        cb.addTab(ds, "  DeepSeek余额  ")
+        dsl = QVBoxLayout(ds)
+        dsl.addWidget(QLabel("API Key（写入程序目录 .env 的 DEEPSEEK_API_KEY，密钥不存入配置/源码）:"))
+        key_row = QHBoxLayout()
+        dsl.addLayout(key_row)
+        ds_key_edit = QLineEdit(os.environ.get("DEEPSEEK_API_KEY", ""))
+        ds_key_edit.setEchoMode(QLineEdit.Password)
+        ds_key_edit.setPlaceholderText("sk-...")
+        key_row.addWidget(ds_key_edit, 1)
+        key_save_btn = QPushButton("保存到 .env")
+        key_row.addWidget(key_save_btn)
+
+        def _save_ds_key(silent=False):
+            _lock()
+            k = ds_key_edit.text().strip()
+            os.environ["DEEPSEEK_API_KEY"] = k
+            if _save_env_key("DEEPSEEK_API_KEY", k):
+                if not silent:
+                    insert_text_message("DeepSeek API Key 已保存到程序目录 .env")
+            elif not silent:
+                insert_text_message("DeepSeek API Key 保存失败（请手动在 .env 配置）")
+
+        key_save_btn.clicked.connect(lambda: _save_ds_key(False))
+        # ★ v5.16.0：输入框失焦自动写入 .env（无需手动点按钮）
+        ds_key_edit.editingFinished.connect(lambda: _save_ds_key(True))
+        dsl.addWidget(QLabel("显示项（勾选后在小屏上显示；每项可自定义显示模板，%1=该显示项值 %2=币种，留空用默认格式）:"))
+        ds_items = [
+            ("total_balance", "总余额"),
+            ("granted_balance", "赠送余额"),
+            ("topped_up_balance", "充值余额"),
+            ("currency", "币种"),
+            ("available", "账户是否可用"),
+        ]
+        ds_item_cbs = {}
+        ds_tpl_edits = {}
+        cur_items = set(str(getattr(_cfg(), "deepseek_show_items", "") or "").split(","))
+        cur_templates = dict(getattr(_cfg(), "deepseek_custom_templates", {}) or {})
+        for _k, _label in ds_items:
+            row = QHBoxLayout()
+            dsl.addLayout(row)
+            ck = QCheckBox(_label)
+            ck.setChecked(_k in cur_items)
+            ds_item_cbs[_k] = ck
+            row.addWidget(ck)
+            tpl_edit = QLineEdit(cur_templates.get(_k, ""))
+            tpl_edit.setPlaceholderText("自定义模板，如：自定义 %1 元")
+            row.addWidget(tpl_edit, 1)
+            ds_tpl_edits[_k] = tpl_edit
+
+        def _save_ds_items():
+            _lock()
+            config_obj.deepseek_show_items = ",".join(k for k, ck in ds_item_cbs.items() if ck.isChecked()) or "total_balance"
+            config_obj.deepseek_custom_templates = {k: e.text().strip() for k, e in ds_tpl_edits.items() if e.text().strip()}
+            save_config()
+
+        for _ck in ds_item_cbs.values():
+            _ck.toggled.connect(lambda _=False: _save_ds_items())
+        for _te in ds_tpl_edits.values():
+            _te.editingFinished.connect(lambda _t=_te: _save_ds_items())
+
+        refresh_row = QHBoxLayout()
+        dsl.addLayout(refresh_row)
+        refresh_row.addWidget(QLabel("自动刷新:"))
+        ds_auto = QCheckBox()
+        ds_auto.setChecked(bool(getattr(_cfg(), "deepseek_auto_refresh", 1)))
+        refresh_row.addWidget(ds_auto)
+        refresh_row.addWidget(QLabel("间隔(秒):"))
+        ds_interval = QLineEdit(str(getattr(_cfg(), "deepseek_refresh_interval", 300)))
+        ds_interval.setFixedWidth(50)
+        refresh_row.addWidget(ds_interval)
+        refresh_row.addStretch(1)
+
+        def _save_ds_refresh():
+            _lock()
+            config_obj.deepseek_auto_refresh = 1 if ds_auto.isChecked() else 0
+            try:
+                config_obj.deepseek_refresh_interval = int(ds_interval.text())
+            except ValueError:
+                pass
+            save_config()
+
+        ds_auto.toggled.connect(lambda _=False: _save_ds_refresh())
+        ds_interval.editingFinished.connect(_save_ds_refresh)
+
+        # 字体：自适应屏幕（默认，按行数自动字号 + 长文本自动缩小）或手动字号
+        font_row = QHBoxLayout()
+        dsl.addLayout(font_row)
+        ds_font_auto = QCheckBox("字体自适应屏幕")
+        ds_font_auto.setChecked(bool(getattr(_cfg(), "deepseek_font_auto", 1)))
+        font_row.addWidget(ds_font_auto)
+        font_row.addWidget(QLabel("手动字号:"))
+        ds_font_size = QLineEdit(str(getattr(_cfg(), "deepseek_font_size", 13)))
+        ds_font_size.setFixedWidth(50)
+        font_row.addWidget(ds_font_size)
+        font_row.addStretch(1)
+
+        def _save_ds_font():
+            _lock()
+            config_obj.deepseek_font_auto = 1 if ds_font_auto.isChecked() else 0
+            try:
+                config_obj.deepseek_font_size = int(ds_font_size.text())
+            except ValueError:
+                pass
+            save_config()
+
+        ds_font_auto.toggled.connect(lambda _=False: _save_ds_font())
+        ds_font_size.editingFinished.connect(_save_ds_font)
+
+        # 对齐方式：垂直居中（默认）/ 向上对齐
+        align_row = QHBoxLayout()
+        dsl.addLayout(align_row)
+        align_row.addWidget(QLabel("对齐方式:"))
+        ds_align = QComboBox()
+        ds_align.addItems(["垂直居中（默认）", "向上对齐"])
+        ds_align.setCurrentIndex(0 if (getattr(_cfg(), "deepseek_align", "center") or "center") != "top" else 1)
+        align_row.addWidget(ds_align)
+        align_row.addStretch(1)
+
+        def _save_ds_align(idx=-1):
+            _lock()
+            config_obj.deepseek_align = "top" if ds_align.currentIndex() == 1 else "center"
+            save_config()
+
+        ds_align.currentIndexChanged.connect(_save_ds_align)
+
+        def _test_ds():
+            _lock()
+            insert_text_message("正在获取 DeepSeek 余额…")
+            _refresh_page_now(DEEPSEEK_PAGE_ID, _deepseek_cache, fetch_deepseek_balance)
+
+        test_btn = QPushButton("立即获取并显示")
+        test_btn.clicked.connect(_test_ds)
+        dsl.addWidget(test_btn)
+        dsl.addWidget(QLabel("说明：余额查询官方接口 GET https://api.deepseek.com/user/balance；显示内容为官方返回字段（总余额/赠送/充值/币种/账户可用），不做估算。"))
+        ds_fields = [
+            _make_color_row(dsl, "背景颜色:", "deepseek_bg_color", dev, "#000000"),
+            _make_color_row(dsl, "字体颜色:", "deepseek_text_color", dev, "#ffffff"),
+        ]
+        _make_scheme_row(dsl, ds_fields, dev)
+        dsl.addStretch(1)
 
         # ---- 时间 ----
         t = QWidget()
@@ -11164,16 +13111,310 @@ def UI_Page():  # PySide6 (Qt) 主界面
 
     def _build_monitor_settings(parent, dev):
         """设置 → 监控显示（进程 / 硬件详情 / 仪表盘 / 磁盘读写 / 网络流量）"""
-        outer = QVBoxLayout(parent)
+        # ★ v5.37.0：本页内容变多（单位色 2×5 网格 + 换色门槛编辑器），套一层滚动容器 ——
+        #   小窗口下也能滚到下面的子页签，不再被窗口裁切；窗口够大时看不出差别（无滚动条）。
+        page_scroll = QScrollArea()
+        page_scroll.setWidgetResizable(True)
+        page_scroll.setFrameShape(QFrame.NoFrame)
+        host_lay = QVBoxLayout(parent)
+        host_lay.setContentsMargins(0, 0, 0, 0)
+        host_lay.addWidget(page_scroll)
+        page = QWidget()
+        page_scroll.setWidget(page)
+        outer = QVBoxLayout(page)
         outer.setContentsMargins(0, 0, 0, 0)
-        mb = QTabWidget()
-        outer.addWidget(mb)
 
         def _cfg():
             return dev.config if dev.config is not None else config_obj
 
         def _lock():
             set_active_device_config(dev)
+
+        # 硬件监控数据源（★ v5.12.0）：LibreHardwareMonitor 需程序目录 DLL(pythonnet) 无后台程序；
+        # AIDA64 需后台运行并开启共享内存（AIDA64→文件→设置→硬件监视→LCD→启用共享内存）；
+        # 系统原生 = 程序内直接读（psutil/WMI/nvidia，无需任何后台程序，覆盖有限）
+        src_row = QHBoxLayout()
+        outer.addLayout(src_row)
+        src_row.addWidget(QLabel("硬件监控数据源:"))
+        hw_src_combo = QComboBox()
+        hw_src_combo.addItems([
+            "LibreHardwareMonitor（推荐，无需后台程序）",
+            "AIDA64（需后台运行并开启共享内存）",
+            "系统原生（无需任何后台程序，覆盖有限）"])
+        _src_index = {"libre": 0, "aida64": 1, "system": 2}
+        hw_src_combo.setCurrentIndex(_src_index.get(str(getattr(_cfg(), "hardware_source", "libre")), 0))
+        src_row.addWidget(hw_src_combo)
+        src_row.addStretch(1)
+
+        def _chg_hw_src(idx=-1):
+            global hardware_monitor_manager, _hw_monitor_loading
+            _lock()
+            _names = ["LibreHardwareMonitor", "AIDA64", "系统原生"]
+            config_obj.hardware_source = ["libre", "aida64", "system"][hw_src_combo.currentIndex()]
+            save_config()
+            # 重置已加载的监控管理器，下次进入硬件页面按新数据源重新加载
+            hardware_monitor_manager = None
+            _hw_monitor_loading = False
+            insert_text_message("硬件监控数据源已切换为 %s" % _names[hw_src_combo.currentIndex()])
+
+        hw_src_combo.currentIndexChanged.connect(_chg_hw_src)
+
+        # ---- 速度单位换色（★ v5.27.0 新增；★ v5.36.0 逐柱判断；★ v5.37.0 单位色 + 换色门槛规则）----
+        # 网络流量 / 磁盘读写 的柱状图：**每根柱子按自身数值决定颜色**——
+        #   ① 先匹配下面「换色门槛」里的条件（可增删任意多条，按列表顺序命中即用）
+        #   ② 再按单位（<1K / KB / MB / GB / TB）取「单位色」  ③ 都没命中 → 用该行原始柱色
+        unit_box = QGroupBox("速度单位换色（网络流量 / 磁盘读写 的柱状图）")
+        outer.addWidget(unit_box)
+        ul = QVBoxLayout(unit_box)
+        unit_chk = QCheckBox("开启逐柱换色（按「换色门槛 → 单位色」给每根柱子上色，未命中的用该行原色）")
+        unit_chk.setChecked(bool(getattr(_cfg(), "speed_unit_color_enable", 0)))
+        ul.addWidget(unit_chk)
+
+        def _save_unit_enable(checked=False):
+            _lock()
+            config_obj.speed_unit_color_enable = 1 if checked else 0
+            save_config()
+            insert_text_message("速度单位换色：%s" % ("已开启" if checked else "已关闭"))
+
+        # ★ 先 setChecked 再连信号：否则构建时就会用默认值触发一次保存，把用户存的选择冲掉
+        unit_chk.toggled.connect(_save_unit_enable)
+
+        # ---- 色系（★ v5.38.0）：选中一套就一次性把 10 个单位色改成那套（也可单格手改）----
+        scheme_row = QHBoxLayout()
+        ul.addLayout(scheme_row)
+        scheme_row.addWidget(QLabel("色系:"))
+        scheme_combo = QComboBox()
+        for _name, _c1, _c2 in SPEED_UNIT_SCHEMES:
+            scheme_combo.addItem(_name)
+        scheme_combo.addItem(SPEED_UNIT_SCHEME_CUSTOM)
+        scheme_combo.setToolTip("选中一套色系 = 直接把下面 10 个单位色（上行/读 + 下行/写 各 5 档）改成那套配色；"
+                               "单格手改后会显示「自定义」")
+        scheme_row.addWidget(scheme_combo)
+        scheme_row.addStretch(1)
+
+        def _refresh_scheme_combo():
+            """按当前配置反查色系回显（手动改色后变「自定义」）；blockSignals 防回显时再应用一次"""
+            name = _speed_current_scheme()
+            idx = scheme_combo.findText(name)
+            if idx < 0:
+                idx = scheme_combo.count() - 1
+            scheme_combo.blockSignals(True)
+            scheme_combo.setCurrentIndex(idx)
+            scheme_combo.blockSignals(False)
+
+        def _apply_scheme(index):
+            if not (0 <= index < len(SPEED_UNIT_SCHEMES)):
+                return          # 选到最后的「自定义」项：不动颜色
+            name, cols1, cols2 = SPEED_UNIT_SCHEMES[index]
+            _lock()
+            for _rk, _cols in (("bar1", cols1), ("bar2", cols2)):
+                for (_uk, _lb), _color in zip(SPEED_UNIT_LABELS, _cols):
+                    setattr(config_obj, _speed_unit_field(_rk, _uk), _color)
+                    _e = unit_edits.get((_rk, _uk))
+                    if _e is not None:
+                        _e.setText(_color)     # setText 不发 editingFinished，不会又触发一次保存
+            save_config()
+            insert_text_message("速度单位色系已换成「%s」（上行/读、下行/写 各 5 档单位色）" % name)
+
+        ul.addWidget(QLabel("单位色（每格 = 色值 + 「…」取色 + 「×」清空；清空 = 该单位用该行原色）："))
+
+        unit_edits = {}
+
+        def _unit_color_cell(row_key, unit_key):
+            """单位色单元格：色值输入框 + 「…」取色 + 「×」清空（清空 = 用该行原色）"""
+            field = _speed_unit_field(row_key, unit_key)
+            cell = QWidget()
+            h = QHBoxLayout(cell)
+            h.setContentsMargins(0, 0, 0, 0)
+            h.setSpacing(2)
+            # ★ v5.38.0：显示的就是配置里的值（不再回退成该行 MB 色 —— 否则清空后会显示成兆色，看着像没清）
+            edit = QLineEdit(str(getattr(_cfg(), field, "") or ""))
+            edit.setFixedWidth(76)
+            h.addWidget(edit)
+            unit_edits[(row_key, unit_key)] = edit
+
+            def _commit(value=None, _f=field, _e=edit):
+                _lock()
+                setattr(config_obj, _f, (value if value is not None else _e.text()).strip())
+                save_config()
+                _refresh_scheme_combo()
+
+            def _pick(_f=field, _e=edit):
+                c = QColorDialog.getColor(QColor(_e.text() or "#ffffff"), unit_box)
+                if c.isValid():
+                    _e.setText(c.name())
+                    _commit(c.name(), _f, _e)
+
+            def _clear(_f=field, _e=edit):
+                _e.setText("")
+                _commit("", _f, _e)   # 空 = 该单位用该行原色
+
+            pb = QPushButton("…")
+            pb.setFixedWidth(24)
+            pb.setToolTip("选择颜色")
+            pb.clicked.connect(lambda _=False, _f=field, _e=edit: _pick(_f, _e))
+            h.addWidget(pb)
+            cx = QPushButton("×")
+            cx.setFixedWidth(22)
+            cx.setToolTip("清空（= 用该行原色）")
+            cx.clicked.connect(lambda _=False, _f=field, _e=edit: _clear(_f, _e))
+            h.addWidget(cx)
+            edit.editingFinished.connect(lambda _f=field, _e=edit: _commit(None, _f, _e))
+            return cell
+
+        unit_grid = QGridLayout()
+        unit_grid.setHorizontalSpacing(6)
+        ul.addLayout(unit_grid)
+        for _c, (_uk, _label) in enumerate(SPEED_UNIT_LABELS, start=1):
+            unit_grid.addWidget(QLabel(_label), 0, _c)
+        for _r, (_rk, _rlabel) in enumerate((("bar1", "上行/读"), ("bar2", "下行/写")), start=1):
+            unit_grid.addWidget(QLabel(_rlabel), _r, 0)
+            for _c, (_uk, _label) in enumerate(SPEED_UNIT_LABELS, start=1):
+                unit_grid.addWidget(_unit_color_cell(_rk, _uk), _r, _c)
+        unit_grid.setColumnStretch(len(SPEED_UNIT_LABELS) + 1, 1)
+        # 下拉框回显当前色系（★ 务必在 grid 建完后调：_refresh_scheme_combo 只读配置，不依赖控件）
+        _cur_idx = scheme_combo.findText(_speed_current_scheme())
+        scheme_combo.setCurrentIndex(_cur_idx if _cur_idx >= 0 else scheme_combo.count() - 1)
+        scheme_combo.currentIndexChanged.connect(_apply_scheme)   # ★ 先 setCurrentIndex 再连信号，避免构建时误写配置
+
+        # ---- 换色门槛（★ v5.37.0 新增）：自定义条件，可增删任意多条，按顺序命中即用 ----
+        rule_box = QGroupBox("换色门槛（自定义条件：大于 / 大于等于 / 小于 / 小于等于 / 等于 / 不等于）")
+        outer.addWidget(rule_box)
+        rl = QVBoxLayout(rule_box)
+        rl.addWidget(QLabel("逐根柱子按下面列表**从上到下**匹配，第一条命中的颜色即生效；都没命中时用上面的单位色。"
+                            "例：小于 8 KB → 灰色；大于 1 MB → 橙色；等于 0 → 深灰"
+                            "（「等于」按 ±0.5% 容差，目标为 0 时精确比较）。"))
+
+        def _rules():
+            rules = getattr(_cfg(), "speed_color_rules", None)
+            return [dict(x) for x in rules if isinstance(x, dict)] if isinstance(rules, (list, tuple)) else []
+
+        def _save_rules(new_rules, rebuild=False):
+            _lock()
+            config_obj.speed_color_rules = [dict(x) for x in new_rules]
+            save_config()
+            if rebuild:
+                _rebuild_rules()
+
+        def _to_float(text):
+            try:
+                return float(str(text).strip())
+            except Exception:
+                return 0.0
+
+        def _rule_combo(options, current, width):
+            cb = QComboBox()
+            for _v, _t in options:
+                cb.addItem(_t, _v)
+            vals = [v for v, _t in options]
+            cb.setCurrentIndex(vals.index(current) if current in vals else 0)
+            cb.setMinimumWidth(width)
+            return cb
+
+        def _del_rule(idx):
+            cur = _rules()
+            if 0 <= idx < len(cur):
+                cur.pop(idx)
+                _save_rules(cur, rebuild=True)
+                insert_text_message("已删除第 %d 条换色门槛" % (idx + 1))
+
+        def _add_rule():
+            cur = _rules()
+            cur.append({"row": "both", "op": ">", "value": 1.0, "unit": "MB",
+                        "color": str(getattr(_cfg(), "speed_unit_bar1_color", "") or SPEED_UNIT_BAR1_DEFAULT)})
+            _save_rules(cur, rebuild=True)
+            insert_text_message("已添加第 %d 条换色门槛，可修改条件与颜色" % len(cur))
+
+        def _make_rule_row(idx, rule):
+            """一条门槛：序号 + 适用范围 + 条件 + 数值 + 单位 + 「时 →」+ 颜色 + 取色 + 删除"""
+            row = QFrame()
+            row.setFrameShape(QFrame.StyledPanel)
+            rw = QHBoxLayout(row)
+            rw.setContentsMargins(4, 2, 4, 2)
+            rw.setSpacing(4)
+            rw.addWidget(QLabel("%d." % (idx + 1)))
+            cb_row = _rule_combo(SPEED_RULE_ROWS, str(rule.get("row", "both") or "both"), 92)
+            cb_op = _rule_combo(SPEED_RULE_OPS, str(rule.get("op", ">") or ">"), 78)
+            edit_val = QLineEdit(str(rule.get("value", 1)))
+            edit_val.setFixedWidth(64)
+            cb_unit = _rule_combo(tuple((u, u) for u in ("B", "KB", "MB", "GB", "TB")),
+                                  str(rule.get("unit", "KB") or "KB"), 60)
+            edit_col = QLineEdit(str(rule.get("color", "") or ""))
+            edit_col.setFixedWidth(76)
+            rw.addWidget(cb_row)
+            rw.addWidget(cb_op)
+            rw.addWidget(edit_val)
+            rw.addWidget(cb_unit)
+            rw.addWidget(QLabel("时 →"))
+            rw.addWidget(edit_col)
+
+            def _update(**kw):
+                cur = _rules()
+                if 0 <= idx < len(cur):
+                    cur[idx].update(kw)
+                    _save_rules(cur)
+
+            def _pick_col(_e=edit_col):
+                c = QColorDialog.getColor(QColor(_e.text() or "#ffffff"), rule_box)
+                if c.isValid():
+                    _e.setText(c.name())
+                    _update(color=c.name())
+
+            pb_col = QPushButton("…")
+            pb_col.setFixedWidth(24)
+            pb_col.setToolTip("选择该条件的颜色")
+            pb_col.clicked.connect(lambda _=False: _pick_col())
+            rw.addWidget(pb_col)
+            pb_del = QPushButton("删除")
+            pb_del.setToolTip("删除这条条件")
+            pb_del.clicked.connect(lambda _=False, _i=idx: _del_rule(_i))
+            rw.addWidget(pb_del)
+            rw.addStretch(1)
+            # 变更即存（下拉框/文本框都在“值提交后”才写盘，不会逐字符写）
+            cb_row.currentIndexChanged.connect(lambda _i=0: _update(row=cb_row.currentData()))
+            cb_op.currentIndexChanged.connect(lambda _i=0: _update(op=cb_op.currentData()))
+            cb_unit.currentIndexChanged.connect(lambda _i=0: _update(unit=cb_unit.currentData()))
+            edit_val.editingFinished.connect(lambda: _update(value=_to_float(edit_val.text())))
+            edit_col.editingFinished.connect(lambda: _update(color=edit_col.text().strip()))
+            return row
+
+        rules_host = QWidget()
+        rules_layout = QVBoxLayout(rules_host)
+        rules_layout.setContentsMargins(0, 0, 0, 0)
+        rules_hint = QLabel("（留空「颜色」的条件会被忽略；条件只对所选的那一行生效，未命中的柱子用单位色/原色）")
+        rules_scroll = QScrollArea()
+        rules_scroll.setWidgetResizable(True)
+        rules_scroll.setMaximumHeight(170)
+        rules_scroll.setWidget(rules_host)
+        rl.addWidget(rules_hint)
+        rl.addWidget(rules_scroll)
+
+        def _rebuild_rules():
+            # 清空旧行（takeAt 后必须 setParent(None) 断亲，否则控件仍挂在布局上）
+            while rules_layout.count():
+                item = rules_layout.takeAt(0)
+                w = item.widget()
+                if w is not None:
+                    w.setParent(None)
+                    w.deleteLater()
+            rules = _rules()
+            for i, rule in enumerate(rules):
+                rules_layout.addWidget(_make_rule_row(i, rule))
+            if not rules:
+                rules_layout.addWidget(QLabel("（暂无自定义条件——点下面的「＋ 添加条件」添加，例如：大于 1 MB → 橙色）"))
+            rules_layout.addStretch(1)
+
+        add_row = QHBoxLayout()
+        rl.addLayout(add_row)
+        add_btn = QPushButton("＋ 添加条件")
+        add_btn.setToolTip("按顺序追加一条换色门槛（可修改条件/数值/单位/颜色，也可删除）")
+        add_btn.clicked.connect(lambda _=False: _add_rule())
+        add_row.addWidget(add_btn)
+        add_row.addStretch(1)
+        _rebuild_rules()
+
+        mb = QTabWidget()
+        outer.addWidget(mb)
 
         # ---- 进程 ----
         proc = QWidget()
@@ -11665,6 +13906,19 @@ def UI_Page():  # PySide6 (Qt) 主界面
                     for form in (conn_form, sfr_form, flash_form, parts_form, sys_form):
                         _clear_form(form)
                     _add_row(conn_form, "连接状态", "已连接" if connected else "未连接")
+                    # ★ v5.26.0：画面刷新健康度（「已连接」≠「真的在刷新」；点「刷新」按钮重新读取）
+                    _add_row(conn_form, "画面刷新", device_frame_status(dev))
+                    # ★ v5.29.0：整屏「窗口 → 帧数据」空档观测（画面倾斜的成因；修复后不再影响画面）
+                    if getattr(dev, "frame_gap_count", 0) or getattr(dev, "frame_gap_intrusions", 0):
+                        _add_row(conn_form, "帧空档", "%d 次（最长 %.0f ms）· 空档内被插入命令 %d 次"
+                                 % (getattr(dev, "frame_gap_count", 0),
+                                    (getattr(dev, "frame_gap_max", 0.0) or 0.0) * 1000.0,
+                                    getattr(dev, "frame_gap_intrusions", 0)))
+                    if getattr(dev, "render_error_count", 0):
+                        _add_row(conn_form, "渲染异常", "%d 次（最近：%s）" % (
+                            dev.render_error_count,
+                            (dev.last_render_error or "").strip().splitlines()[-1][:100]
+                            if (dev.last_render_error or "").strip() else "-"))
                     _add_row(conn_form, "端口", usb.get("port") or "-")
                     _add_row(conn_form, "序列号(SN)", usb.get("serial_number") or "-")
                     _add_row(conn_form, "VID", usb.get("vid") or "-")
@@ -11824,12 +14078,72 @@ def UI_Page():  # PySide6 (Qt) 主界面
     main_notebook.currentChanged.connect(_on_main_tab_changed)
     _rebuild_main_tabs()
 
+    def _apply_main_ui_to_config(dev):
+        """★ v5.17.0：设备配置就绪/变化后，把该设备的配置刷回主控页控件，
+        修复 index0 主控页在设备连接前用全局默认配置构建、连接后不刷新的问题
+        （此前每次启动主控页显示默认值，需重新选择；现按保存值回填）。"""
+        if dev is None or dev.config is None:
+            return
+        ctx = _main_ctxs.get(dev.index)
+        if not ctx:
+            return
+        cfg = dev.config
+        try:
+            # RGB 文字颜色滑块
+            sl = ctx.get('_sliders')
+            if sl:
+                for k, s in sl.items():
+                    s.blockSignals(True)
+                    s.setValue(int(getattr(cfg, "text_color_" + k, 128)))
+                    s.blockSignals(False)
+            # 填充/适应
+            rf = ctx.get('_radio_fill')
+            if rf is not None:
+                rf.blockSignals(True)
+                rf.setChecked(int(getattr(cfg, "shrink_type", 1)) == 1)
+                rf.blockSignals(False)
+            # 动图间隔
+            iv = ctx.get('interval_var')
+            if iv is not None:
+                iv.blockSignals(True)
+                iv.setText(str(float(getattr(cfg, "photo_interval_var", 0.1)) + float(getattr(cfg, "second_times", 0))))
+                iv.blockSignals(False)
+            # 最大 FPS
+            fv = ctx.get('fps_var')
+            if fv is not None:
+                fv.blockSignals(True)
+                fv.setText(str(int(getattr(cfg, "fps_var", 5))))
+                fv.blockSignals(False)
+            # 相机 / 镜像窗口（触发按配置回填的异步刷新）
+            try:
+                fc = ctx.get('_refresh_cameras')
+                if fc is not None:
+                    fc()
+            except Exception:
+                pass
+            try:
+                rw = ctx.get('_refresh_windows')
+                if rw is not None:
+                    rw()
+            except Exception:
+                pass
+            # 屏幕分辨率下拉（按保存的 lcd_size 回填）
+            lv = ctx.get('lcd_size_var')
+            if lv is not None:
+                saved = getattr(cfg, "lcd_size", "") or ""
+                lv.blockSignals(True)
+                if saved in [lv.itemText(i) for i in range(lv.count())]:
+                    lv.setCurrentText(saved)
+                lv.blockSignals(False)
+        except Exception:
+            pass
+
     # ==================== 联动 ====================
     _syncing_screen_tabs = False
 
     def _activate_by_name(name):
         """按设备名切换活跃屏，并同步主控标签与下拉框"""
-        global _primary_device, _active_main_dev_id
+        global _active_main_dev_id
         nonlocal _syncing_screen_tabs  # _syncing_screen_tabs 定义在 UI_Page 内，须用 nonlocal（原 global 会 NameError 且被吞掉）
         if _syncing_screen_tabs:
             return
@@ -11837,14 +14151,14 @@ def UI_Page():  # PySide6 (Qt) 主界面
         try:
             for dev in all_devices.values():
                 if dev.device_name == name and dev.device_state == 1:
-                    old = _primary_device
+                    old = get_current_device()
                     if old is not None and old != dev:
                         if old.config is not None:
                             old.config.state_machine = old.state_machine
                         else:
                             old.state_machine = config_obj.state_machine
                     set_current_device(dev)
-                    _primary_device = dev
+                    set_default_device(dev)  # ★ v5.22.0：只改默认活跃屏，不改主设备槽位
                     set_active_device_config(dev)
                     if dev.config is not None:
                         dev.config.state_machine = getattr(dev, "state_machine", SCREEN_PAGE_ID)
@@ -12048,7 +14362,8 @@ def UI_Page():  # PySide6 (Qt) 主界面
             mode = data.get("mode", "widget")
             if mode not in ("widget", "canvas"):
                 mode = "widget"
-            show_live = bool(int(data.get("wall_show_live", 1) or 1))
+            # ★ v5.22.0 修复：原 int(... or 1) 会把保存的 0 回退成 1（关闭后重启又被打开）
+            show_live = bool(int(data.get("wall_show_live", 1)))
             return rows, cols, mode, show_live
         except Exception:
             return 0, 0, "widget", True
@@ -12421,7 +14736,8 @@ def UI_Page():  # PySide6 (Qt) 主界面
                 "geometry": [geo.x(), geo.y(), geo.width(), geo.height()],
                 "maximized": 1 if window.isMaximized() else 0,
                 "top_tab": top_nb.currentIndex(),
-                "show_info": 1 if not Text1.isHidden() else 0,
+                "show_info": _show_info_state,
+                "auto_connect": 1 if _auto_connect else 0,
             }
             path = _ui_state_path()
             tmp = path + ".tmp"
@@ -12453,10 +14769,24 @@ def UI_Page():  # PySide6 (Qt) 主界面
             except Exception:
                 pass
             # 信息框显隐（程序级，随 UI 状态保存/恢复）
+            # ★ v5.22.0 修复：原写法 int(data.get("show_info", 1) or 1) 把保存的 0 当假值
+            #   回退成 1 —— 用户关闭「显示信息框」后重启又被自动打开（“设置没有持续保存”）。
             try:
-                show_info = int(data.get("show_info", 1) or 1)
-                info_lbl.setVisible(bool(show_info))
-                Text1.setVisible(bool(show_info))
+                global _show_info_state
+                _show_info_state = 1 if int(data.get("show_info", 1)) else 0
+            except Exception:
+                _show_info_state = 1
+            try:
+                _apply_show_info_state()  # 同步信息框显隐 + 各屏设置页勾选框
+            except Exception:
+                pass
+            # 设为自动连接（程序级，随 UI 状态保存/恢复）
+            try:
+                global _auto_connect
+                _auto_connect = bool(data.get("auto_connect", 1))
+                auto_cb.blockSignals(True)
+                auto_cb.setChecked(_auto_connect)
+                auto_cb.blockSignals(False)
             except Exception:
                 pass
         except Exception:
@@ -12501,14 +14831,19 @@ def UI_Page():  # PySide6 (Qt) 主界面
     # 定期刷新设备列表 + 恢复当前设备上次的页面/方向选择
     last_synced_device_state = None
     last_refresh_device_signature = None
+    _main_cfg_sig = {}  # ★ v5.17.0：设备配置签名（id），变化时刷回主控页控件
 
     def _periodic_refresh():
-        nonlocal last_synced_device_state, last_refresh_device_signature
+        nonlocal last_synced_device_state, last_refresh_device_signature, _main_cfg_sig
         refresh_device_list()
         try:
             _dev = get_current_device()
             if _dev is not None:
-                dev_state_lbl.setText("设备已连接: %s" % _dev.device_name if _dev.device_state == 1 else "设备未连接")
+                if _dev.device_state == 1:
+                    # ★ v5.26.0：状态栏同时显示「画面刷新」状态——「已连接」不代表真的在刷新
+                    dev_state_lbl.setText("设备已连接: %s · %s" % (_dev.device_name, device_frame_status(_dev)))
+                else:
+                    dev_state_lbl.setText("设备未连接")
         except Exception:
             pass
         try:
@@ -12527,6 +14862,19 @@ def UI_Page():  # PySide6 (Qt) 主界面
                         _rebuild_main_tabs()
                     except Exception:
                         pass
+        except Exception:
+            pass
+        # ★ v5.17.0：设备配置就绪/变化时刷回主控页控件（修复 index0 主控页显示全局默认）
+        try:
+            for _d in all_devices.values():
+                if _d.device_state == 1 and _d.config is not None:
+                    _sig = id(_d.config)
+                    if _main_cfg_sig.get(_d.index) != _sig:
+                        _main_cfg_sig[_d.index] = _sig
+                        try:
+                            _apply_main_ui_to_config(_d)
+                        except Exception:
+                            pass
         except Exception:
             pass
         QTimer.singleShot(int(2000 * _power_factor()), _periodic_refresh)
@@ -12597,11 +14945,35 @@ class MSN_Data:
 
 # Device_State_Labelen: 0无修改，1窗口已隐藏，2窗口已恢复有修改，3窗口已隐藏有修改
 def set_device_state(state):
-    """全局设备状态更新（用于UI标签），实际操作当前设备"""
+    """全局设备状态更新（用于UI标签），实际操作当前设备。
+    ★ v5.22.0：state=0（通信失败判掉线）改为「连续失败累计」——
+    LCD/SFR 命令单次失败往往是设备瞬时繁忙/复位握手残留，立即断开（关串口→掉线→
+    daemon 重连初始化）会造成小屏反复掉线重连，即「两块小屏总有一块自动断开」。
+    累计到 COMM_FAIL_LIMIT 次才真正判掉线；任意一次成功通信会清零计数（见 SER_Read）。
+    真正拔线时所有命令均会失败，连续 3 次后仍能正常判掉线并自动重连。"""
     global Label1, Device_State_Labelen
     device = get_current_device()
     if device is None:
         return
+    if state == 0 and device.device_state == 1:
+        device.comm_fail_count = getattr(device, "comm_fail_count", 0) + 1
+        if device.comm_fail_count < COMM_FAIL_LIMIT:
+            _throttled_dev_print(device, "comm_fail_ignore",
+                                 "通信失败（第 %d/%d 次，忽略）%s"
+                                 % (device.comm_fail_count, COMM_FAIL_LIMIT,
+                                    ("：" + device.last_comm_note) if getattr(device, "last_comm_note", "") else ""),
+                                 5.0)
+            return
+        device.comm_fail_count = 0
+        _note = getattr(device, "last_comm_note", "") or ""
+        print("%s 连续 %d 次通信失败，判定掉线（daemon 将自动重连）%s"
+              % (device.device_name, COMM_FAIL_LIMIT, ("：" + _note) if _note else ""))
+        try:
+            insert_text_message("设备掉线：%s（连续 %d 次通信失败%s，正在自动重连）\n"
+                                "若一直重连不上：请拔插该屏的 USB 线（设备可能已复位/死机）"
+                                % (device.device_name, COMM_FAIL_LIMIT, ("：" + _note) if _note else ""))
+        except Exception:
+            pass
     device.set_device_state(state)
     
     if Device_State_Labelen == 2:
@@ -12636,6 +15008,46 @@ def _dump_usb_descriptor(port):
     print("=" * 60)
 
 
+# ==================== 串口连接失败记录（★ v5.24.0）====================
+# 排查用：记录每个 WCH 串口最近一次连接失败的原因，供 daemon 汇总显示到信息框 + 日志文件。
+# 编译成无控制台 exe 后 print 看不到，用户只看到「一块屏像没连接」却不知原因——
+# 最常见是串口被另一个实例/程序占用（本程序没有单实例保护），其次是占用导致设备无响应。
+_connect_failures = {}          # {串口名: 原因}
+_connect_fail_msg_time = 0.0    # 上次提示时间（限频，避免每轮扫描刷屏）
+
+
+def _note_connect_failure(port_name, reason):
+    """登记某串口连接失败原因（成功连接后请调 _clear_connect_failure）"""
+    if port_name:
+        _connect_failures[port_name] = reason
+
+
+def _clear_connect_failure(port_name):
+    _connect_failures.pop(port_name, None)
+
+
+def _report_connect_failures(port_list, known_ports):
+    """把「有串口但没连上」的原因汇总显示到信息框（限频 30 秒，仅在有失败记录时）"""
+    global _connect_fail_msg_time
+    try:
+        now = time.monotonic()
+        if now - _connect_fail_msg_time < 30.0:
+            return
+        lines = []
+        for p in port_list:
+            if p.device in known_ports:
+                continue
+            reason = _connect_failures.get(p.device)
+            if reason:
+                lines.append("%s：%s" % (p.device, reason))
+        if not lines:
+            return
+        _connect_fail_msg_time = now
+        insert_text_message("以下串口未连接：\n%s" % "\n".join(lines))
+    except Exception:
+        pass
+
+
 def Get_MSN_Device(port_list):  # 尝试获取MSN设备
     global config_file, config_obj
     device = get_current_device()
@@ -12657,10 +15069,12 @@ def Get_MSN_Device(port_list):  # 尝试获取MSN设备
             recv = SER_Read()
             if recv == 0:
                 print("未接收到设备响应，打开失败：%s" % port.device)
+                _note_connect_failure(port.device, "设备无响应（可能被其他程序/另一个实例占用，或接线/供电异常）")
                 device.ser.close()
                 continue  # 尝试下一个端口
         except Exception as e:  # 出现异常
             print("%s 无法打开，请检查是否被其他程序占用: %s" % (port.device, e))
+            _note_connect_failure(port.device, "串口打不开（可能被其他程序/另一个实例占用）：%s" % e)
             if device.ser is not None and device.ser.is_open:
                 device.ser.close()
             time.sleep(0.2)  # 防止频繁重试
@@ -12692,6 +15106,7 @@ def Get_MSN_Device(port_list):  # 尝试获取MSN设备
                 # 对MSN设备进行登记
                 My_MSN_Device = MSN_Device(port.device, msn_version)
                 device.com_port = port.device
+                _clear_connect_failure(port.device)   # ★ v5.24.0：连上后清除失败记录
                 device.serial_number = port.serial_number or ""  # 唯一识别码
                 # 采集设备硬件/固件信息（供“设备信息”标签页展示）
                 device.firmware_version = msn_version
@@ -12726,6 +15141,7 @@ def Get_MSN_Device(port_list):  # 尝试获取MSN设备
 
         if My_MSN_Device is None:
             print("设备校验失败：%s" % port.device)
+            _note_connect_failure(port.device, "设备校验失败（响应不是 MSU2 协议，可能被其他程序干扰）")
             device.ser.close()
         else:
             break  # 连接成功即退出循环
@@ -12811,9 +15227,13 @@ def MSN_Device_1_State_machine():  # MSN设备1的循环状态机
         write_path_index = 0
         state_change_set(save=False)
 
-    # 定期看门狗：每30秒强制重置LCD方向
+    # 定期看门狗：定期重置 LCD 方向（防硬件漂移）。
+    # ★ v5.30.0 两处收紧（画面倾斜的另一条成因是「方向刚重置完就立刻写整帧」）：
+    #   ①周期可用 MSU2_MINI_LCD_WATCHDOG_S 调整，MSU2_MINI_NO_LCD_WATCHDOG=1 可整体关闭（用于定位）；
+    #   ②清屏后**只有「内容不变就不重绘」的静态页**才强制 state_change=1（动态页每轮本来就会整帧重画，
+    #     旧代码对所有页都强制，等于每 15 秒额外插一次「清屏 + 立刻整屏重绘」——既黑闪又是最易错位的时刻）。
     now_watchdog = time.monotonic()
-    if now_watchdog - device.last_lcd_watchdog_time > 15:
+    if not LCD_WATCHDOG_DISABLED and now_watchdog - device.last_lcd_watchdog_time > LCD_WATCHDOG_SECONDS:
         device.force_lcd_reset = True
         device.last_lcd_watchdog_time = now_watchdog
 
@@ -12823,6 +15243,13 @@ def MSN_Device_1_State_machine():  # MSN设备1的循环状态机
         if device.device_state == 1:
             LCD_State(device.lcd_change_now)
         device.force_lcd_reset = False
+        # ★ v5.26.0：LCD_State 成功后会清屏为黑，而它不设置 state_change —— 静态页
+        # （照片/关于/农历/纪念日/待办，见 _static_page_loop 的内容指纹判断）指纹没变就不再重绘，
+        # 屏会一直黑着（设备却仍显示「已连接」、预览还停在最后一帧）。这里补置一次 state_change，
+        # 让页面重走「state_change → LCD_ADD + 整帧重绘」分支。
+        # ★ v5.30.0：只对静态页补（动态页每轮都会重画，不需要，且能少一次「清屏后立刻整帧」的易错时刻）。
+        if device.device_state == 1 and _is_static_redraw_page(config_obj.state_machine):
+            device.state_change = 1
 
     try:
         if _api_try_screen_id(device):
@@ -12894,6 +15321,8 @@ def MSN_Device_1_State_machine():  # MSN设备1的循环状态机
             show_hotsearch()
         elif config_obj.state_machine == BATTERY_PAGE_ID:
             show_battery()
+        elif config_obj.state_machine == DEEPSEEK_PAGE_ID:
+            show_deepseek_balance()
         elif config_obj.state_machine == MUSIC_PAGE_ID:
             show_music()
         elif config_obj.state_machine == API_PAGE_ID:
@@ -13005,7 +15434,8 @@ def ping_worker():
                 host = config_obj.ping_host or "223.5.5.5"
                 try:
                     proc = subprocess.run(["ping", "-n", "1", "-w", "1000", host],
-                                          capture_output=True, text=True, timeout=3)
+                                          capture_output=True, text=True, timeout=3,
+                                          creationflags=_NO_WINDOW_FLAGS)  # ★ v5.23.0：编译后不弹黑框
                     out = (proc.stdout or "") + (proc.stderr or "")
                     m = re.search(r"(?:时间|time)[=<]\s*(\d+)\s*ms", out)
                     if m:
@@ -13222,10 +15652,14 @@ def _show_diskio_netspeed(dev, read_s, write_s):
         lw = round(draw.textlength(label, font=font))
         draw.text((0, start_y), label, fill=label_color, font=font)
         draw.text((lw + 2, start_y), value_text, fill=vcolor, font=font)
+    # ★ v5.36.0/v5.37.0：逐柱取色（读/写各有自己的门槛与单位色）
+    resolve1 = _speed_bar_color_resolver("bar1", bar1_color)
+    resolve2 = _speed_bar_color_resolver("bar2", bar2_color)
     # 柱状图：两条（读/写）
     min_draw = 1
-    for bar_y, key, color in zip([SHOW_HEIGHT // 4 - 1, SHOW_HEIGHT - SHOW_HEIGHT // 4 - 1],
-                                 ["read", "write"], [bar1_color, bar2_color]):
+    for bar_y, key, resolve in zip(
+            [SHOW_HEIGHT // 4 - 1, SHOW_HEIGHT - SHOW_HEIGHT // 4 - 1],
+            ["read", "write"], [resolve1, resolve2]):
         values = dev.diskio_plot_data[key]
         max_value = max(min_draw, max(values))
         x0 = -BAR_WIDTH
@@ -13237,7 +15671,7 @@ def _show_diskio_netspeed(dev, read_s, write_s):
             x0 += BAR_WIDTH
             x1 += BAR_WIDTH
             y0 = y1 - bar_height
-            draw.rectangle([x0, y0, x1, y1], fill=color)
+            draw.rectangle([x0, y0, x1, y1], fill=resolve(sent))
     rgb888 = np.asarray(im1, dtype=np.uint32)
     _safe_send_rgb888(rgb888)
 
@@ -13919,7 +16353,8 @@ def fetch_battery():
         import os
         path = os.path.join(tempfile.gettempdir(), "battery_report.xml")
         subprocess.run(["powercfg", "/batteryreport", "/output", path, "/xml"],
-                       capture_output=True, timeout=15)
+                       capture_output=True, timeout=15,
+                       creationflags=_NO_WINDOW_FLAGS)  # ★ v5.23.0：编译后不弹黑框
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             content = f.read()
         design = re.search(r"<DesignCapacity>(\d+)</DesignCapacity>", content)
@@ -14129,6 +16564,166 @@ def show_battery():
     _power_wait(dev, 0.5)
 
 
+def _parse_deepseek_balance(data):
+    """解析 DeepSeek /user/balance 响应为统一 dict（仅官方返回字段，★ v5.13.0）"""
+    out = {"available": False, "currency": "", "total_balance": None,
+           "granted_balance": None, "topped_up_balance": None}
+    try:
+        out["available"] = bool(data.get("is_available"))
+    except Exception:
+        pass
+    infos = data.get("balance_infos") or []
+    if infos:
+        first = infos[0] or {}
+        out["currency"] = str(first.get("currency") or "")
+        for k in ("total_balance", "granted_balance", "topped_up_balance"):
+            try:
+                out[k] = float(first.get(k))
+            except Exception:
+                out[k] = None
+    return out
+
+
+def _deepseek_build_lines(data, show_items=None, custom_templates=None):
+    """按显示项勾选构建多行显示文本。
+    custom_templates={item: 模板}：模板支持 %1=该显示项值、%2=币种，留空/无模板用默认格式（★ v5.19.0）"""
+    if data is None:
+        return ["获取中…"]
+    if isinstance(data, str):
+        return [data]
+    items = [s.strip() for s in (show_items or "").split(",") if s.strip()] or ["total_balance"]
+    cur = data.get("currency") or ""
+    templates = custom_templates or {}
+
+    def _num(v):
+        return "--" if v is None else ("%.2f" % v)
+
+    def _apply_tpl(tpl, value_text):
+        tpl = (tpl or "").strip()
+        if not tpl:
+            return None
+        return tpl.replace("%1", value_text).replace("%2", cur)
+
+    lines = []
+    for it in items:
+        value_text = ""
+        default = None
+        if it == "total_balance":
+            value_text = _num(data.get("total_balance"))
+            default = "余额 %s%s" % (value_text, cur)
+        elif it == "granted_balance":
+            value_text = _num(data.get("granted_balance"))
+            default = "赠送 %s%s" % (value_text, cur)
+        elif it == "topped_up_balance":
+            value_text = _num(data.get("topped_up_balance"))
+            default = "充值 %s%s" % (value_text, cur)
+        elif it == "currency":
+            value_text = cur or "--"
+            default = "币种 %s" % value_text
+        elif it == "available":
+            value_text = "是" if data.get("available") else "否"
+            default = "可用 %s" % value_text
+        else:
+            continue
+        custom = _apply_tpl(templates.get(it), value_text)
+        lines.append(custom if custom is not None else default)
+    return lines or ["暂无数据"]
+
+
+def fetch_deepseek_balance():
+    """DeepSeek 账户余额（GET https://api.deepseek.com/user/balance），后台线程调用（★ v5.13.0）"""
+    global _deepseek_cache
+    try:
+        key = (os.environ.get("DEEPSEEK_API_KEY", "") or "").strip()
+        if not key:
+            _deepseek_cache["data"] = "未配置 API Key（程序目录 .env 的 DEEPSEEK_API_KEY）"
+            _deepseek_cache["time"] = time.monotonic()
+            return
+        import urllib.request
+        req = urllib.request.Request(
+            "https://api.deepseek.com/user/balance",
+            headers={"Accept": "application/json", "Authorization": "Bearer " + key})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            raw = json.loads(resp.read().decode("utf-8", errors="replace"))
+        _deepseek_cache["data"] = _parse_deepseek_balance(raw)
+        _deepseek_cache["time"] = time.monotonic()
+    except Exception as e:
+        _deepseek_cache["data"] = "DeepSeek 余额获取失败: %s" % str(e)[:40]
+        _deepseek_cache["time"] = time.monotonic()
+
+
+def show_deepseek_balance():
+    """DeepSeek 余额：按显示项勾选显示官方字段 总余额/赠送/充值/币种/可用（★ v5.13.0）"""
+    global _deepseek_cache
+    dev = get_current_device()
+    if dev is None:
+        return
+    if dev.state_change == 1:
+        state_change_clear()
+        LCD_ADD(0, 0, SHOW_WIDTH, SHOW_HEIGHT)
+        _deepseek_cache["time"] = 0
+        threading.Thread(target=fetch_deepseek_balance, daemon=True).start()
+    if getattr(config_obj, "deepseek_auto_refresh", 1):
+        try:
+            ttl = max(10, int(getattr(config_obj, "deepseek_refresh_interval", 300)))
+        except Exception:
+            ttl = 300
+        _refresh_cache_if_needed(_deepseek_cache, fetch_deepseek_balance, ttl=ttl)
+    data = _deepseek_cache.get("data")
+    if isinstance(data, dict):
+        lines = _deepseek_build_lines(data, getattr(config_obj, "deepseek_show_items", ""),
+                                      getattr(config_obj, "deepseek_custom_templates", {}))
+    else:
+        lines = _deepseek_build_lines(data)
+    im1 = Image.new("RGB", (SHOW_WIDTH, SHOW_HEIGHT), _hex2rgb(config_obj.deepseek_bg_color))
+    draw = ImageDraw.Draw(im1)
+    color = _hex2rgb(config_obj.deepseek_text_color)
+    show_lines = lines[:5]  # 显示行（≤5 行，供字号/对齐计算）
+    # 字号：自适应（默认）或手动
+    try:
+        font_auto = bool(getattr(config_obj, "deepseek_font_auto", 1))
+    except Exception:
+        font_auto = True
+    if font_auto:
+        # 自适应：以内容实际宽高为准（★ v5.21.0）——
+        # ① 高度：行数*(字号+2) <= 屏高 → 最大字号 = 屏高//行数-2
+        # ② 宽度：最长行 <= 屏宽-4，从①的上限往下找能放下的最大字号
+        # ③ 单行/少行时字号上限 50（内容短可用大号，内容长自动缩小）
+        font_size = max(8, (SHOW_HEIGHT // max(1, len(show_lines))) - 2)
+        font_size = min(50, font_size)
+        while font_size > 8:
+            tmp_font = MiniMark.load_font("./simhei.ttf", font_size)
+            longest = 0
+            for line in show_lines:
+                w = round(draw.textlength(line, font=tmp_font))
+                if w > longest:
+                    longest = w
+            if longest <= SHOW_WIDTH - 4:
+                break
+            font_size -= 1
+    else:
+        try:
+            font_size = max(8, min(72, int(getattr(config_obj, "deepseek_font_size", 13))))
+        except Exception:
+            font_size = 13
+    font = MiniMark.load_font("./simhei.ttf", font_size)
+    line_height = font_size + 2
+    # 对齐方式：center=垂直居中（默认）/ top=向上对齐
+    try:
+        ds_align = getattr(config_obj, "deepseek_align", "center") or "center"
+    except Exception:
+        ds_align = "center"
+    if ds_align == "top":
+        start_y = 2
+    else:
+        start_y = max(2, (SHOW_HEIGHT - len(show_lines) * line_height) // 2)
+    for i, line in enumerate(show_lines):
+        draw.text((4, start_y + i * line_height), line, fill=color, font=font)
+    rgb888 = np.asarray(im1, dtype=np.uint32)
+    _safe_send_rgb888(rgb888)
+    _power_wait(dev, 0.5)
+
+
 def show_music():
     global _music_cache
     dev = get_current_device()
@@ -14191,9 +16786,10 @@ _hw_monitor_loading = False  # 惰性加载进行中标志（防重复触发）
 
 
 def _ensure_hardware_monitor_async():
-    """惰性加载 LibreHardwareMonitor：仅当首次显示需要硬件传感器的页面时才在后台线程加载，
-    省去启动时无条件加载 pythonnet/.NET 运行时的内存开销。加载完成前页面显示“加载中…”，
-    完成后下轮刷新自动恢复。返回是否已就绪。"""
+    """惰性加载硬件监控（按 config_obj.hardware_source 选择 LibreHardwareMonitor 或 AIDA64）：
+    仅当首次显示需要硬件传感器的页面时才在后台线程加载，省去启动时无条件加载
+    pythonnet/.NET 运行时的内存开销。加载完成前页面显示“加载中…”，完成后下轮刷新自动恢复。
+    返回是否已就绪。"""
     global hardware_monitor_manager, _hw_monitor_loading
     if hardware_monitor_manager is not None and hardware_monitor_manager != 1:
         return True
@@ -14209,12 +16805,27 @@ def _ensure_hardware_monitor_async():
     def _worker():
         global hardware_monitor_manager, _hw_monitor_loading
         try:
-            HardwareMonitorManager = load_hardware_monitor()
-            hardware_monitor_manager = HardwareMonitorManager()
-            print("Libre hardware monitor load successed")
+            src = str(getattr(config_obj, "hardware_source", "libre") or "libre")
+            if src == "aida64":
+                Mgr = load_aida64_monitor()
+                hardware_monitor_manager = Mgr()
+                if hardware_monitor_manager.last_error:
+                    print("AIDA64 监控已就绪（%s）" % hardware_monitor_manager.last_error)
+                else:
+                    print("AIDA64 hardware monitor 读取成功（%d 个传感器）"
+                          % len(hardware_monitor_manager.sensors))
+            elif src == "system":
+                Mgr = load_system_monitor()
+                hardware_monitor_manager = Mgr()
+                print("System monitor 读取成功（%d 个传感器，无需后台程序）"
+                      % len(hardware_monitor_manager.sensors))
+            else:
+                HardwareMonitorManager = load_hardware_monitor()
+                hardware_monitor_manager = HardwareMonitorManager()
+                print("Libre hardware monitor load successed")
         except Exception as e:
             hardware_monitor_manager = 1
-            print("Libre hardware monitor 加载失败，%s" % traceback.format_exc())
+            print("Hardware monitor 加载失败，%s" % traceback.format_exc())
         finally:
             _hw_monitor_loading = False
 
@@ -14240,6 +16851,75 @@ _force_rescan_now = False  # 手动"连接"按钮置 True，daemon 下一轮立�
 _auto_connect = True       # "设为自动连接"开关（UI 第三层主控页勾选框），默认自动连接
 
 
+def _device_health_tick(device):
+    """每屏独立的健康检查（★ v5.26.0，在 daemon 渲染线程内按屏调用）：
+    ①通信心跳——整帧页发送走 SER_rw(read=False) 不回读响应，屏幕不响应也发现不了；
+      这里每 2 秒对该屏做一次 ADC 读（有问有答），读失败累计交给 Read_ADC_CH 的 10 次机制
+      判掉线 → daemon 自动重连。**这是非主屏唯一能发现掉线/无响应的途径**（manage_task 只绑主设备）。
+    ②线程看护——screen_shot_task/screen_process_task 异常退出后旧代码没有任何重启机制
+      （`screenshot_panic` 全工程从未被调用 = 死代码），这里发现死亡即 start_threads()（幂等）。
+    ③画面停滞提示——已连接却长时间没有成功送出画面（写失败/渲染异常/被清屏没重绘）时提示一次，
+      恢复后自动复位；阈值按能效等级放大，避免把静态页的正常低频刷新误报成停滞。
+    """
+    now = time.monotonic()
+
+    # ① 通信心跳（★ 非主屏靠它才能发现掉线）
+    #   ★ v5.30.0：刚发完一整帧 / 刚做完方向重置时（静默期内）先别戳设备——帧前后紧贴命令
+    #   容易让设备把帧解析错位（画面倾斜）。等过了静默期下一次 tick 再读。
+    if now - (getattr(device, "last_heartbeat_time", 0.0) or 0.0) > DEVICE_HEARTBEAT_SECONDS:
+        if now >= (getattr(device, "serial_quiet_until", 0.0) or 0.0):
+            device.last_heartbeat_time = now
+            try:
+                if Read_ADC_CH(9):
+                    device.last_heartbeat_ok_time = now
+            except Exception:
+                pass
+
+    # ② 线程看护：截屏/图像处理线程死了就重启（旧版本从不重启，屏会永久停在最后一帧）
+    if now - (getattr(device, "last_thread_watch_time", 0.0) or 0.0) > THREAD_WATCH_SECONDS:
+        device.last_thread_watch_time = now
+        if getattr(device, "mg_screen_thread_running", False):
+            dead = []
+            if device.screen_shot_thread is None or not device.screen_shot_thread.is_alive():
+                dead.append("截屏")
+            if device.screen_process_thread is None or not device.screen_process_thread.is_alive():
+                dead.append("图像处理")
+            if dead:
+                print("%s 的%s线程已退出，自动重启" % (device.device_name, "/".join(dead)))
+                try:
+                    insert_text_message("%s：%s线程已退出，已自动重启" % (device.device_name, "/".join(dead)))
+                except Exception:
+                    pass
+                try:
+                    device.start_threads()
+                except Exception:
+                    pass
+
+    # ③ 画面停滞提示（每次停滞只提示一次，恢复后自动复位）
+    #   ★ 从未送出过画面时，以「健康检查首次看到该屏」为计时基准——
+    #   设备刚连接/刚切到需要时间准备的页面时“还没有首帧”属正常，不应报警。
+    ref = getattr(device, "last_frame_ok_time", 0.0) or 0.0
+    if ref <= 0:
+        ref = getattr(device, "_frame_baseline_time", 0.0) or 0.0
+        if ref <= 0:
+            device._frame_baseline_time = now
+            ref = now
+    age = now - ref
+    if age > FRAME_STALL_SECONDS * max(1.0, _power_factor(device)):
+        if not getattr(device, "_frame_stall_notified", False):
+            device._frame_stall_notified = True
+            status = device_frame_status(device)
+            print("%s 画面停滞：%s" % (device.device_name, status))
+            try:
+                insert_text_message("%s 已 %.0f 秒未成功刷新画面（%s）\n"
+                                    "可尝试：主控页切页重绘 / 重新插拔该屏 USB / 重启程序"
+                                    % (device.device_name, age, status))
+            except Exception:
+                pass
+    else:
+        device._frame_stall_notified = False
+
+
 def daemon_task():
     global Device_State_Labelen, screen_off, last_key_activity_time, config_obj, preferred_com_port, _force_rescan_now, _auto_connect
     last_key_activity_time = time.monotonic()  # 初始化按键活动时间，避免启动即触发息屏
@@ -14260,7 +16940,13 @@ def daemon_task():
         try:
             # 多设备模式：遍历所有已连接设备，各自运行状态机
             for dev_id, device in list(all_devices.items()):
-                if device.device_state == 1:
+                if device.device_state != 1:
+                    continue
+                # ★ v5.26.0：逐屏隔离——单屏渲染异常绝不能中断整轮循环。
+                # 旧代码一个 try 包住整个 for：屏幕1 渲染完、屏幕2 抛异常时直接跳出循环被外层
+                # except 接走，屏幕2 永不刷新（表现为「一块屏黑着、另一块正常」而 UI 仍显示已连接、
+                # 预览还停在最后一帧），且界面上没有任何提示，极难定位。
+                try:
                     set_current_device(device)
                     # 每屏独立配置：渲染该屏前切换为其自己的配置
                     set_active_device_config(device)
@@ -14271,9 +16957,38 @@ def daemon_task():
                             LCD_Color_set(0, 0, device.LCD_MAX_X, device.LCD_MAX_Y, BLACK)
                         if screen_off:
                             # 息屏：直接 continue 会高频空转烧 CPU，按能效等级放宽等待间隔
+                            # （息屏期间不渲染，刷新时间戳跟着走，避免唤醒后误报画面停滞）
+                            device.last_frame_ok_time = time.monotonic()
+                            device._frame_stall_notified = False
                             _power_wait(device, 1)
                             continue  # 息屏状态下跳过页面渲染
-                    MSN_Device_1_State_machine()
+                    # ★ v5.26.0：健康检查放在渲染之前——此时本屏上一轮的「LCD_ADD + 整帧发送」
+                    # 序列已完整结束，心跳的 ADC 读不会插进页面命令序列中间（遵循串口避让约定）。
+                    # ★ v5.30.0：整轮「健康心跳 + 页面渲染」作为一个串口事务 —— 期间按键 ADC 轮询
+                    # 一律避让，保证帧数据前后不会出现别的命令（设备缓冲小、解析易错位 → 画面倾斜）。
+                    _serial_begin(device)
+                    try:
+                        _device_health_tick(device)
+                        MSN_Device_1_State_machine()
+                    finally:
+                        # 静默期由每次整帧发送自己设置（见 _send_frame_with_window）
+                        _serial_end(device, quiet=False)
+                except Exception:
+                    device.render_error_count = getattr(device, "render_error_count", 0) + 1
+                    device.last_render_error = traceback.format_exc()
+                    print("%s 渲染异常（第 %d 次，已按屏隔离，不影响其它屏）：\n%s"
+                          % (device.device_name, device.render_error_count, device.last_render_error))
+                    if device.render_error_count in (1, 10) or device.render_error_count % 100 == 0:
+                        try:
+                            last_line = device.last_render_error.strip().splitlines()[-1][:120]
+                        except Exception:
+                            last_line = device.last_render_error[:120]
+                        try:
+                            insert_text_message("%s 渲染异常（第 %d 次，已隔离）：%s"
+                                                % (device.device_name, device.render_error_count, last_line))
+                        except Exception:
+                            pass
+                    time.sleep(0.05)
             
             # 检查是否有已连接设备
             has_connected = any(d.device_state == 1 for d in all_devices.values())
@@ -14329,51 +17044,47 @@ def daemon_task():
                 # 第二个端口会误用主设备对象覆盖第一个设备的串口（多屏只认1个）。
                 has_connected = any(d.device_state == 1 for d in all_devices.values())
 
-                # 尝试连接此端口
-                if _primary_device.device_state == 0 or _primary_device.com_port != port_key:
-                    # 创建临时设备用于检测
-                    if not has_connected:
-                        set_current_device(_primary_device)
-                        Get_MSN_Device([port])
-                        if _primary_device.device_state == 1:
-                            known_com_ports.add(port_key)
-                            _primary_device.com_port = port_key
-                            # 启动截图线程
-                            _primary_device.start_threads()
-                            new_device_found = True
+                # ★ v5.22.0：端口归属优先——先找「已登记该端口」的设备对象（无论当前是否在线）
+                #   并复用；绝不再把某个端口塞进别的设备对象（旧逻辑依赖 _primary_device，
+                #   一旦 UI 切屏改写它，就会把新端口连进另一块屏的对象，导致设备身份/标签/
+                #   配置错乱，且原对象因端口被别人占用而永远无法重连 = “总有一块屏自动断开”）。
+                target = next((d for d in all_devices.values() if d.com_port == port_key), None)
+                is_new = False
+                first_time = target is None or not target.com_port
+                if target is None and not has_connected:
+                    # 尚无任何设备在线且该端口无归属：用主设备槽位（兼容单屏/首次连接）
+                    target = _primary_device
+                    first_time = True
+                if target is None:
+                    # 真正的新设备：新建 ScreenDevice（索引取最大+1，避免删除后索引冲突）
+                    new_idx = (max(all_devices.keys()) + 1) if all_devices else 0
+                    target = ScreenDevice(new_idx, port_key)
+                    all_devices[new_idx] = target
+                    is_new = True
+
+                set_current_device(target)
+                Get_MSN_Device([port])
+                if target.device_state == 1:
+                    known_com_ports.add(port_key)
+                    target.com_port = port_key
+                    target.init_arrays()
+                    target.start_threads()
+                    new_device_found = True
+                    if is_new or first_time:
+                        insert_text_message("新设备连接: %s → %s" % (port_key, target.device_name))
                     else:
-                        # 已有设备连接，为新设备创建新的ScreenDevice
-                        # 若同端口有断开设备则复用，避免设备索引漂移（屏幕1/2/3...）
-                        reused = next((d for d in all_devices.values()
-                                       if d.com_port == port_key and d.device_state == 0), None)
-                        if reused is not None:
-                            new_dev = reused
-                            set_current_device(new_dev)
-                            Get_MSN_Device([port])
-                            if new_dev.device_state == 1:
-                                known_com_ports.add(port_key)
-                                new_dev.init_arrays()
-                                new_dev.start_threads()
-                                new_device_found = True
-                                insert_text_message("设备重连: %s → %s" % (port_key, new_dev.device_name))
-                        else:
-                            new_idx = len(all_devices)
-                            new_dev = ScreenDevice(new_idx, port_key)
-                            all_devices[new_idx] = new_dev
-                            set_current_device(new_dev)
-                            Get_MSN_Device([port])
-                            if new_dev.device_state == 1:
-                                known_com_ports.add(port_key)
-                                new_dev.init_arrays()
-                                new_dev.start_threads()
-                                new_device_found = True
-                                insert_text_message("新设备连接: %s → 屏幕%d" % (port_key, new_idx + 1))
-                            else:
-                                del all_devices[new_idx]
+                        insert_text_message("设备重连: %s → %s" % (port_key, target.device_name))
+                elif is_new:
+                    # 连接失败：撤销新建设备，避免残留空对象占用索引/端口
+                    all_devices.pop(target.index, None)
 
             if new_device_found:
                 retry_times = 0
                 continue
+
+            # ★ v5.24.0：没有新设备时，把「有串口但没连上」的原因显示到信息框
+            #    （编译成无控制台 exe 后 print 看不到，用户只看到“一块屏像没连接”）
+            _report_connect_failures(wch_port_list, known_com_ports)
 
             # 没有新设备，也没有已连接设备
             if not has_connected:
@@ -14414,6 +17125,10 @@ def manage_task():
         dev = _primary_device
     if dev is None:
         return
+    # ★ v5.22.0：把本线程显式绑定到该设备（串口命令/ADC 读写均用线程本地活跃设备）。
+    # 否则本线程无绑定，Read_ADC_CH 等会回退到「当前默认屏」，一旦 UI 切屏就会
+    # 「检查 A 屏状态、却读写 B 屏串口」，误判掉线/误触发按键动作。
+    set_current_device(dev)
     ADC_det = dev.ADC_det  # 本地引用，方便函数内使用
     now = time.monotonic()
     key_on = 0
@@ -14431,10 +17146,16 @@ def manage_task():
         try:
             now = time.monotonic()
             # 串口渲染事务中（帧/页面发送期间）跳过按键ADC轮询，避免命令流交错导致画面倾斜；
-            # 能效模式下按等级放宽轮询间隔（1级≈12Hz），降低镜像期间CPU占用
-            if getattr(dev, "serial_busy", False):
+            # ★ v5.30.0：静默期（刚发完整帧/刚做完方向重置）同样避让；
+            # 能效模式下按等级放宽轮询间隔（1级≈12Hz），降低镜像期间CPU占用。
+            # 环境变量 MSU2_MINI_NO_KEY_POLL=1 可临时关闭轮询（只用于定位“串口上另有命令”是否是主因）。
+            if KEY_POLL_DISABLED:
+                time.sleep(0.2)
+                continue
+            if _key_poll_should_wait(dev):
                 time.sleep(0.02 * _power_factor(dev))
                 continue
+            dev.last_key_poll_time = now
             ADC_ch = Read_ADC_CH(9)
             if ADC_ch == 0:
                 continue
@@ -14566,7 +17287,30 @@ _weather_cache = {"data": None, "time": 0.0}
 _crypto_cache = {"data": None, "time": 0.0}
 _hot_cache = {"data": None, "time": 0.0}
 _battery_cache = {"data": None, "time": 0.0}
+_deepseek_cache = {"data": None, "time": 0.0}  # DeepSeek 余额（★ v5.13.0）
 _music_cache = "无播放"
+_show_info_state = 1  # 信息框显示状态（程序级，独立于控件可见性，防主窗口隐藏时 isHidden() 误判）
+_show_info_widgets = []  # 信息框控件 [标题 QLabel, 文本框 QTextEdit]（程序级，按 _show_info_state 显隐）
+_show_info_cbs = []      # 各屏「设置→通用→显示信息框」勾选框（程序级共享，勾选状态需保持一致）
+
+
+def _apply_show_info_state():
+    """按 _show_info_state 同步底部信息框显隐与所有「显示信息框」勾选框（★ v5.22.0）。
+    设置是程序级的（所有屏共享），且勾选框分布在各屏懒加载的设置页里，
+    因此用注册表统一同步，避免「某一屏改了、另一屏的勾选框/信息框状态不一致」。"""
+    vis = bool(_show_info_state)
+    for w in list(_show_info_widgets):
+        try:
+            w.setVisible(vis)
+        except Exception:
+            pass
+    for cb in list(_show_info_cbs):
+        try:
+            cb.blockSignals(True)
+            cb.setChecked(vis)
+            cb.blockSignals(False)
+        except Exception:
+            pass
 _netio_last = None  # 仪表盘网络速率上次采样
 _netio_last_time = 0.0
 
@@ -14614,6 +17358,12 @@ lcd_direction_combobox = None  # UI中显示方向选择下拉列表
 
 if __name__ == "__main__":
     exit_code = 0
+    # ★ v5.25.0：单实例保护——必须在初始化串口/后台线程之前执行，
+    # 否则第二个实例会先抢走一块屏的串口（现象：另一块屏「像没连接」）。
+    if not acquire_single_instance():
+        notify_already_running()
+        raise SystemExit(0)
+
     try:
         # 初始化主设备（单屏兼容模式）
         _init_single_device()

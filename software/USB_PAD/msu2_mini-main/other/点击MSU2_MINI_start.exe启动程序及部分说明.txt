@@ -1,0 +1,18 @@
+geezmolycos 说明：
+点击MSU2_MINI_start.exe启动程序
+MSU2_MINI_hide.exe可以启动程序后自动隐藏到托盘，如果要自动启动，可以给它创建个快捷方式，然后放到启动文件夹里，这样启动的时候自动隐藏界面。
+如果使用的是截屏模式，因为方法比较低效，占用 CPU 较多，而且频繁截图会让鼠标指针闪，这是因为用的方法低效，高效的方法也有，就是我比较懒，没有实现，想实现的可以自己用诸如 DXCam 的库实现。可以限制FPS缓解问题。自己使用新的Python版本性能也会比较好。
+Windows 7 可能需要下载 Microsoft Visual C++ 运行时，可以自己去下载
+https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist?view=msvc-170
+
+usbmmidd_v2 中包含虚拟屏幕驱动，可以虚拟出一个显示器来，可以给软件截屏用。应该只有 windows 10 可以用
+来源：https://www.amyuni.com/forum/viewtopic.php?t=3030
+还有一个虚拟屏幕驱动：https://github.com/VirtualDisplay/Virtual-Display-Driver
+这些应该都是 windows 10 能用
+
+自定义显示内容一共有两个模式，第一个固定显示两行，有图表，第二个是完全自定义模式，可以自己加文本和图片
+模板代码在上方输入，结果会显示在下方，模板代码从前往后顺序执行，每行执行一个操作
+p <文本> 代表绘制文本，会自动移动坐标; a <锚点> 代表更改文本锚点，参考Pillow文档，如la,ra,ls,rs
+m <x> <y> 代表移动到坐标(x,y); t <x> <y> 代表相对当前位置移动(x,y)
+f <文件名> <大小> 代表更换字体，文件名如 arial.ttf; c <hex码> 代表更改文字颜色，如 c #ffff00
+i <文件名> 代表绘制图片; v <项目编号> <格式符> 绘制上面选择的某个值，格式符可省略，如 v 1 {:.2f}

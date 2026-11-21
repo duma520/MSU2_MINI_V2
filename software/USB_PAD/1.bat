@@ -1,0 +1,2 @@
+cls
+python MSU2_MINI_DemoV1.7_Output.py

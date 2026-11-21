@@ -1,0 +1,20 @@
+https://www.xinlucity.com/?s=resourcedetail/index/id/389.html
+
+USB小屏幕0.96寸USB直插式电脑监控小屏--客户资料
+
+将小屏幕插入win10和win11系统后运行店铺提供的V1.6.exe程序即可投屏和电脑性能监控，提供电脑端软件的Python源码用于二次开发，最新的软件和文档可以加入店铺的技术交流群获取，企鹅1群号：700261242\企鹅2群号：715519063，验证信息可以填9.9或10.9
+
+【1】电脑端软件链接：https://share.weiyun.com/PLsDun3H
+
+【2】使用说明书链接：https://share.weiyun.com/fAgLz8G5
+
+【3】USB小屏幕使用方法视频教程：https://www.bilibili.com/video/BV16HdSB2Ea5?vd_source=f2a59316445c9749e7dace1e9e6fa07d
+
+芯路城资料网址 https://www.xinlucity.com/?s=resourcedetail/index/id/30.html
+https://www.xinlucity.com/?s=resourcedetail/index/id/30.html
+
+源码 能连接，但是花屏
+https://github.com/dimangopie/just-fun-for-MSU2_MINI
+
+源码 能连接，正常显示
+https://github.com/dchg43/msu2_mini

@@ -1,0 +1,1 @@
+{"text_color_r": 255, "text_color_g": 0, "text_color_b": 255, "state_machine": 6, "lcd_change": 0, "photo_interval_var": 0.1, "number_var": 1, "fps_var": 10, "screen_region_var": "0,0,,", "custom_selected_names": ["", ""], "custom_selected_displayname": ["", ""], "custom_selected_names_tech": ["", "", "", "", "", ""], "full_custom_template": "p Hello world"}

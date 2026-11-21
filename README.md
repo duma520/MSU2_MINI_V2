@@ -16,7 +16,7 @@ https://github.com/dchg43/msu2_mini 能连接，有显示，就是感觉缺点�
 ---
 **软件截图 v4.5.10
 
-<img width="664" height="727" alt="image" src="https://github.com/user-attachments/assets/e02d6863-9f44-4e62-b7af-15271421596e" />
+<img width="664" height="727" alt="image" src="https://github.com/user-attachments/assets/e02d6863-9f44-4e62-b7af-***已脱敏***-手机号e" />
 
 <img width="664" height="727" alt="image" src="https://github.com/user-attachments/assets/72d5d470-b0f8-4e16-a757-dc1a05c3bf64" />
 

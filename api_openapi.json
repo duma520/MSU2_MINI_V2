@@ -2,8 +2,8 @@
   "openapi": "3.0.0",
   "info": {
     "title": "MSU2_MINI_V2 投屏 API",
-    "description": "USB 副屏工具的外部接入接口。支持 HTTP REST / WebSocket / SSE(/api/events) / TCP(JSON行,端口+1) / UDP(JSON报,端口+2) / ZeroMQ(REP,端口+3,需pyzmq) / Windows命名管道(\\\\\\.\\\\pipe\\\\MSU2_MINI_V2_api) / Unix Domain Socket(api_unix.sock) / 热文件夹 投屏。可自定义投屏内容（图像、文本、清屏、切页、多图轮播、窗口投屏、实时帧）。支持「强制投屏」：未选 API投屏 页也可投屏，结束自动返回原页面。屏幕分辨率 160x80。未启用访问令牌（可在设置 → API接入 中配置）",
-    "version": "4.6.3",
+    "description": "USB 副屏工具的外部接入接口。支持 HTTP REST / WebSocket / SSE(/api/events) / TCP(JSON行,端口+1) / UDP(JSON报,端口+2) / ZeroMQ(REP,端口+3,需pyzmq) / gRPC(msu2.Msu2Api,端口+4,需grpcio) / MQTT(外部Broker,需paho-mqtt) / Windows命名管道(\\\\\\.\\\\pipe\\\\MSU2_MINI_V2_api) / Unix Domain Socket(api_unix.sock) / 热文件夹 投屏。可自定义投屏内容（图像、文本、清屏、切页、多图轮播、窗口投屏、实时帧）。支持「强制投屏」：未选 API投屏 页也可投屏，结束自动返回原页面。屏幕分辨率 160x80。未启用访问令牌（可在设置 → API接入 中配置）",
+    "version": "5.40.0",
     "license": {
       "name": "MIT",
       "url": "https://github.com/duma520/MSU2_MINI_V2"
@@ -31,6 +31,10 @@
     {
       "name": "实时",
       "description": "WebSocket 实时通道"
+    },
+    {
+      "name": "Webhook",
+      "description": "对接聊天机器人（Synology Chat 等）的收发接口"
     }
   ],
   "paths": {
@@ -779,6 +783,59 @@
         "responses": {
           "200": {
             "description": "结果"
+          }
+        }
+      }
+    },
+    "/api/webhook/status": {
+      "get": {
+        "tags": [
+          "Webhook"
+        ],
+        "summary": "查询 Webhook 状态与最近收发日志",
+        "responses": {
+          "200": {
+            "description": "enabled/port/receive_url/send_targets/server_running/receive_log/send_log"
+          }
+        }
+      }
+    },
+    "/api/webhook/send": {
+      "post": {
+        "tags": [
+          "Webhook"
+        ],
+        "summary": "发送文本到配置的 Webhook URL（Synology Chat「传入的 Webhook」/ Discord / 钉钉等）",
+        "description": "需要先启用 Webhook（设置 → Webhook）。text 必填；urls 可选覆盖配置的发送目标列表。",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "text": {
+                    "type": "string",
+                    "description": "要发送的文本"
+                  },
+                  "urls": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "可选：覆盖配置的发送目标 URL"
+                  }
+                },
+                "required": [
+                  "text"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "ok + targets"
           }
         }
       }

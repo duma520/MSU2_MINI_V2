@@ -26,8 +26,10 @@ REM   disable = 正式发布，无控制台（print 输出进 NUL，看不到）
 REM   attach  = 从 cmd/powershell 运行 exe 时能看到日志，双击运行仍无控制台窗口
 REM             （排查"编译后才有、源码运行没有"的问题时改成 attach 再编译）
 set CONSOLE_MODE=disable
-REM 是否把本机设置同步进发布目录：1=同步（config\*.json 与 .env），0=不同步
-REM   同步后换目录/换电脑运行 exe 仍沿用本机设置与 API 密钥，不会"像重置了一样"
+REM 是否把本机设置同步进发布目录：1=同步 config\*.json，0=不同步
+REM   同步后换目录/换电脑运行 exe 仍沿用本机配置，不会"像重置了一样"
+REM   ★ .env 永远不参与同步：它含 API 密钥，随包分发等于把密钥公开。
+REM     发布时请改用 .env.example，让使用者自己填。
 set SYNC_CONFIG=1
 
 if not exist "MSU2_MINI_V2.py" (
@@ -107,8 +109,11 @@ if not exist "%DIST%\hotfolder" mkdir "%DIST%\hotfolder"
 if "%SYNC_CONFIG%"=="1" (
     if not exist "%DIST%\config" mkdir "%DIST%\config"
     if exist "config\*.json" xcopy "config\*.json" "%DIST%\config\" /D /Y >nul
-    if exist ".env" if not exist "%DIST%\.env" copy ".env" "%DIST%\.env" >nul
-    echo 已同步本机设置到发布目录: config 与 .env
+    echo 已同步本机设置到发布目录: config（不含 .env）
+    if exist "%DIST%\.env" (
+        del /f /q "%DIST%\.env" 2>nul
+        echo [警告] 发布目录里发现 .env，已删除（内含 API 密钥，禁止分发）
+    )
 )
 
 echo.
@@ -117,7 +122,8 @@ echo.
 echo 发布方法：把整个 "%DIST%" 目录拷贝到目标机器后再运行里面的 MSU2_MINI_V2.exe；
 echo           只拷 exe 会缺少 python310.dll / PySide6 / LibreHardwareMonitor / resource，无法运行。
 echo 设置位置：exe 同目录的 config 子目录（每屏 MSU2_MINI_^<SN^>.json、电视墙、界面状态）；
-echo           API 密钥在 exe 同目录的 .env。换目录/换电脑时请连 config 与 .env 一起带过去。
+echo           使用者需自己在 exe 同目录放 .env 填 API 密钥（参考 .env.example）。
+echo           config 可以随包带走，.env 绝对不能放进发布包。
 echo.
 chcp%OLDCP% >nul
 pause
